@@ -106,21 +106,60 @@ import site
 #    - 宿主 python 必须与 embed 同为 $pyMM：哈希锁是 ABI 专属（cffi/PyYAML/bitarray/
 #      tibs/cryptography 是二进制包），错 ABI 会让冒烟测试在 payload 内 ImportError。
 $sitePackages = Join-Path $pythonDir 'Lib\site-packages'
-$hostPython = (Get-Command python -ErrorAction SilentlyContinue).Source
-if (-not $hostPython) { throw 'host python not found in PATH (required to pip-install esptool into payload)' }
-$hostVer = (& $hostPython -c "import platform;print(platform.python_version())" 2>&1 | Out-String).Trim()
-if ($hostVer -notlike "$pyMM.*") {
-    throw "host python $hostVer != payload $pyMM.* — hash lock is ABI-specific (install CPython $pyMM x64)"
+# pip 执行方式（按序取第一个可用，三者跑的都是 --require-hashes 同一套锁）：
+# 1) VOICESTICK_HOST_PYTHON 显式指定；2) PATH 里的 python。两者都须 ==$pyMM
+#    （ABI 专属，见上——3.14 的 pip 也装不了 cp312 锁定 wheel，pip 按运行它的
+#    解释器选 wheel）。3) 兜底：本机无 $pyMM CPython 时，用 payload 自身
+#    embeddable python（天然 ==$pyMM）+ 官方 pip.pyz zipapp 自举（单文件即用，
+#    来自 PyPI 官方基础设施 bootstrap.pypa.io；本地缓存于 build 目录，不进 payload）。
+#    制品完整性由 --require-hashes 逐字节哈希锁兜底，pip 本体仅是安装器。
+$hostPython = $env:VOICESTICK_HOST_PYTHON
+if (-not $hostPython) { $hostPython = (Get-Command python -ErrorAction SilentlyContinue).Source }
+$pipArgs = @('-m', 'pip')
+if ($hostPython -and (Test-Path $hostPython)) {
+    $hostVer = (& $hostPython -c "import platform;print(platform.python_version())" 2>&1 | Out-String).Trim()
+    if ($hostVer -notlike "$pyMM.*") {
+        Write-Host "[flash_payload] host python $hostVer != payload $pyMM.*, falling back to payload python + pip.pyz"
+        $hostPython = $null
+    }
+} else {
+    $hostPython = $null
+}
+if (-not $hostPython) {
+    $hostPython = $pythonExe
+    $pipPyz = Join-Path ([System.IO.Path]::GetDirectoryName($OutputDir.TrimEnd('\'))) 'pip.pyz'
+    if (-not (Test-Path $pipPyz)) {
+        Write-Host "[flash_payload] downloading official pip.pyz (bootstrap.pypa.io, cached outside payload)"
+        Invoke-WebRequest -Uri 'https://bootstrap.pypa.io/pip/pip.pyz' -OutFile $pipPyz -UseBasicParsing
+    }
+    if ((Get-Item $pipPyz).Length -lt 1MB) { throw "pip.pyz looks truncated: $pipPyz" }
+    $pipArgs = @($pipPyz)
 }
 # pip 索引：默认官方 PyPI，可用 VOICESTICK_PIP_INDEX_URL 覆盖（哈希锁定使镜像不可夹带）。
 $pipIndex = $env:VOICESTICK_PIP_INDEX_URL
 if (-not $pipIndex) { $pipIndex = 'https://pypi.org/simple' }
+# 3a) 预装 setuptools（wheel-only，pip 直接解压无需 backend）。esptool 5.2.0 只有
+#     sdist，其 build hook 子进程同样读 payload 的 python312._pth（embeddable 忽略
+#     PYTHONPATH，isolation 实际失效）——setuptools 必须先落进 site-packages，否则
+#     同一锁安装里 esptool 构建先于 setuptools 落盘 → BackendUnavailable。哈希内联
+#     锚定（与 pythonEmbedSha256 同风格），来源 pypi.org/pypi/setuptools/84.2.1/json。
+$setuptoolsHash = 'ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2'
+$preloadReq = Join-Path ([System.IO.Path]::GetDirectoryName($OutputDir.TrimEnd('\'))) 'setuptools_preload.txt'
+"setuptools==84.2.1 --hash=sha256:$setuptoolsHash" | Set-Content -Path $preloadReq -Encoding Ascii
+& $hostPython @pipArgs install --disable-pip-version-check --no-input `
+    --require-hashes `
+    --requirement $preloadReq `
+    --index-url $pipIndex `
+    --target $sitePackages `
+    --retries 5 --timeout 60
+if ($LASTEXITCODE -ne 0) { throw 'pip install (setuptools preload) failed' }
 Write-Host "[flash_payload] installing hash-locked requirements (lock=$($lockHash.Substring(0, 12))…) into $sitePackages"
-& $hostPython -m pip install --disable-pip-version-check --no-input `
+& $hostPython @pipArgs install --disable-pip-version-check --no-input `
     --require-hashes `
     --requirement $reqFile `
     --index-url $pipIndex `
-    --target $sitePackages
+    --target $sitePackages `
+    --retries 5 --timeout 60
 if ($LASTEXITCODE -ne 0) { throw 'pip install (require-hashes) failed — see scripts/flash_payload_requirements.txt' }
 
 # 4) 冒烟验证 + 写幂等标记

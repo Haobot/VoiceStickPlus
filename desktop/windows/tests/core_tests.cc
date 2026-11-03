@@ -28,8 +28,11 @@
 #include "esptool_progress.h"
 #include "firmware_manifest.h"
 #include "hotword_extractor.h"
+#include "hotword_activity.h"
 #include "hotword_candidate_miner.h"
+#include "hotword_context.h"
 #include "hotword_selector.h"
+#include "hotword_suggest_client.h"
 #include "tencent_asr_vocab_client.h"
 #include "key_spec.h"
 #include "llm_refinement_client.h"
@@ -65,6 +68,7 @@
 #include "voice_stick_flash_tool.h"
 #include "wasapi_render_sink.h"
 #include "wasapi_virtual_mic_renderer.h"
+#include "virtual_mic_renamer.h"
 #include "wechat_input_method_hotkey.h"
 #include "default_audio_device_controller.h"
 #include "device_switch_state.h"
@@ -106,9 +110,6 @@ using namespace voicestick;
 namespace {
 
 
-#include "test_support.h"
-
-
 static LONG WINAPI UnhandledExceptionProbe(PEXCEPTION_POINTERS info) {
     const DWORD code = info->ExceptionRecord->ExceptionCode;
     // 广谱：所有 NTSTATUS 错误段（0xC000xxxx）+ C++ 异常（0xE06D7363，未捕获即
@@ -128,6 +129,7494 @@ static LONG WINAPI UnhandledExceptionProbe(PEXCEPTION_POINTERS info) {
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+struct SentUiState {
+    std::string state;
+    std::string text;
+    std::optional<std::string> device_id;
+};
+
+struct SentRemoteButton {
+    RemoteButtonAction action;
+    std::string button;
+    std::optional<std::string> device_id;
+    std::uint32_t request_id;
+};
+
+struct SentImuWakeSensitivity {
+    int threshold_lsb = 0;
+    std::optional<std::string> device_id;
+};
+
+struct SentTapSensitivity {
+    int level = 0;
+    std::optional<std::string> device_id;
+};
+
+class FakeBleCentral : public BleCentral {
+public:
+    void Start() override {}
+    void UpdatePairedDeviceIds(const std::vector<std::string>& ids) override {
+        paired_device_ids = ids;
+    }
+    void ConnectPairedDevice(const std::string&,
+                             std::uint64_t,
+                             BluetoothAddressKind,
+                             const std::string&,
+                             DeviceClass) override {}
+    void SendUiState(const std::string& state,
+                     const std::string& text,
+                     const std::optional<std::string>& device_id) override {
+        sent_ui_states.push_back(SentUiState{state, text, device_id});
+    }
+    void SendInteractionMode(InteractionMode mode,
+                             const std::optional<std::string>& device_id) override {
+        sent_interaction_modes.push_back(std::pair{mode, device_id});
+    }
+    void SendShowImuDebug(bool enabled,
+                          const std::optional<std::string>& device_id) override {
+        (void)enabled;
+        (void)device_id;
+    }
+    // 合并接口新增纯虚函数（远程 D9/P1）：HEAD 单体 fake 缺省，自 test_support.h 补齐。
+    void SendProtoNegotiate(const std::optional<std::string>& device_id) override {
+        proto_negotiate_count++;
+        (void)device_id;
+    }
+    int proto_negotiate_count = 0;
+    void SendGatewayKeymapGet(const std::optional<std::string>& device_id) override {
+        keymap_get_count++;
+        (void)device_id;
+    }
+    int keymap_get_count = 0;
+    void SendGatewayKeymapSet(const std::string& key, bool software,
+                              const std::optional<std::string>& device_id) override {
+        sent_gateway_keymap_sets.push_back(SentGatewayKeymapSet{key, software, device_id});
+    }
+    void SendGatewayTargetInfo(const std::string& name,
+                               const std::optional<std::string>& device_id) override {
+        sent_gateway_target_infos.push_back(std::pair{name, device_id});
+    }
+    void SendGatewaySelectTarget(bool self,
+                                 const std::optional<std::string>& device_id) override {
+        sent_gateway_select_targets.push_back(std::pair{self, device_id});
+    }
+    void SendRawControl(const std::string& json,
+                        const std::optional<std::string>& device_id) override {
+        sent_raw_controls.push_back(std::pair{json, device_id});
+    }
+    void SendTapEnabled(bool enabled,
+                        const std::optional<std::string>& device_id) override {
+        sent_tap_enabled.push_back(std::pair{enabled, device_id});
+    }
+    void SendTapSensitivity(int level,
+                            const std::optional<std::string>& device_id) override {
+        sent_tap_sensitivities.push_back(SentTapSensitivity{level, device_id});
+    }
+    void SendAirMouseEnabled(bool enabled,
+                             const std::optional<std::string>& device_id) override {
+        sent_air_mouse_enabled.push_back(std::pair{enabled, device_id});
+    }
+    void SendImuWakeSensitivity(int threshold_lsb,
+                                const std::optional<std::string>& device_id) override {
+        sent_imu_wake_sensitivities.push_back(SentImuWakeSensitivity{threshold_lsb, device_id});
+    }
+    void SendEncoderLedColor(const std::string& color,
+                             const std::optional<std::string>& device_id) override {
+        sent_encoder_led_colors.push_back(std::pair{color, device_id});
+    }
+    void SendEncoderRecordingGate(bool enabled,
+                                  const std::optional<std::string>& device_id) override {
+        sent_encoder_recording_gates.push_back(std::pair{enabled, device_id});
+    }
+    void RequestBatteryStatus(const std::optional<std::string>& device_id) override {
+        battery_status_requests.push_back(device_id);
+    }
+    void SendRemoteButton(RemoteButtonAction action,
+                          const std::string& button,
+                          const std::optional<std::string>& device_id,
+                          std::uint32_t request_id) override {
+        sent_remote_buttons.push_back(SentRemoteButton{action, button, device_id, request_id});
+    }
+    void UpdateFirmware(ByteVector image,
+                        const std::string& device_id,
+                        std::function<void(FirmwareUpdateProgress)> progress,
+                        std::function<void(bool, std::string)> completion) override {
+        captured_firmware_image = std::move(image);
+        captured_firmware_device_id = device_id;
+        if (progress) {
+            progress(FirmwareUpdateProgress{
+                0, static_cast<int>(captured_firmware_image.size()), true});
+        }
+        if (completion) completion(true, "");
+    }
+    void CancelFirmwareUpdate() override {}
+    bool IsConnected(const std::string& device_id) const override {
+        return connected_device_ids.contains(device_id);
+    }
+
+    std::vector<std::string> paired_device_ids;
+    std::set<std::string> connected_device_ids;
+    ByteVector captured_firmware_image;
+    std::string captured_firmware_device_id;
+    std::vector<SentUiState> sent_ui_states;
+    std::vector<std::pair<InteractionMode, std::optional<std::string>>> sent_interaction_modes;
+    std::vector<std::optional<std::string>> battery_status_requests;
+    std::vector<SentRemoteButton> sent_remote_buttons;
+    std::vector<SentImuWakeSensitivity> sent_imu_wake_sensitivities;
+    std::vector<std::pair<bool, std::optional<std::string>>> sent_tap_enabled;
+    std::vector<SentTapSensitivity> sent_tap_sensitivities;
+    std::vector<std::pair<bool, std::optional<std::string>>> sent_air_mouse_enabled;
+    std::vector<std::pair<std::string, std::optional<std::string>>> sent_encoder_led_colors;
+    std::vector<std::pair<bool, std::optional<std::string>>> sent_encoder_recording_gates;
+    // 网关/协议协商记录（合并接口新增纯虚函数的记录字段——自 test_support.h 补齐）。
+    struct SentGatewayKeymapSet {
+        std::string key;
+        bool software;
+        std::optional<std::string> device_id;
+    };
+    std::vector<SentGatewayKeymapSet> sent_gateway_keymap_sets;
+    // P1 目标表：桌面端上报的主机名（name, device_id）。
+    std::vector<std::pair<std::string, std::optional<std::string>>> sent_gateway_target_infos;
+    // P1 切换器：桌面端下发的目标选择（self, device_id）。
+    std::vector<std::pair<bool, std::optional<std::string>>> sent_gateway_select_targets;
+    // 调试/自动化：原始控制帧下发（json, device_id）。
+    std::vector<std::pair<std::string, std::optional<std::string>>> sent_raw_controls;
+};
+
+class FakeAsrClient : public AsrClient {
+public:
+    bool Start(AsrSessionOptions options = {}) override {
+        last_options = std::move(options);
+        started = true;
+        return start_result;
+    }
+    void SendOggOpusChunk(std::span<const std::uint8_t>, bool is_last) override {
+        ++sent_chunks;
+        last_chunk_was_final = is_last;
+    }
+    void Cancel() override {
+        cancelled = true;
+    }
+    std::string LastStartError() const override {
+        return start_error;
+    }
+    void InvalidateConnection() override {
+        ++invalidate_call_count;
+    }
+
+    bool start_result = true;
+    std::string start_error;
+    bool started = false;
+    bool cancelled = false;
+    int sent_chunks = 0;
+    bool last_chunk_was_final = false;
+    int invalidate_call_count = 0;
+    AsrSessionOptions last_options;
+};
+
+class FakeUi : public VoiceStickUi {
+public:
+    void SetStatus(const std::string& status) override {
+        statuses.push_back(status);
+    }
+    void SetConnectedDevices(const std::vector<ConnectedDevice>& devices) override {
+        connected_devices = devices;
+    }
+    void SetDeviceInfo(const DeviceInfo& info) override {
+        device_infos.push_back(info);
+    }
+    void SetDeviceEncoderPresent(const std::string& device_id, bool present) override {
+        encoder_present_by_device_id[device_id] = present;
+    }
+    void SetDeviceGatewayMode(const std::string& device_id, bool gateway) override {
+        gateway_mode_by_device_id[device_id] = gateway;
+        last_gateway_mode = gateway;
+    }
+    void SetDeviceBattery(const std::string& device_id, int level_percent,
+                           bool charging, bool usb_powered) override {
+        (void)device_id;
+        (void)level_percent;
+        (void)charging;
+        (void)usb_powered;
+    }
+    void SetFirmwareInfo(const std::map<std::string, DeviceFirmwareInfo>& info_by_device_id) override {
+        firmware_info_by_device_id = info_by_device_id;
+    }
+    void SetPairingError(const std::string& device_id, const std::string& message) override {
+        pairing_errors.push_back(device_id + ":" + message);
+    }
+    void ShowFirmwareUpdatePrompt(const std::string& device_id,
+                                  const std::string& current_version,
+                                  const std::string& latest_version,
+                                  bool is_below_minimum) override {
+        firmware_update_prompts.push_back(device_id + ":" + current_version + ":" + latest_version +
+                                          (is_below_minimum ? ":minimum" : ":latest"));
+    }
+    void SetPairedDeviceIds(const std::vector<std::string>& ids) override {
+        paired_device_ids = ids;
+    }
+    void SetHasRecoverableInput(bool has_recoverable_input) override {
+        has_recoverable_input_set = has_recoverable_input;
+    }
+    void ShowListening(const std::optional<std::string>&) override {
+        ++show_listening_count;
+    }
+    void ShowPartial(const std::string& text, const std::optional<std::string>&) override {
+        partials.push_back(text);
+    }
+    void AppendPartial(const std::string& text, const std::optional<std::string>&) override {
+        partials.push_back(text);
+    }
+    void ShowRefining(const std::string& text, const std::optional<std::string>&) override {
+        refining_texts.push_back(text);
+    }
+    void ShowFinalCountdown(const std::string& text,
+                            const std::optional<std::string>&,
+                            std::function<void()> on_complete) override {
+        final_countdowns.push_back(text);
+        final_countdown_completion = std::move(on_complete);
+    }
+    void ShowPausedFinal(const std::string& text, const std::optional<std::string>&) override {
+        paused_finals.push_back(text);
+    }
+    void ShowError(const std::string& text,
+                   const std::optional<std::string>&,
+                   std::function<void()> on_complete) override {
+        errors.push_back(text);
+        error_completion = std::move(on_complete);
+    }
+    void ShowCloudUpgrade(const std::string& message,
+                          const std::string& url,
+                          const std::optional<std::string>&) override {
+        cloud_upgrades.push_back(message + "|" + url);
+    }
+    void HideOverlay(std::function<void()> on_hidden = {}) override {
+        ++hide_overlay_count;
+        if (on_hidden) on_hidden();
+    }
+    void ShowSubtitle(const std::string& text,
+                      const std::string& device_id,
+                      OverlayThemeColor color) override {
+        subtitles.push_back(device_id + ":" + text + ":" + OverlayThemeColorName(color));
+    }
+    void HideSubtitles() override {
+        ++hide_subtitles_count;
+    }
+    void ShowNotification(const std::string& title, const std::string& body) override {
+        notifications.push_back(title + ":" + body);
+    }
+    void ShowTimedMessage(const std::string& message, int duration_ms) override {
+        timed_messages.push_back(message + ":" + std::to_string(duration_ms));
+    }
+
+    std::vector<std::string> statuses;
+    std::vector<ConnectedDevice> connected_devices;
+    std::vector<DeviceInfo> device_infos;
+    std::map<std::string, bool> encoder_present_by_device_id;
+    // 网关模式上报（gateway_status）：仅记录，供需要时断言。
+    //（合并接口新增纯虚函数 SetDeviceGatewayMode 的记录字段——自 test_support.h 补齐。）
+    std::map<std::string, bool> gateway_mode_by_device_id;
+    bool last_gateway_mode = false;
+    std::map<std::string, DeviceFirmwareInfo> firmware_info_by_device_id;
+    std::vector<std::string> pairing_errors;
+    std::vector<std::string> firmware_update_prompts;
+    std::vector<std::string> paired_device_ids;
+    std::vector<std::string> partials;
+    std::vector<std::string> refining_texts;
+    std::vector<std::string> cloud_upgrades;
+    std::vector<std::string> final_countdowns;
+    std::vector<std::string> paused_finals;
+    std::vector<std::string> errors;
+    std::vector<std::string> subtitles;
+    std::vector<std::string> notifications;
+    std::vector<std::string> timed_messages;
+    std::function<void()> final_countdown_completion;
+    std::function<void()> error_completion;
+    bool has_recoverable_input_set = false;
+    int show_listening_count = 0;
+    int hide_overlay_count = 0;
+    int hide_subtitles_count = 0;
+};
+
+class FakeInputInjector : public InputInjector {
+public:
+    void Paste(const std::string& text, bool press_enter) override {
+        pasted_text = text;
+        pasted_enter = press_enter;
+    }
+    void SendEnter() override { send_enter_called = true; }
+    void SendArrowDown() override { ++arrow_down_count; }
+    void SendArrowUp() override { ++arrow_up_count; }
+    void SendKeyCombo(const KeySpec& spec) override {
+        sent_key_combos.push_back(spec.display_text);
+    }
+    void MoveMouse(int dx, int dy) override {
+        ++move_mouse_count;
+        total_dx += dx;
+        total_dy += dy;
+    }
+    void ClickLeftButton() override { ++left_click_count; }
+
+    std::string pasted_text;
+    bool pasted_enter = false;
+    bool send_enter_called = false;
+    int arrow_down_count = 0;
+    int arrow_up_count = 0;
+    std::vector<std::string> sent_key_combos;
+    int move_mouse_count = 0;
+    int total_dx = 0;
+    int total_dy = 0;
+    int left_click_count = 0;
+};
+
+// 测试用虚拟麦渲染器：解耦真实 WASAPI，Start 返回可配置结果。
+class FakeVirtualMicRenderer : public IVirtualMicRenderer {
+public:
+    explicit FakeVirtualMicRenderer(bool start_result) : start_result_(start_result) {}
+    bool Start(PcmRingBuffer* ring) override {
+        ++start_count;
+        last_ring = ring;
+        running_ = start_result_;
+        return start_result_;
+    }
+    void Stop() override {
+        ++stop_count;
+        running_ = false;
+    }
+    bool IsRunning() const override { return running_; }
+    std::wstring ActiveDeviceName() const override { return L"FakeDevice"; }
+
+    int start_count = 0;
+    int stop_count = 0;
+    PcmRingBuffer* last_ring = nullptr;  // 最近一次 Start 的 PCM 源（协调器持有，测试只读）
+    bool running_ = false;
+    bool start_result_;
+};
+
+// 测试用 WASAPI 渲染端：解耦真实 COM，记录提交量与样本供断言。
+// NotifyEvent 返回真实 auto-reset event，使 Stop 唤醒测试可验证。
+class FakeWasapiRenderSink : public WasapiRenderSink {
+public:
+    explicit FakeWasapiRenderSink(UINT32 buffer_frames = 800, int channels = 1)
+        : buffer_frames_(buffer_frames), samples_per_frame_(channels) {
+        event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    }
+    ~FakeWasapiRenderSink() override {
+        if (event_) CloseHandle(event_);
+    }
+
+    bool OpenAndInitialize(const IVirtualMicRenderer::Options&) override { ++open_call_count; return open_result_; }
+    UINT32 BufferFrameCount() const override { return buffer_frames_; }
+    bool CurrentPadding(UINT32* out) override { *out = padding_; return true; }
+    bool GetBuffer(UINT32 frames, BYTE** out) override {
+        scratch_.assign(static_cast<std::size_t>(frames) * samples_per_frame_, 0);
+        *out = reinterpret_cast<BYTE*>(scratch_.data());
+        return true;
+    }
+    void ReleaseBuffer(UINT32 frames) override {
+        submitted_frame_counts.push_back(frames);
+        submitted_samples.emplace_back(scratch_);
+    }
+    void Start() override {}
+    void Stop() override {}
+    HANDLE NotifyEvent() override { return event_; }
+
+    // 测试可读写状态。
+    UINT32 padding_ = 0;
+    bool open_result_ = true;
+    int open_call_count = 0;
+    std::vector<UINT32> submitted_frame_counts;
+    std::vector<std::vector<int16_t>> submitted_samples;
+
+private:
+    UINT32 buffer_frames_;
+    int samples_per_frame_;
+    HANDLE event_ = nullptr;
+    std::vector<int16_t> scratch_;
+};
+
+// 计时版 WASAPI sink：模拟设备按实时速率消费 buffer（padding 随时间递减），
+// 用于量化 ring->WASAPI 管道滞留延迟与 device underrun。不启动真实线程，测试
+// 手动驱动 AdvanceTimeUs + RenderPump::PumpOnce 模拟事件驱动消费节奏。
+class TimedFakeSink : public WasapiRenderSink {
+ public:
+    TimedFakeSink(int sample_rate, int buffer_duration_ms, int channels = 1)
+        : sample_rate_(sample_rate),
+          buffer_frames_(static_cast<UINT32>(sample_rate * buffer_duration_ms / 1000)),
+          samples_per_frame_(channels) {
+        event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    }
+    ~TimedFakeSink() override { if (event_) CloseHandle(event_); }
+
+    bool OpenAndInitialize(const IVirtualMicRenderer::Options&) override { return true; }
+    UINT32 BufferFrameCount() const override { return buffer_frames_; }
+    bool CurrentPadding(UINT32* out) override { *out = padding_; return true; }
+    bool GetBuffer(UINT32 frames, BYTE** out) override {
+        scratch_.assign(static_cast<std::size_t>(frames) * samples_per_frame_, 0);
+        *out = reinterpret_cast<BYTE*>(scratch_.data());
+        return true;
+    }
+    void ReleaseBuffer(UINT32 frames) override {
+        padding_ += frames;
+        ++submit_count_;
+    }
+    void Start() override {}
+    void Stop() override {}
+    HANDLE NotifyEvent() override { return event_; }
+
+    // 模拟设备消费 us 微秒音频：padding 递减。消费量超过 padding 即 device underrun
+    //（设备取音时 buffer 空，输出静音/破音），是 buffer_duration_ms 过小的直接风险信号。
+    void AdvanceTimeUs(long long us) {
+        const long long consume = static_cast<long long>(sample_rate_) * us / 1000000;
+        if (consume > static_cast<long long>(padding_)) {
+            ++device_underrun_count_;
+            padding_ = 0;
+        } else {
+            padding_ -= static_cast<UINT32>(consume);
+        }
+    }
+
+    int sample_rate_ = 16000;
+    UINT32 buffer_frames_ = 0;
+    UINT32 padding_ = 0;
+    int samples_per_frame_ = 1;
+    int submit_count_ = 0;
+    int device_underrun_count_ = 0;
+
+ private:
+    HANDLE event_ = nullptr;
+    std::vector<int16_t> scratch_;
+};
+
+// 测试用第三方输入法热键：解耦 SendInput，SendDown/SendUp/SendClick 恒成功。
+class FakeWechatInputMethodHotkey : public IWechatInputMethodHotkey {
+public:
+    explicit FakeWechatInputMethodHotkey(const std::string& = {}) {}
+    bool IsValid() const override { return true; }
+    bool SendDown() const override {
+        ++send_down_count;
+        return true;
+    }
+    bool SendUp() const override {
+        ++send_up_count;
+        return true;
+    }
+    bool SendClick() const override {
+        ++send_click_count;
+        return true;
+    }
+
+    mutable int send_down_count = 0;
+    mutable int send_up_count = 0;
+    mutable int send_click_count = 0;
+};
+
+// 探测前台进程是否高权限的 fake：可控返回值与进程名，支持序列（换进程名再提醒测试用）。
+class FakeForegroundProcessProbe : public IForegroundProcessProbe {
+public:
+    // 单值模式：每次探测返回 elevated 与 process_name。
+    FakeForegroundProcessProbe(bool elevated, std::wstring process_name = L"")
+        : elevated_(elevated), names_{std::move(process_name)} {}
+    // 序列模式：第 N 次探测返回 names_[N]（超出取最后一个），elevated 为 !names_.empty()。
+    explicit FakeForegroundProcessProbe(std::vector<std::wstring> names)
+        : elevated_(!names.empty()), names_(std::move(names)) {}
+    bool IsForegroundHigherIntegrity(std::wstring& process_name) override {
+        if (!elevated_) return false;
+        const auto idx = static_cast<std::size_t>(
+            std::min(call_count_, static_cast<int>(names_.size()) - 1));
+        process_name = names_[idx];
+        ++call_count_;
+        return true;
+    }
+    bool elevated_ = false;
+    std::vector<std::wstring> names_;
+    int call_count_ = 0;
+};
+
+// 宽字符串大小写不敏感子串匹配（Fake 设备枚举用，仅 ASCII 足够匹配 "CABLE Output"）。
+bool ContainsWide(std::wstring_view haystack, std::wstring_view needle) {
+    if (needle.empty()) return true;
+    if (needle.size() > haystack.size()) return false;
+    auto lower = [](wchar_t c) {
+        return (c >= L'A' && c <= L'Z') ? static_cast<wchar_t>(c | 0x20) : c;
+    };
+    for (std::size_t i = 0; i <= haystack.size() - needle.size(); ++i) {
+        bool match = true;
+        for (std::size_t j = 0; j < needle.size(); ++j) {
+            if (lower(haystack[i + j]) != lower(needle[j])) { match = false; break; }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
+// 测试用默认录音设备切换器：解耦真实 IPolicyConfig COM，记录调用供断言。
+class FakeDefaultAudioDeviceController : public IDefaultAudioDeviceController {
+public:
+    struct SetCall {
+        std::wstring device_id;
+        std::vector<DeviceRole> roles;
+    };
+
+    // 预设状态：当前默认设备与设备枚举列表。
+    std::optional<AudioDeviceInfo> default_capture;
+    std::vector<AudioDeviceInfo> capture_devices;
+    bool set_result = true;
+
+    std::optional<AudioDeviceInfo> GetDefaultCapture(DeviceRole) override {
+        ++get_call_count;
+        return default_capture;
+    }
+    std::optional<AudioDeviceInfo> FindCaptureByName(std::wstring_view sub) override {
+        ++find_call_count;
+        for (const auto& d : capture_devices) {
+            if (ContainsWide(d.friendly_name, sub)) return d;
+        }
+        return std::nullopt;
+    }
+    bool SetDefaultCapture(const std::wstring& id, std::vector<DeviceRole> roles) override {
+        ++set_call_count;
+        set_calls.push_back({id, roles});
+        if (set_result) {
+            for (const auto& d : capture_devices) {
+                if (d.id == id) { default_capture = d; break; }
+            }
+        }
+        return set_result;
+    }
+
+    int get_call_count = 0;
+    int find_call_count = 0;
+    int set_call_count = 0;
+    std::vector<SetCall> set_calls;
+};
+
+StateEvent ButtonEvent(const std::string& event,
+                       const std::string& button,
+                       std::optional<std::uint32_t> session_id = std::nullopt,
+                       std::optional<std::uint32_t> duration_ms = std::nullopt) {
+    StateEvent state_event;
+    state_event.event = event;
+    state_event.button = button;
+    state_event.session_id = session_id;
+    state_event.duration_ms = duration_ms;
+    return state_event;
+}
+
+// 构造双击事件（固件上报的 {"event":"button_double_click","button":"..."}）。
+StateEvent DoubleClickEvent(const std::string& button) {
+    StateEvent state_event;
+    state_event.event = "button_double_click";
+    state_event.button = button;
+    return state_event;
+}
+
+// 构造敲击事件（固件上报的 {"event":"tap","kind":"double"}）。
+StateEvent TapEvent(const std::string& kind = "double") {
+    StateEvent state_event;
+    state_event.event = "tap";
+    state_event.button = kind;  // 复用 button 字段承载 kind，与协议解析一致
+    return state_event;
+}
+
+// 构造编码器旋转事件（固件上报的 {"event":"encoder_rotate","direction":"cw","steps":2}）。
+StateEvent EncoderRotateEvent(const std::string& direction, std::uint32_t steps) {
+    StateEvent state_event;
+    state_event.event = "encoder_rotate";
+    state_event.direction = direction;
+    state_event.steps = steps;
+    return state_event;
+}
+
+// 构造编码器按键事件（固件上报带 "source":"encoder"）。
+StateEvent EncoderButtonEvent(const std::string& event,
+                              std::optional<std::uint32_t> session_id = std::nullopt) {
+    StateEvent state_event;
+    state_event.event = event;
+    state_event.button = "primary";
+    state_event.session_id = session_id;
+    state_event.source = "encoder";
+    return state_event;
+}
+
+AudioFrame AudioDataFrame(std::uint32_t session_id, std::uint32_t seq, bool is_end = false) {
+    AudioFrame frame;
+    frame.session_id = session_id;
+    frame.seq = seq;
+    frame.flags = is_end ? 0x02 : 0;
+    frame.payload = {1, 2, 3, 4};
+    return frame;
+}
+
+AudioFrame EmptyEndFrame(std::uint32_t session_id, std::uint32_t seq) {
+    AudioFrame frame;
+    frame.session_id = session_id;
+    frame.seq = seq;
+    frame.flags = 0x02;
+    return frame;
+}
+
+bool HasUiState(const FakeBleCentral& ble, const std::string& state, const std::string& device_id) {
+    return std::any_of(ble.sent_ui_states.begin(), ble.sent_ui_states.end(),
+                       [&](const SentUiState& sent) {
+                           return sent.state == state &&
+                                  sent.device_id.has_value() &&
+                                  *sent.device_id == device_id;
+                       });
+}
+
+bool HasUiStateText(const FakeBleCentral& ble,
+                    const std::string& state,
+                    const std::string& text,
+                    const std::string& device_id) {
+    return std::any_of(ble.sent_ui_states.begin(), ble.sent_ui_states.end(),
+                       [&](const SentUiState& sent) {
+                           return sent.state == state &&
+                                  sent.text == text &&
+                                  sent.device_id.has_value() &&
+                                  *sent.device_id == device_id;
+                       });
+}
+
+void TestDeviceIds() {
+    assert(BleProtocol::NormalizeDeviceId("vs-c3d8") == "C3D8");
+    assert(BleProtocol::NormalizeDeviceId("09af") == "09AF");
+    assert(!BleProtocol::DeviceIdFromName("Other").has_value());
+    assert(BleProtocol::DeviceIdFromName("VS-C3D8").value() == "C3D8");
+
+    const ByteVector complete_name_ad = {0x02, 0x01, 0x06, 0x08, 0x09, 'V', 'S', '-', 'C', '3', 'D', '8'};
+    assert(BleProtocol::LocalNameFromAdvertisementData(complete_name_ad).value() == "VS-C3D8");
+    const ByteVector shortened_name_ad = {0x08, 0x08, 'V', 'S', '-', 'A', '1', 'B', '2'};
+    assert(BleProtocol::LocalNameFromAdvertisementData(shortened_name_ad).value() == "VS-A1B2");
+    const ByteVector malformed_ad = {0x08, 0x09, 'V', 'S'};
+    assert(!BleProtocol::LocalNameFromAdvertisementData(malformed_ad).has_value());
+    const ByteVector service_uuid_ad = {
+        0x02, 0x01, 0x06,
+        0x11, 0x07,
+        0x00, 0x51, 0xfc, 0xea, 0x3c, 0x3a, 0xf7, 0x88,
+        0x23, 0x4b, 0x6f, 0x6e, 0x84, 0x0b, 0x2f, 0x8f,
+    };
+    assert(BleProtocol::HasVoiceStickServiceUuid(service_uuid_ad));
+    assert(!BleProtocol::HasVoiceStickServiceUuid(complete_name_ad));
+    assert(BleProtocol::DeviceIdFromBluetoothAddress(0xAABBCCDDEEFF) == "EEFF");
+}
+
+void TestPairDeviceHelpers() {
+    assert(ParseManualPairDeviceId("abcd").value() == "ABCD");
+    assert(ParseManualPairDeviceId("VS-abcd").value() == "ABCD");
+    assert(ParseManualPairDeviceId(" vs-09af ").value() == "09AF");
+    assert(ParseManualPairDeviceId("RC-3a7f").value() == "3A7F");
+    assert(!ParseManualPairDeviceId("VS-123").has_value());
+    assert(!ParseManualPairDeviceId("VoiceStick").has_value());
+
+    // 异步配对消息的地址匹配：陈旧消息（上一目标迟到回调）地址不符即丢弃。
+    assert(MatchesPendingPairAddress(0xAABBCCDDEEFF, 0xAABBCCDDEEFF));
+    assert(!MatchesPendingPairAddress(0x112233445566, 0xAABBCCDDEEFF));
+    assert(!MatchesPendingPairAddress(0, 0xAABBCCDDEEFF));
+    assert(!MatchesPendingPairAddress(0xAABBCCDDEEFF, 0));
+
+    PairingCandidate ready;
+    ready.device_id = "C3D8";
+    ready.display_name = "VS-C3D8";
+    ready.bluetooth_address = 0xAABBCCDDEEFF;
+    ready.id_source = PairingCandidateIdSource::kName;
+    assert(CandidateDisplayTitle(ready) == "VS-C3D8");
+    assert(CanPairCandidate(ready));
+
+    PairingCandidate existing = ready;
+    existing.is_existing_device = true;
+    assert(CandidateDisplayTitle(existing) == "VS-C3D8 (paired)");
+    assert(!CanPairCandidate(existing));
+
+    PairingCandidate temporary = ready;
+    temporary.device_id = "EEFF";
+    temporary.display_name.clear();
+    temporary.id_source = PairingCandidateIdSource::kAddressFallback;
+    temporary.is_temporary_candidate = true;
+    assert(CandidateDisplayTitle(temporary) == "VoiceStick (waiting for name)");
+    assert(!CanPairCandidate(temporary));
+
+    std::vector<PairingCandidate> candidates;
+    MergePairingCandidate(&candidates, temporary);
+    assert(candidates.size() == 1);
+    assert(VisiblePairingCandidates(candidates, {}, 1000, 3000).empty());
+    ready.bluetooth_address = 0x112233445566;
+    ready.device_id = temporary.device_id;
+    ready.display_name = "VS-EEFF";
+    MergePairingCandidate(&candidates, ready);
+    assert(candidates.size() == 1);
+    assert(!candidates.front().is_temporary_candidate);
+    assert(candidates.front().display_name == "VS-EEFF");
+
+    PairingCandidate late_temporary = temporary;
+    late_temporary.bluetooth_address = 0x66778899AABB;
+    MergePairingCandidate(&candidates, late_temporary);
+    assert(candidates.size() == 1);
+    assert(!candidates.front().is_temporary_candidate);
+
+    candidates.push_back(late_temporary);
+    std::vector<RetainedPairingCandidate> retained;
+    RetainNamedPairingCandidate(&retained, candidates.front(), 1000);
+    const auto visible = VisiblePairingCandidates(candidates, retained, 2000, 3000);
+    assert(visible.size() == 1);
+    assert(!visible.front().is_temporary_candidate);
+
+    std::vector<PairingCandidate> temporary_only{late_temporary};
+    const auto retained_visible = VisiblePairingCandidates(temporary_only, retained, 2500, 3000);
+    assert(retained_visible.size() == 1);
+    assert(retained_visible.front().display_name == "VS-EEFF");
+    assert(VisiblePairingCandidates(temporary_only, retained, 5001, 3000).empty());
+
+    // 回归用例：固件名称在 SCAN_RSP、ADV 只带 service UUID（见 voice_ble.c），
+    // 同一物理地址会交替出现命名候选（广播名 VS-D63C）与临时候选（MAC 低位
+    // VS-D63E）。同地址合并时命名候选必须优先，后到的临时包不得覆盖已确认的
+    // 命名候选——否则用户看到列表是 D63C、点配对取到的却是临时候选 D63E，
+    // 配对对话框命中 "waiting for name" 分支不发起连接，设备卡 Pairing。
+    {
+        std::vector<PairingCandidate> merged;
+        PairingCandidate named;
+        named.bluetooth_address = 0x70041DD5D63E;
+        named.device_id = "D63C";
+        named.display_name = "VS-D63C";
+        named.id_source = PairingCandidateIdSource::kName;
+        named.rssi = -68;
+        MergePairingCandidate(&merged, named);
+
+        PairingCandidate later_temporary = named;
+        later_temporary.device_id = "D63E";
+        later_temporary.display_name.clear();
+        later_temporary.id_source = PairingCandidateIdSource::kAddressFallback;
+        later_temporary.is_temporary_candidate = true;
+        later_temporary.rssi = -66;
+        MergePairingCandidate(&merged, later_temporary);
+
+        assert(merged.size() == 1);
+        assert(!merged.front().is_temporary_candidate);
+        assert(merged.front().device_id == "D63C");
+        assert(merged.front().display_name == "VS-D63C");
+
+        // 反向到达顺序：先临时后命名，命名应正常替换临时。
+        std::vector<PairingCandidate> merged_reverse;
+        MergePairingCandidate(&merged_reverse, later_temporary);
+        MergePairingCandidate(&merged_reverse, named);
+        assert(merged_reverse.size() == 1);
+        assert(!merged_reverse.front().is_temporary_candidate);
+        assert(merged_reverse.front().device_id == "D63C");
+    }
+}
+
+void TestPairingAdvertisementClassify() {
+    // 名称命中 VS- 前缀 → StickS3 / kName
+    auto match = ClassifyPairingAdvertisement("VS-C3D8", true, false, 0xAABBCCDDEEFF);
+    assert(match.has_value());
+    assert(match->device_id == "C3D8");
+    assert(match->device_class == DeviceClass::kStickS3);
+    assert(match->id_source == PairingCandidateIdSource::kName);
+    assert(!match->is_temporary);
+
+    // 名称命中 RC- 前缀 → 小米遥控器 / kName
+    match = ClassifyPairingAdvertisement("RC-3A7F", false, false, 0xAABBCCDDEEFF);
+    assert(match.has_value());
+    assert(match->device_id == "3A7F");
+    assert(match->device_class == DeviceClass::kXiaomiRemote2Pro);
+    assert(match->id_source == PairingCandidateIdSource::kName);
+    assert(!match->is_temporary);
+
+    // 小米名称白名单（中文名，无内嵌 ID）→ 地址低 16 位 / 非临时
+    match = ClassifyPairingAdvertisement("小米蓝牙语音遥控器", false, false, 0xAABBCCDD3A7F);
+    assert(match.has_value());
+    assert(match->device_id == "3A7F");
+    assert(match->device_class == DeviceClass::kXiaomiRemote2Pro);
+    assert(match->id_source == PairingCandidateIdSource::kAddressFallback);
+    assert(!match->is_temporary);
+
+    // 小米名称白名单（英文名）
+    match = ClassifyPairingAdvertisement("Xiaomi Bluetooth Remote 2 Pro", false, false,
+                                         0xAABBCCDD3A7F);
+    assert(match.has_value());
+    assert(match->device_class == DeviceClass::kXiaomiRemote2Pro);
+    assert(match->device_id == "3A7F");
+
+    // 白名单名 "RC001"（非 RC-XXXX 前缀模式）→ 不误中名内 ID，走地址兜底
+    match = ClassifyPairingAdvertisement("RC001", false, false, 0xAABBCCDDEEFF);
+    assert(match.has_value());
+    assert(match->device_class == DeviceClass::kXiaomiRemote2Pro);
+    assert(match->device_id == "EEFF");
+    assert(match->id_source == PairingCandidateIdSource::kAddressFallback);
+
+    // 仅 ATVV service UUID（无名称）→ 小米地址兜底候选
+    match = ClassifyPairingAdvertisement("", false, true, 0xAABBCCDDEEFF);
+    assert(match.has_value());
+    assert(match->device_id == "EEFF");
+    assert(match->device_class == DeviceClass::kXiaomiRemote2Pro);
+    assert(!match->is_temporary);
+
+    // 仅 VoiceStick service UUID（无名称）→ StickS3 临时候选
+    match = ClassifyPairingAdvertisement("", true, false, 0xAABBCCDDEEFF);
+    assert(match.has_value());
+    assert(match->device_id == "EEFF");
+    assert(match->device_class == DeviceClass::kStickS3);
+    assert(match->id_source == PairingCandidateIdSource::kAddressFallback);
+    assert(match->is_temporary);
+
+    // VS service 与 ATVV 同时存在且无名称：VoiceStick service 优先（固件 SCAN_RSP 拆分场景）
+    match = ClassifyPairingAdvertisement("", true, true, 0xAABBCCDDEEFF);
+    assert(match.has_value());
+    assert(match->device_class == DeviceClass::kStickS3);
+    assert(match->is_temporary);
+
+    // 无关广告 → 不识别
+    assert(!ClassifyPairingAdvertisement("", false, false, 0xAABBCCDDEEFF).has_value());
+    assert(!ClassifyPairingAdvertisement("Some Headphones", false, false, 0xAABBCCDDEEFF).has_value());
+}
+
+void TestAudioFrameParsing() {
+    ByteVector frame = {1, 0x01, 16, 0};
+    AppendLe32(frame, 123);
+    AppendLe32(frame, 7);
+    frame.push_back(0x03);
+    frame.push_back(0);
+    AppendLe16(frame, 3);
+    frame.push_back(10);
+    frame.push_back(11);
+    frame.push_back(12);
+    auto parsed = BleProtocol::ParseAudioFrame(frame);
+    assert(parsed.has_value());
+    assert(parsed->session_id == 123);
+    assert(parsed->seq == 7);
+    assert(parsed->IsStart());
+    assert(parsed->IsEnd());
+    assert(parsed->payload.size() == 3);
+}
+
+void TestBleControlPayloads() {
+    auto battery_request = BleProtocol::BatteryStatusRequestPayload();
+    assert(std::string(battery_request.begin(), battery_request.end()) == "{\"event\":\"battery_status_request\"}");
+
+    // 敲击灵敏度 1~10 档，桌面端下发数值 level。
+    auto tap_sens = BleProtocol::TapSensitivityPayload(5);
+    assert(std::string(tap_sens.begin(), tap_sens.end()) == "{\"event\":\"tap_sensitivity\",\"level\":5}");
+    auto tap_sens_high = BleProtocol::TapSensitivityPayload(10);
+    assert(std::string(tap_sens_high.begin(), tap_sens_high.end()) == "{\"event\":\"tap_sensitivity\",\"level\":10}");
+
+    // 体感鼠标开关下发。
+    auto air_on = BleProtocol::AirMouseEnabledPayload(true);
+    assert(std::string(air_on.begin(), air_on.end()) == "{\"event\":\"air_mouse_enabled\",\"enabled\":true}");
+    auto air_off = BleProtocol::AirMouseEnabledPayload(false);
+    assert(std::string(air_off.begin(), air_off.end()) == "{\"event\":\"air_mouse_enabled\",\"enabled\":false}");
+}
+
+void TestMotionFrameParsing() {
+    // 合法 6 字节帧：version=1, type=0x11, dx=+100, dy=-50（小端）。
+    ByteVector frame = {1, 0x11};
+    AppendLe16(frame, static_cast<std::uint16_t>(static_cast<std::int16_t>(100)));
+    AppendLe16(frame, static_cast<std::uint16_t>(static_cast<std::int16_t>(-50)));
+    auto motion = BleProtocol::ParseMotionFrame(frame);
+    assert(motion.has_value());
+    assert(motion->dx == 100);
+    assert(motion->dy == -50);
+
+    // version 错。
+    ByteVector bad_version = frame;
+    bad_version[0] = 2;
+    assert(!BleProtocol::ParseMotionFrame(bad_version).has_value());
+
+    // type 错（0x10 是 JSON 状态帧，不是 motion）。
+    ByteVector bad_type = frame;
+    bad_type[1] = 0x10;
+    assert(!BleProtocol::ParseMotionFrame(bad_type).has_value());
+
+    // 长度不足。
+    ByteVector too_short = {1, 0x11, 0x00};
+    assert(!BleProtocol::ParseMotionFrame(too_short).has_value());
+
+    // JSON 状态帧不应被误解析为 motion。
+    ByteVector state_frame = {1, 0x10, 0x02, 0x00, '{', '}'};
+    assert(!BleProtocol::ParseMotionFrame(state_frame).has_value());
+}
+
+void TestStateParsing() {
+    const std::string json = "{\"event\":\"button_down\",\"button\":\"primary\",\"session_id\":42}";
+    ByteVector frame = {1, 0x10};
+    AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
+    frame.insert(frame.end(), json.begin(), json.end());
+    auto event = BleProtocol::ParseStateEvent(frame);
+    assert(event.has_value());
+    assert(event->event == "button_down");
+    assert(event->button == "primary");
+    assert(event->session_id == 42);
+}
+
+void TestEncoderRotateStateParsing() {
+    const std::string json = "{\"event\":\"encoder_rotate\",\"direction\":\"ccw\",\"steps\":3}";
+    ByteVector frame = {1, 0x10};
+    AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
+    frame.insert(frame.end(), json.begin(), json.end());
+    auto event = BleProtocol::ParseStateEvent(frame);
+    assert(event.has_value());
+    assert(event->event == "encoder_rotate");
+    assert(event->direction == "ccw");
+    assert(event->steps.has_value());
+    assert(event->steps.value() == 3);
+
+    // 缺字段容错：direction 为空串、steps 为 nullopt，不影响整体解析。
+    const std::string sparse = "{\"event\":\"encoder_rotate\"}";
+    ByteVector sparse_frame = {1, 0x10};
+    AppendLe16(sparse_frame, static_cast<std::uint16_t>(sparse.size()));
+    sparse_frame.insert(sparse_frame.end(), sparse.begin(), sparse.end());
+    auto sparse_event = BleProtocol::ParseStateEvent(sparse_frame);
+    assert(sparse_event.has_value());
+    assert(sparse_event->event == "encoder_rotate");
+    assert(sparse_event->direction.empty());
+    assert(!sparse_event->steps.has_value());
+}
+
+void TestEncoderStatusParsing() {
+    // encoder_status 独立小帧：{"event":"encoder_status","present":true}。
+    const std::string json = "{\"event\":\"encoder_status\",\"present\":true}";
+    ByteVector frame = {1, 0x10};
+    AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
+    frame.insert(frame.end(), json.begin(), json.end());
+    auto event = BleProtocol::ParseStateEvent(frame);
+    assert(event.has_value());
+    assert(event->event == "encoder_status");
+    assert(event->encoder_present.has_value());
+    assert(event->encoder_present.value() == true);
+
+    // present=false（未装编码器）。
+    const std::string absent = "{\"event\":\"encoder_status\",\"present\":false}";
+    ByteVector absent_frame = {1, 0x10};
+    AppendLe16(absent_frame, static_cast<std::uint16_t>(absent.size()));
+    absent_frame.insert(absent_frame.end(), absent.begin(), absent.end());
+    auto absent_event = BleProtocol::ParseStateEvent(absent_frame);
+    assert(absent_event.has_value());
+    assert(absent_event->encoder_present.has_value());
+    assert(absent_event->encoder_present.value() == false);
+
+    // 缺 present 字段容错：解析为 nullopt，不影响整体解析。
+    const std::string sparse = "{\"event\":\"encoder_status\"}";
+    ByteVector sparse_frame = {1, 0x10};
+    AppendLe16(sparse_frame, static_cast<std::uint16_t>(sparse.size()));
+    sparse_frame.insert(sparse_frame.end(), sparse.begin(), sparse.end());
+    auto sparse_event = BleProtocol::ParseStateEvent(sparse_frame);
+    assert(sparse_event.has_value());
+    assert(!sparse_event->encoder_present.has_value());
+
+    // 其它事件不携带该字段（老固件无 encoder_status 事件，消费端按「在线」处理）。
+    const std::string legacy =
+        "{\"event\":\"device_info\",\"hardware\":\"stick_s3\",\"firmware_version\":\"2.2.0\"}";
+    ByteVector legacy_frame = {1, 0x10};
+    AppendLe16(legacy_frame, static_cast<std::uint16_t>(legacy.size()));
+    legacy_frame.insert(legacy_frame.end(), legacy.begin(), legacy.end());
+    auto legacy_event = BleProtocol::ParseStateEvent(legacy_frame);
+    assert(legacy_event.has_value());
+    assert(!legacy_event->encoder_present.has_value());
+
+    // DeviceInfo 默认 encoder_present=true（未收到 encoder_status 时保持设置可见）。
+    DeviceInfo default_info;
+    assert(default_info.encoder_present);
+}
+
+void TestStateEventSourceParsing() {
+    // 编码器按键事件带 source 字段。
+    const std::string json = "{\"event\":\"button_click\",\"button\":\"primary\",\"duration_ms\":131,\"source\":\"encoder\"}";
+    ByteVector frame = {1, 0x10};
+    AppendLe16(frame, static_cast<std::uint16_t>(json.size()));
+    frame.insert(frame.end(), json.begin(), json.end());
+    auto event = BleProtocol::ParseStateEvent(frame);
+    assert(event.has_value());
+    assert(event->event == "button_click");
+    assert(event->source == "encoder");
+
+    // 物理键事件不带 source：解析为空串（缺省=物理键）。
+    const std::string plain = "{\"event\":\"button_down\",\"button\":\"primary\",\"session_id\":42}";
+    ByteVector plain_frame = {1, 0x10};
+    AppendLe16(plain_frame, static_cast<std::uint16_t>(plain.size()));
+    plain_frame.insert(plain_frame.end(), plain.begin(), plain.end());
+    auto plain_event = BleProtocol::ParseStateEvent(plain_frame);
+    assert(plain_event.has_value());
+    assert(plain_event->source.empty());
+}
+
+void TestOggMuxer() {
+    OggOpusMuxer muxer(16000, 1);
+    ByteVector opus = {1, 2, 3, 4};
+    auto ogg = muxer.Append(opus, false);
+    assert(ogg.size() > 64);
+    assert(std::string(reinterpret_cast<const char*>(ogg.data()), 4) == "OggS");
+    auto tail = muxer.Finish();
+    assert(std::string(reinterpret_cast<const char*>(tail.data()), 4) == "OggS");
+}
+
+void TestAsrProtocol() {
+    AppConfig config = AppConfig::Defaults();
+    config.asr_hotwords = {"小智", "VoiceStick"};
+    auto event_payload = [](const ByteVector& frame, const std::string& session_id) {
+        const std::size_t payload_size_offset = 12 + session_id.size();
+        const auto payload_size = ReadBe32(std::span(frame.data() + payload_size_offset, 4));
+        const std::size_t payload_offset = payload_size_offset + 4;
+        assert(payload_size == frame.size() - payload_offset);
+        return std::string(reinterpret_cast<const char*>(frame.data() + payload_offset),
+                           frame.size() - payload_offset);
+    };
+
+    const std::string payload_session_id = "payload-session";
+    auto request = AsrProtocol::MakeStartSessionFrame(config, payload_session_id);
+    assert(request.size() > 16 + payload_session_id.size());
+    assert(request[0] == 0x11);
+    assert((request[1] >> 4) == 0x01);
+    assert(ReadBe32(std::span(request.data() + 4, 4)) == 100);
+    const auto payload = event_payload(request, payload_session_id);
+    assert(payload.find("\"corpus\"") != std::string::npos);
+    assert(payload.find("\\\"hotwords\\\"") != std::string::npos);
+    assert(payload.find("\\\"word\\\":\\\"VoiceStick\\\"") != std::string::npos);
+
+    const std::string body =
+        "{\"error\":\"invalid_token\",\"message\":\"VoiceStick Cloud API key is invalid.\","
+        "\"upgrade_url\":\"https://example.test/upgrade\"}";
+    ByteVector response = {0x11, 0xf0, 0x10, 0x00};
+    AppendBe32(response, 44002);
+    AppendBe32(response, static_cast<std::uint32_t>(body.size()));
+    response.insert(response.end(), body.begin(), body.end());
+    auto parsed = AsrProtocol::ParseResponse(response);
+    assert(parsed.has_value());
+    assert(parsed->is_error);
+    assert(parsed->text == "ASR 44002: VoiceStick Cloud API key is invalid.");
+    assert(parsed->upgrade_url && *parsed->upgrade_url == "https://example.test/upgrade");
+
+    auto start_connection = AsrProtocol::MakeStartConnectionFrame(config);
+    assert(start_connection.size() > 12);
+    assert((start_connection[1] >> 4) == 0x01);
+    assert((start_connection[1] & 0x0f) == 0x04);
+    assert(ReadBe32(std::span(start_connection.data() + 4, 4)) == 1);
+
+    const std::string session_id = "session-1";
+    auto start_session = AsrProtocol::MakeStartSessionFrame(config, session_id);
+    assert(ReadBe32(std::span(start_session.data() + 4, 4)) == 100);
+    assert(ReadBe32(std::span(start_session.data() + 8, 4)) == session_id.size());
+    assert(std::string(reinterpret_cast<const char*>(start_session.data() + 12),
+                       session_id.size()) == session_id);
+
+    ByteVector opus = {1, 2, 3};
+    auto task = AsrProtocol::MakeTaskRequestFrame(opus, session_id);
+    assert((task[1] >> 4) == 0x02);
+    assert(ReadBe32(std::span(task.data() + 4, 4)) == 200);
+
+    const std::string event_body = "{\"result\":{\"text\":\"hi\"}}";
+    ByteVector event_response = {0x11, 0x94, 0x10, 0x00};
+    AppendBe32(event_response, 451);
+    AppendBe32(event_response, static_cast<std::uint32_t>(session_id.size()));
+    event_response.insert(event_response.end(), session_id.begin(), session_id.end());
+    AppendBe32(event_response, static_cast<std::uint32_t>(event_body.size()));
+    event_response.insert(event_response.end(), event_body.begin(), event_body.end());
+    auto parsed_event = AsrProtocol::ParseEventResponse(event_response);
+    assert(parsed_event.has_value());
+    assert(parsed_event->event == AsrEvent::kAsrResponse);
+    assert(parsed_event->session_id == session_id);
+    assert(AsrProtocol::ExtractTranscript(parsed_event->payload_text) == "hi");
+
+    AsrSessionOptions options;
+    options.hotwords = {"VoiceStick"};
+    options.show_utterances = true;
+    options.result_type = AsrResultType::kSingle;
+    const std::string utterance_session_id = "utterance-session";
+    auto utterance_request = AsrProtocol::MakeStartSessionFrame(config, utterance_session_id, options);
+    const auto utterance_payload = event_payload(utterance_request, utterance_session_id);
+    assert(utterance_payload.find("\"show_utterances\":true") != std::string::npos);
+    assert(utterance_payload.find("\"result_type\":\"single\"") != std::string::npos);
+
+    const std::string segment_json =
+        "{\"result\":{\"text\":\"hello world\",\"utterances\":["
+        "{\"text\":\"hello\",\"definite\":true,\"start_time\":0,\"end_time\":500},"
+        "{\"text\":\"world\",\"definite\":false,\"start_time\":500,\"end_time\":900}]}}";
+    auto segments = AsrProtocol::ExtractSegments(segment_json);
+    assert(segments.size() == 2);
+    assert(segments[0].text == "hello");
+    assert(segments[0].definite);
+    std::set<std::string> emitted;
+    auto definite = AsrProtocol::ExtractNewDefiniteSegments(segment_json, &emitted);
+    assert(definite.size() == 1);
+    assert(AsrProtocol::ExtractNewDefiniteSegments(segment_json, &emitted).empty());
+}
+
+void TestAsrHotwordCorpusBudget() {
+    // token 估算：CJK 每字 1，ASCII 每 3 字符 1。
+    assert(AsrProtocol::EstimateHotwordTokens("") == 0);
+    assert(AsrProtocol::EstimateHotwordTokens("小智") == 2);
+    assert(AsrProtocol::EstimateHotwordTokens("AGENTS.md") == 3);
+    assert(AsrProtocol::EstimateHotwordTokens("VoiceStick") == 4);
+    assert(AsrProtocol::EstimateHotwordTokens("Expe 记忆") == 4);
+    assert(AsrProtocol::EstimateHotwordTokens("a") == 1);
+
+    // 单词超 kHotwordMaxWordTokens 的被丢弃，其余保持顺序。
+    const std::string too_long(40, 'x');  // ceil(40/3)=14 tokens
+    auto fitted = AsrProtocol::FitHotwordsToCorpusBudget({"小智", too_long, "VoiceStick"});
+    assert((fitted == std::vector<std::string>{"小智", "VoiceStick"}));
+
+    // 累计超预算的词被丢弃，预算内的保留且顺序不变。
+    std::vector<std::string> many;
+    for (int i = 0; i < 30; ++i) many.push_back("热词编号" + std::to_string(i));  // 每个 4+1~2 tokens
+    auto trimmed = AsrProtocol::FitHotwordsToCorpusBudget(many);
+    assert(trimmed.size() < many.size());
+    int used = 0;
+    for (const auto& word : trimmed) used += AsrProtocol::EstimateHotwordTokens(word);
+    assert(used <= AsrProtocol::kHotwordCorpusTokenBudget);
+    for (std::size_t i = 0; i < trimmed.size(); ++i) assert(trimmed[i] == many[i]);
+
+    // payload 集成：超预算的词不进入 corpus，预算内的保留。
+    AppConfig config = AppConfig::Defaults();
+    config.asr_hotwords = {"AGENTS.md", too_long, "CLAUDE.md"};
+    const std::string session_id = "budget-session";
+    auto frame = AsrProtocol::MakeStartSessionFrame(config, session_id);
+    const std::size_t payload_size_offset = 12 + session_id.size();
+    const auto payload_size = ReadBe32(std::span(frame.data() + payload_size_offset, 4));
+    const std::string payload(reinterpret_cast<const char*>(frame.data() + payload_size_offset + 4),
+                              payload_size);
+    assert(payload.find("\\\"word\\\":\\\"AGENTS.md\\\"") != std::string::npos);
+    assert(payload.find("\\\"word\\\":\\\"CLAUDE.md\\\"") != std::string::npos);
+    assert(payload.find(too_long) == std::string::npos);
+
+    // 全部超预算时不产出 corpus 字段。
+    config.asr_hotwords = {too_long};
+    auto empty_frame = AsrProtocol::MakeStartSessionFrame(config, session_id);
+    const auto empty_size = ReadBe32(std::span(empty_frame.data() + payload_size_offset, 4));
+    const std::string empty_payload(
+        reinterpret_cast<const char*>(empty_frame.data() + payload_size_offset + 4), empty_size);
+    assert(empty_payload.find("\"corpus\"") == std::string::npos);
+
+    // 自学习平台词表 ID 进入 corpus，与热词 context 共存。
+    config.volcengine_boosting_table_id = "boost-123";
+    config.volcengine_correct_table_id = "correct-456";
+    config.asr_hotwords = {"AGENTS.md"};
+    auto table_frame = AsrProtocol::MakeStartSessionFrame(config, session_id);
+    const auto table_size = ReadBe32(std::span(table_frame.data() + payload_size_offset, 4));
+    const std::string table_payload(
+        reinterpret_cast<const char*>(table_frame.data() + payload_size_offset + 4), table_size);
+    assert(table_payload.find("\"boosting_table_id\":\"boost-123\"") != std::string::npos);
+    assert(table_payload.find("\"correct_table_id\":\"correct-456\"") != std::string::npos);
+    assert(table_payload.find("\\\"word\\\":\\\"AGENTS.md\\\"") != std::string::npos);
+
+    // 仅词表无热词时也有 corpus，且无 context 字段；ID 为空则不出现字段。
+    config.asr_hotwords = {};
+    config.volcengine_correct_table_id = "";
+    auto table_only_frame = AsrProtocol::MakeStartSessionFrame(config, session_id);
+    const auto table_only_size = ReadBe32(std::span(table_only_frame.data() + payload_size_offset, 4));
+    const std::string table_only_payload(
+        reinterpret_cast<const char*>(table_only_frame.data() + payload_size_offset + 4),
+        table_only_size);
+    assert(table_only_payload.find("\"boosting_table_id\":\"boost-123\"") != std::string::npos);
+    assert(table_only_payload.find("\"correct_table_id\"") == std::string::npos);
+    assert(table_only_payload.find("\"context\"") == std::string::npos);
+}
+
+void TestHotwordCategories() {
+    // 预置分类：默认（空名）+ 语文/数学/程序/AI。
+    auto defaults = DefaultHotwordCategories();
+    assert(defaults.size() == 5);
+    assert(defaults[0].name.empty());
+    assert(defaults[0].words.empty());
+    assert(defaults[1].name == "语文");
+
+    // JSON 编解码往返：中文分类名、默认分类（空名）、含引号的特殊分类名。
+    std::vector<HotwordCategory> categories;
+    categories.push_back(HotwordCategory{"", {"小智", "VoiceStick"}});
+    categories.push_back(HotwordCategory{"语文", {"杜甫", "文言文"}});
+    categories.push_back(HotwordCategory{"Program\"Quote", {}});
+    const auto json = EncodeHotwordCategories(categories);
+    auto parsed = ParseHotwordCategories(json);
+    assert(parsed.size() == categories.size());
+    for (std::size_t i = 0; i < categories.size(); ++i) {
+        assert(parsed[i].name == categories[i].name);
+        assert(parsed[i].words == categories[i].words);
+    }
+    // 非法 JSON 返回空。
+    assert(ParseHotwordCategories("not-json").empty());
+    assert(ParseHotwordCategories("{}").empty());
+
+    // 添加热词：去重 + 每分类 25 上限 + asr_hotwords 投影同步。
+    AppConfig config = AppConfig::Defaults();
+    config.hotword_categories = categories;
+    config.active_hotword_category = "";
+    assert(AddHotwordToActiveCategory(config, "新词"));
+    assert(config.asr_hotwords.size() == 3);  // 默认分类：小智/VoiceStick/新词
+    assert(!AddHotwordToActiveCategory(config, "小智"));  // 重复
+    config.hotword_categories[0].words.clear();
+    for (int i = 0; i < static_cast<int>(HotwordCategory::kMaxWords); ++i) {
+        assert(AddHotwordToActiveCategory(config, "词" + std::to_string(i)));
+    }
+    assert(config.hotword_categories[0].words.size() == HotwordCategory::kMaxWords);
+    assert(!AddHotwordToActiveCategory(config, "第26词"));  // 超上限
+    assert(config.asr_hotwords.size() == HotwordCategory::kMaxWords);
+
+    // 切换活跃分类：投影跟随；无效名回退第一个分类。
+    SetActiveHotwordCategory(config, "语文");
+    assert(config.active_hotword_category == "语文");
+    assert((config.asr_hotwords == std::vector<std::string>{"杜甫", "文言文"}));
+    SetActiveHotwordCategory(config, "不存在");
+    assert(config.active_hotword_category.empty());  // 回退默认分类（第一个）
+    assert(config.asr_hotwords.size() == HotwordCategory::kMaxWords);
+
+    // 旧配置迁移：asr_hotwords 迁入默认分类；活跃分类无效回退第一个。
+    AppConfig legacy = AppConfig::Defaults();
+    legacy.asr_hotwords = {"旧词一", "旧词二"};
+    NormalizeHotwordCategories(legacy);
+    assert(legacy.hotword_categories.size() == 5);
+    assert((legacy.hotword_categories[0].words ==
+            std::vector<std::string>{"旧词一", "旧词二"}));
+    assert(legacy.active_hotword_category.empty());
+    assert(legacy.asr_hotwords == legacy.hotword_categories[0].words);
+
+    // 新配置（已有分区数据）：投影强制对齐活跃分类。
+    NormalizeHotwordCategories(config);
+    assert(config.asr_hotwords == config.hotword_categories[0].words);
+}
+
+void TestHotwordContextClassifier() {
+    const auto rules = HotwordContextClassifier::DefaultRules();
+    assert(rules.size() == 20);  // 程序/AI/数学/语文 + 16 个扩展领域（方案 §4.1）
+
+    HotwordContextClassifier classifier(rules);
+    const std::int64_t now = 1'000'000;
+
+    // 45 条标注语料：判定 = 最高分分类且 得分≥阈值、命中词数≥最少命中，否则不判定。
+    // 覆盖率目标 ≥90%（需求：上下文识别准确率 ≥90%）。
+    struct Sample { const char* text; const char* label; };
+    const Sample samples[] = {
+        // 程序（10）
+        {"这段代码有个函数没处理异常，运行会报错", "程序"},
+        {"用 python 写个脚本调用接口，git 提交后再部署到服务器", "程序"},
+        {"前端页面编译不过，后端接口也报错", "程序"},
+        {"这个类的对象有内存泄漏，重构一下再调试", "程序"},
+        {"数据库的 sql 查询很慢，索引和算法都要优化", "程序"},
+        {"docker 容器里的进程起不来，看下日志再回滚版本", "程序"},
+        {"javascript 的回调函数写成异步，语法检查没过", "程序"},
+        {"单元测试挂了，分支合并前先修好这个 bug", "程序"},
+        {"html 和 css 的类名要统一，客户端也要同步改", "程序"},
+        {"linux 服务器上部署新版本，先备份数据库再回滚", "程序"},
+        // AI（8）
+        {"大模型训练要多少算力，显存不够怎么办", "AI"},
+        {"这个模型的参数量太大，推理延迟高", "AI"},
+        {"机器学习的数据集要先标注，过拟合了就加正则", "AI"},
+        {"神经网络的梯度消失了，换个损失函数再训练", "AI"},
+        {"用大模型写个提示词，让智能体自动完成推理任务", "AI"},
+        {"深度学习模型微调后效果提升明显", "AI"},
+        {"这个大语言模型的 token 限制太小，多模态也不支持", "AI"},
+        {"自然语言处理和语音识别都是人工智能方向", "AI"},
+        // 数学（8）
+        {"解线性方程组，系数矩阵的行列式不为零", "数学"},
+        {"微积分求导，再用定积分算面积", "数学"},
+        {"概率统计的期望值和方差怎么算", "数学"},
+        {"勾股定理证明直角三角形斜边", "数学"},
+        {"数列求和用不等式放缩，再求极限", "数学"},
+        {"这道几何题求坐标和斜率", "数学"},
+        {"向量的内积公式和夹角计算", "数学"},
+        {"整数的质数分解和分数化简，开方后取立方", "数学"},
+        // 语文（8）
+        {"这篇课文的中心思想和段落大意是什么", "语文"},
+        {"古诗默写和文言文翻译都考了", "语文"},
+        {"作文用比喻和排比的修辞手法", "语文"},
+        {"阅读理解要抓作者的主旨和题材", "语文"},
+        {"这个成语和谚语都出自同一篇文章", "语文"},
+        {"一年级生字要练笔画和偏旁部首", "语文"},
+        {"散文和小说的区别在于题材和段落结构", "语文"},
+        {"用这些词语造句，注意标点", "语文"},
+        // 日常闲聊（11，不得判定为任何分类）
+        {"今天天气不错，出去走走", ""},
+        {"中午吃什么好呢", ""},
+        {"周末去爬山吧，记得带水", ""},
+        {"这部电影真好看，结局很感人", ""},
+        {"晚安，明天见", ""},
+        {"路上有点堵，晚点到", ""},
+        {"多喝热水，早点休息", ""},
+        {"帮我看看这份合同有没有问题", ""},
+        {"超市里的水果挺新鲜的", ""},
+        {"孩子今天在学校表现不错", ""},
+        {"这衣服洗了会缩水吗", ""},
+    };
+    int correct = 0;
+    const int total = static_cast<int>(sizeof(samples) / sizeof(samples[0]));
+    for (const auto& sample : samples) {
+        const auto scored = classifier.Score(sample.text);
+        std::string best;
+        double best_score = 0.0;
+        int best_hits = 0;
+        for (const auto& [category, score] : scored.scores) {
+            const int hits = scored.hits.count(category) > 0 ? scored.hits.at(category) : 0;
+            if (score > best_score) {
+                best = category;
+                best_score = score;
+                best_hits = hits;
+            }
+        }
+        const std::string decided =
+            (best_score >= kHotwordCtxScoreThreshold && best_hits >= kHotwordCtxMinHits)
+                ? best
+                : std::string();
+        if (decided == sample.label) ++correct;
+    }
+    assert(correct * 10 >= total * 9);  // 准确率 ≥ 90%
+
+    // 状态机：弱信号（单关键词）不切换。
+    classifier.Reset();
+    assert(!classifier.DecideCategory("顺带提一句 python", "语文", {}, now));
+    // 强信号需连续 2 次决策一致才切换。
+    classifier.Reset();
+    const std::string program_text = "这段代码有个函数没处理异常，运行会报错";
+    assert(!classifier.DecideCategory(program_text, "语文", {}, now));
+    auto target = classifier.DecideCategory(program_text, "语文", {}, now);
+    assert(target.has_value() && *target == "程序");
+    // 切换冷却期内（300s）：后续强信号决策不切换。
+    const std::string ai_text = "大模型训练要多少算力，数据集先标注再微调";
+    assert(!classifier.DecideCategory(ai_text, "程序", {}, now));
+    assert(!classifier.DecideCategory(ai_text, "程序", {}, now));
+    // 当前分类热词命中保护：文本出现当前分类热词（"函数"）时拒绝切换。
+    classifier.Reset();
+    assert(!classifier.DecideCategory("javascript 的回调函数写成异步，语法检查没过",
+                                      "数学", {"函数"}, now));
+    // 日常文本无关键词命中：不切换。
+    classifier.Reset();
+    assert(!classifier.DecideCategory("今天天气不错", "语文", {}, now));
+    // 排除当前分类后无其他候选（纯数学文本在数学活跃时）：不切换。
+    classifier.Reset();
+    assert(!classifier.DecideCategory("微积分求导，再用定积分算面积，数列求极限",
+                                      "数学", {}, now + kHotwordCtxCooldownS));
+    assert(!classifier.DecideCategory("微积分求导，再用定积分算面积，数列求极限",
+                                      "数学", {}, now + kHotwordCtxCooldownS));
+}
+
+void TestContentDepthAndDomainHint() {
+    // TopHotwordDomain：空分返回空串；多项取最高分；同分按 map 序（字典序小者）。
+    HotwordContextScore empty_score;
+    assert(TopHotwordDomain(empty_score).empty());
+    HotwordContextScore single;
+    single.scores["程序"] = 3.0;
+    assert(TopHotwordDomain(single) == "程序");
+    HotwordContextScore multi;
+    multi.scores["程序"] = 3.0;
+    multi.scores["AI"] = 5.0;
+    multi.scores["数学"] = 1.0;
+    assert(TopHotwordDomain(multi) == "AI");
+    HotwordContextScore tie;
+    tie.scores["程序"] = 2.0;
+    tie.scores["AI"] = 2.0;
+    assert(TopHotwordDomain(tie) == "AI");  // 同分字典序 AI < 程序（UTF-8 字节序）
+
+    // ClassifyContentDepth：纯阈值函数，text 只取字符数、score 只取命中总数。
+    // 辅助构造：hits=n 的分数。
+    auto score_with_hits = [](int n) {
+        HotwordContextScore s;
+        s.scores["程序"] = static_cast<double>(n);
+        s.hits["程序"] = n;
+        return s;
+    };
+    // 短文本（≤30 字符）恒 Light，即使命中多。
+    assert(ClassifyContentDepth(std::string(30, 'x'), score_with_hits(5)) ==
+           ContentDepth::kLight);
+    // 零命中恒 Light，即使超长。
+    assert(ClassifyContentDepth(std::string(200, 'x'), score_with_hits(0)) ==
+           ContentDepth::kLight);
+    // 中等长度 + 命中 1..4 → Standard。
+    assert(ClassifyContentDepth(std::string(31, 'x'), score_with_hits(2)) ==
+           ContentDepth::kStandard);
+    assert(ClassifyContentDepth(std::string(120, 'x'), score_with_hits(4)) ==
+           ContentDepth::kStandard);
+    // 命中 ≥5 → Professional（31 字符即触发）。
+    assert(ClassifyContentDepth(std::string(31, 'x'), score_with_hits(5)) ==
+           ContentDepth::kProfessional);
+    // 超长（>120 字符）→ Professional。
+    assert(ClassifyContentDepth(std::string(121, 'x'), score_with_hits(2)) ==
+           ContentDepth::kProfessional);
+    // UTF-8 字符数按非续字节计：11 个汉字 = 33 字节 = 11 字符 → Light。
+    assert(ClassifyContentDepth("大模型训练需要算力支撑", score_with_hits(5)) ==
+           ContentDepth::kLight);
+
+    // BuildDomainHint：Light 恒空；未知领域（含自定义分类名）空；20 内置领域
+    // kStandard 全非空；kProfessional 追加术语保护强约束。
+    assert(BuildDomainHint("程序", ContentDepth::kLight).empty());
+    assert(BuildDomainHint("用户自定义", ContentDepth::kStandard).empty());
+    const auto rules = HotwordContextClassifier::DefaultRules();
+    for (const auto& rule : rules) {
+        const auto std_hint = BuildDomainHint(rule.category, ContentDepth::kStandard);
+        assert(!std_hint.empty());
+        assert(std_hint.find("必须保持原文") == std::string::npos);
+        const auto pro_hint = BuildDomainHint(rule.category, ContentDepth::kProfessional);
+        assert(pro_hint.find("必须保持原文") != std::string::npos);
+        assert(pro_hint.size() > std_hint.size());
+    }
+    // BuildDomainHint 只覆盖内置领域名，未列出的内置分类也返回空串。
+    assert(BuildDomainHint("不存在领域", ContentDepth::kProfessional).empty());
+
+    // BuildRefinePrompt：domain_hint 插入在基础 prompt 后、热词段前；空串跳过。
+    const auto no_hint =
+        LLMRefinementClient::BuildRefinePrompt("custom prompt", {}, "");
+    assert(no_hint == "custom prompt");
+    const auto with_hint =
+        LLMRefinementClient::BuildRefinePrompt("custom prompt", {}, "属于软件工程语境");
+    assert(with_hint.find("custom prompt\n\n领域语境：属于软件工程语境") == 0);
+    assert(with_hint.find("用户常用术语热词表") == std::string::npos);
+    const auto hint_before_hotwords =
+        LLMRefinementClient::BuildRefinePrompt("custom prompt", {"AGENTS.md"},
+                                               "属于软件工程语境");
+    const auto hint_pos = hint_before_hotwords.find("\n\n领域语境：");
+    const auto hotwords_pos = hint_before_hotwords.find("\n\n用户常用术语热词表：");
+    assert(hint_pos != std::string::npos && hotwords_pos != std::string::npos);
+    assert(hint_pos < hotwords_pos);
+    // 领域分档联动：Light 档（短文本零深度）注入空串，prompt 不含领域段。
+    const auto light_flow =
+        LLMRefinementClient::BuildRefinePrompt("custom prompt", {},
+                                               BuildDomainHint("程序", ContentDepth::kLight));
+    assert(light_flow == "custom prompt");
+}
+
+void TestHotwordContextAnnotationSet() {
+    // 20 领域标注集（开发者标注初版，方案 §8 决议 3；需真实语料校准）：
+    // 每领域 5 条 + 日常闲聊 20 条 = 120 条。判定口径与 TestHotwordContextClassifier
+    // 一致（无状态 Score + 阈值）；带标签样本「不切换」也算对（方案允许口径），
+    // 误切到其他领域算错；闲聊样本不得判定为任何分类。门槛 ≥95%。
+    struct Sample { const char* text; const char* label; };
+    static const Sample samples[] = {
+        // 程序（5）
+        {"这段代码函数报错了，先调试再提交", "程序"},
+        {"前端页面部署到服务器后接口超时", "程序"},
+        {"用 python 写脚本处理数据库里的数据", "程序"},
+        {"这个分支合并有冲突，回滚到上个版本", "程序"},
+        {"内存泄漏导致进程崩溃，需要重构", "程序"},
+        // AI（5）
+        {"大模型训练需要多少算力和显卡", "AI"},
+        {"机器学习模型过拟合了，加正则化", "AI"},
+        {"神经网络的梯度消失影响训练效果", "AI"},
+        {"智能体调用大语言模型完成推理任务", "AI"},
+        {"数据集标注质量决定深度学习效果", "AI"},
+        // 数学（5）
+        {"数学作业里线性方程组用矩阵求解", "数学"},
+        {"微积分先求导数再算定积分", "数学"},
+        {"概率统计的期望值和方差公式", "数学"},
+        {"勾股定理证明三角形边长关系", "数学"},
+        {"向量坐标和斜率这道几何题怎么算", "数学"},
+        // 语文（5）
+        {"这篇课文的中心思想和段落大意", "语文"},
+        {"古诗默写和文言文翻译是考试重点", "语文"},
+        {"作文里用比喻和排比的修辞手法", "语文"},
+        {"这个成语出自哪篇文章的作者之手", "语文"},
+        {"一年级生字的笔画和偏旁要练熟", "语文"},
+        // 英语（5）
+        {"背英语单词要注意发音和语感", "英语"},
+        {"语法填空考从句和时态的用法", "英语"},
+        {"ielts 口语和听力要每天练习", "英语"},
+        {"介词和冠词是英语语法的基础", "英语"},
+        {"英文写作要先背单词再练语法", "英语"},
+        // 历史（5）
+        {"历史课上讲皇帝与朝代的更替", "历史"},
+        {"考古队发现了商代遗址和文物", "历史"},
+        {"辛亥革命和鸦片战争都是近代史大事", "历史"},
+        {"史记是研究古代史的重要史料", "历史"},
+        {"文艺复兴在欧洲历史上有重要文明成果", "历史"},
+        // 地理（5）
+        {"高原和平原的地形差异很大", "地理"},
+        {"季风气候影响东部降雨分布", "地理"},
+        {"地震和火山多发生在板块交界地带", "地理"},
+        {"地形图上这条山脉是两大河流分水岭", "地理"},
+        {"经度和纬度组成经纬坐标定位", "地理"},
+        // 物理（5）
+        {"牛顿定律解释了惯性和加速度", "物理"},
+        {"串联电路的电阻和电压怎么算", "物理"},
+        {"光的折射和反射遵循波长规律", "物理"},
+        {"磁场和电场的相互作用产生电磁波", "物理"},
+        {"摩擦力和功率是力学基础概念", "物理"},
+        // 化学（5）
+        {"化学实验里用试管做滴定", "化学"},
+        {"水分子的氧化还原反应", "化学"},
+        {"元素周期表上原子序数排列", "化学"},
+        {"催化剂能加快化学方程式的反应速率", "化学"},
+        {"酸碱溶液混合发生中和，这是基础化学", "化学"},
+        // 生物（5）
+        {"细胞里的基因决定蛋白质合成", "生物"},
+        {"光合作用与呼吸作用影响新陈代谢", "生物"},
+        {"dna 携带遗传信息决定生物性状", "生物"},
+        {"细菌和病毒感染引发炎症", "生物"},
+        {"生态系统里物种进化很缓慢", "生物"},
+        // 医学（5）
+        {"医生根据症状和化验结果诊断病情", "医学"},
+        {"这种药物的治疗方案需要处方", "医学"},
+        {"手术之后患者需要康复治疗", "医学"},
+        {"疫苗激发免疫反应预防感染", "医学"},
+        {"血压和血糖要定期测量记录病历", "医学"},
+        // 法律（5）
+        {"律师根据合同条款分析违约责任", "法律"},
+        {"原告向法院提交了关键证据", "法律"},
+        {"刑法和民法是基础法律部门", "法律"},
+        {"这起侵权诉讼的判决支持了被告的反诉", "法律"},
+        {"知识产权保护依赖立法和仲裁机制", "法律"},
+        // 金融（5）
+        {"股票和基金是常见投资渠道", "金融"},
+        {"央行下调利率和存款准备金影响债券价格", "金融"},
+        {"牛市里股息率高的证券受青睐", "金融"},
+        {"通胀推高市值也影响汇率", "金融"},
+        {"k线图显示期货和股票的走势分化", "金融"},
+        // 音乐（5）
+        {"钢琴演奏要注意音准和节拍", "音乐"},
+        {"这首歌曲旋律优美，歌词也动人", "音乐"},
+        {"吉他和弦转换要练音阶", "音乐"},
+        {"交响乐乐谱的和声编排体现了作曲功力", "音乐"},
+        {"演唱这首乐谱上的歌需要节奏和音准", "音乐"},
+        // 美术（5）
+        {"素描要练好构图和透视", "美术"},
+        {"油画颜料厚重，水彩颜料通透", "美术"},
+        {"国画用笔触和色彩表现意境", "美术"},
+        {"这次画展展出了版画和插画", "美术"},
+        {"绘画基础从写生和临摹开始练", "美术"},
+        // 体育（5）
+        {"这场篮球联赛的比分一直没拉开", "体育"},
+        {"运动员参加马拉松前要练跑步耐力", "体育"},
+        {"足球训练里教练强调进球效率", "体育"},
+        {"奥运会游泳冠军破了纪录", "体育"},
+        {"季后赛羽毛球和乒乓球的球场排队很满", "体育"},
+        // 烹饪（5）
+        {"做菜前把食材和佐料备齐", "烹饪"},
+        {"红烧肉腌制半小时再做菜更入味", "烹饪"},
+        {"烘焙面团要控制发酵时间", "烹饪"},
+        {"清蒸鱼讲究火候和咸淡", "烹饪"},
+        {"炖汤的菜谱写着调味步骤", "烹饪"},
+        // 游戏（5）
+        {"刷这个副本的装备要组战队", "游戏"},
+        {"排位匹配机制改后玩家吐槽很多", "游戏"},
+        {"这关卡通关要用血量和攻击力优势", "游戏"},
+        {"电竞主播用手柄玩游戏", "游戏"},
+        {"单机游戏的存档别丢了", "游戏"},
+        // 汽车（5）
+        {"发动机异响先检查机油和底盘", "汽车"},
+        {"燃油汽车看油耗，新能源车看续航", "汽车"},
+        {"刹车和轮胎的保养周期到了", "汽车"},
+        {"方向盘的仪表盘显示油门开度", "汽车"},
+        {"考了驾照之后汽车行驶更规范", "汽车"},
+        // 航空航天（5）
+        {"火箭发射升空后进入预定轨道", "航空航天"},
+        {"载人飞船与空间站对接，宇航员进入舱内", "航空航天"},
+        {"探测器和卫星都靠火箭送入太空轨道", "航空航天"},
+        {"客机机翼设计影响起降性能", "航空航天"},
+        {"这次航天科普展讲了返回舱和推进器", "航空航天"},
+        // 日常闲聊（20，不得判定为任何分类）
+        {"今天天气不错，出去走走", ""},
+        {"中午吃什么好呢", ""},
+        {"周末去爬山吧，记得带水", ""},
+        {"这部电影真好看，结局很感人", ""},
+        {"晚安，明天见", ""},
+        {"路上有点堵，晚点到", ""},
+        {"多喝热水，早点休息", ""},
+        {"超市里的水果挺新鲜的", ""},
+        {"孩子今天在学校表现不错", ""},
+        {"这衣服洗了会缩水吗", ""},
+        {"帮我订个明天上午的闹钟", ""},
+        {"快递到了放门口就行", ""},
+        {"这首歌真好听，循环了一晚上", ""},
+        {"晚上一起散步去公园", ""},
+        {"我的杯子找不到了", ""},
+        {"明天记得还书给图书馆", ""},
+        {"这个椅子坐着挺舒服", ""},
+        {"停电了手机快没电了", ""},
+        {"给我倒杯温水谢谢", ""},
+        {"假期打算回老家看看", ""},
+    };
+    const int total = static_cast<int>(sizeof(samples) / sizeof(samples[0]));
+    assert(total == 120);
+    HotwordContextClassifier classifier(HotwordContextClassifier::DefaultRules());
+    int correct = 0;
+    int miss = 0;  // 带标签样本「不切换」计数（允许但对，统计可见度）
+    for (const auto& sample : samples) {
+        const auto scored = classifier.Score(sample.text);
+        std::string best;
+        double best_score = 0.0;
+        int best_hits = 0;
+        for (const auto& [category, score] : scored.scores) {
+            const int hits = scored.hits.count(category) > 0 ? scored.hits.at(category) : 0;
+            if (score > best_score) {
+                best = category;
+                best_score = score;
+                best_hits = hits;
+            }
+        }
+        const bool decided = best_score >= kHotwordCtxScoreThreshold &&
+                             best_hits >= kHotwordCtxMinHits;
+        if (sample.label[0] == '\0') {
+            // 闲聊：不得判定为任何分类。
+            if (!decided) ++correct;
+            continue;
+        }
+        if (decided && best == sample.label) {
+            ++correct;
+        } else if (!decided) {
+            ++correct;  // 不切换算对（宽松口径，方案 §8）
+            ++miss;
+        }
+    }
+    assert(correct * 20 >= total * 19);  // 一致率 ≥ 95%（120 条最多 6 条失败）
+}
+
+void TestHotwordActivityAndEviction() {
+    const std::int64_t now = 1'000'000;
+
+    // 冷淡判定：零使用且非 manual 为冷；manual 有加成不冷；高频不冷。
+    assert(IsCold(HotwordUsage{}, now));
+    HotwordUsage hot;
+    hot.count = 10;
+    hot.last_used_ts = now;
+    assert(!IsCold(hot, now));
+    HotwordUsage manual_word;
+    manual_word.source = "manual";
+    assert(!IsCold(manual_word, now));
+
+    // 逐出候选：最低活跃度优先；无统计记录的词按 manual 保护（2.0 分）。
+    HotwordUsageStore store;
+    store["高频"] = HotwordUsage{10, 0, now, "manual"};
+    store["低频"] = HotwordUsage{1, 0, now - 50LL * 86400, "mined"};
+    store["零频"] = HotwordUsage{0, 0, 0, "mined"};
+    const std::vector<std::string> words = {"高频", "低频", "零频", "新词"};
+    assert(PickEvictionWord(words, store, true, now) == "零频");
+    // 全 manual 时降级逐出最低分 manual 词。
+    HotwordUsageStore manual_store;
+    manual_store["甲"] = HotwordUsage{1, 0, now, "manual"};
+    manual_store["乙"] = HotwordUsage{5, 0, now - 10LL * 86400, "manual"};
+    assert(PickEvictionWord({"甲", "乙"}, manual_store, true, now) == "甲");
+    // 空列表无候选。
+    assert(!PickEvictionWord({}, store, true, now).has_value());
+    // 同分（均无统计记录）按字典序保证确定性（UTF-8 字节序：乙 < 甲）。
+    assert(PickEvictionWord({"乙", "甲"}, HotwordUsageStore{}, false, now) == "乙");
+
+    // 回收判定：池内词出现在文本中即命中，返回完整条目拷贝。
+    EvictedPool pool;
+    pool.push_back(EvictedWord{"回收词", "程序", now, HotwordUsage{3, 0, now, "mined"}});
+    pool.push_back(EvictedWord{"另一个", "语文", now, HotwordUsage{}});
+    auto hit = PickReclaimWord(pool, "这段话里出现了回收词");
+    assert(hit.has_value());
+    assert(hit->word == "回收词" && hit->category == "程序");
+    assert(hit->usage.count == 3 && hit->usage.source == "mined");
+    assert(!PickReclaimWord(pool, "没有命中任何池内词").has_value());
+    assert(!PickReclaimWord(pool, "").has_value());
+}
+
+void TestBuildHotwordTray() {
+    const std::int64_t now = 1'000'000;
+    const std::int64_t fresh = now;
+    // HotwordScore = log1p(count) + 0.5*exp(-age/30d) + 2.0*manual，测试只依赖相对序。
+    HotwordCategory cat_a;
+    cat_a.name = "甲";
+    cat_a.words = {"高频", "次高频", "非法 词"};
+    HotwordCategory cat_b;
+    cat_b.name = "乙";
+    cat_b.words = {"手动词"};
+    HotwordCategory cat_c;
+    cat_c.name = "丙";
+    cat_c.words = {"低频"};
+    const std::vector<HotwordCategory> categories = {cat_a, cat_b, cat_c};
+
+    HotwordUsageStore store;
+    store["高频"] = HotwordUsage{10, 0, fresh, "mined"};    // log1p(10)+0.5 ≈ 2.90
+    store["次高频"] = HotwordUsage{3, 0, fresh, "mined"};   // log1p(3)+0.5 ≈ 1.89
+    store["低频"] = HotwordUsage{1, 0, now - 60LL * 86400, "mined"};  // ≈ 0.76
+    // 手动词无统计记录 → 按 manual 计 2.0（与 RankHotwords 一致）。
+    // 池词 count=2 fresh → log1p(2)+0.5 ≈ 1.60，低于手动词高于次高频之后。
+    EvictedPool pool;
+    pool.push_back(EvictedWord{"池词", "甲", now - 3600, HotwordUsage{2, 0, fresh, "mined"}});
+    // 回收池词与分类词重复：分类优先，回收池跳过（去重）。
+    pool.push_back(EvictedWord{"高频", "甲", now - 7200, HotwordUsage{9, 0, fresh, "mined"}});
+
+    // 基本排序（无池）：高频 > 手动词 > 次高频 > 低频（来源 甲乙丙=3 不超限）。
+    const auto tray = BuildHotwordTray(store, categories, "甲", {}, 10, 0.5, now);
+    assert(tray.size() == 4);
+    assert(tray[0].word == "高频" && tray[0].category == "甲");
+    assert(tray[0].in_active_category && tray[0].count == 10);
+    assert(tray[1].word == "手动词" && tray[1].category == "乙" && tray[1].count == 0);
+    assert(tray[2].word == "次高频" && tray[2].category == "甲");
+    assert(tray[3].word == "低频" && tray[3].category == "丙" && !tray[3].in_active_category);
+    // 确定性：分数快照降序。
+    for (std::size_t i = 1; i < tray.size(); ++i) {
+        assert(tray[i - 1].score >= tray[i].score);
+    }
+
+    // 回收池来源标记与去重：池词来源 evicted 计为独立来源（占满 3 来源），
+    // 低频（丙）成第 4 来源被内聚约束跳过；池内「高频」与分类词重复，分类优先。
+    const auto tray_pool = BuildHotwordTray(store, categories, "甲", pool, 10, 0.5, now);
+    assert(tray_pool.size() == 4);
+    assert(tray_pool[0].word == "高频" && tray_pool[1].word == "手动词");
+    assert(tray_pool[2].word == "次高频");
+    assert(tray_pool[3].word == "池词" && tray_pool[3].category == kHotwordTrayEvictedSource);
+    assert(!tray_pool[3].in_active_category);
+    assert(std::none_of(tray_pool.begin(), tray_pool.end(),
+                        [](const HotwordTrayEntry& e) { return e.word == "低频"; }));
+
+    // min_score 门槛（带池）：0.8 滤掉低频（0.76），碟序不变。
+    const auto tray_min = BuildHotwordTray(store, categories, "甲", pool, 10, 0.8, now);
+    assert(tray_min.size() == 4);
+    assert(tray_min[3].word == "池词");
+    // 门槛 2.5：只剩高频（2.90）。
+    const auto tray_high = BuildHotwordTray(store, categories, "甲", pool, 10, 2.5, now);
+    assert(tray_high.size() == 1);
+    assert(tray_high[0].word == "高频");
+
+    // max_size 截断：取前 2。
+    const auto tray_small = BuildHotwordTray(store, categories, "甲", pool, 2, 0.5, now);
+    assert(tray_small.size() == 2);
+    assert(tray_small[0].word == "高频" && tray_small[1].word == "手动词");
+    // max_size <= 0 返回空碟。
+    assert(BuildHotwordTray(store, categories, "甲", pool, 0, 0.5, now).empty());
+
+    // 领域内聚约束：来源分类（含回收池）最多 kHotwordTrayMaxCategories=3 个；
+    // 新来源的词被跳过后，已接受来源的后续词继续入碟。
+    HotwordCategory cat_d;
+    cat_d.name = "丁";
+    cat_d.words = {"丁词", "丁冷词"};
+    auto wide = categories;
+    wide.push_back(cat_d);
+    HotwordUsageStore store2 = store;
+    store2["丁词"] = HotwordUsage{6, 0, fresh, "mined"};   // ≈ 2.45，高于手动词
+    store2["丁冷词"] = HotwordUsage{0, 0, fresh, "mined"};  // 0.5，低于低频
+    const auto tray_coh = BuildHotwordTray(store2, wide, "甲", {}, 10, 0.5, now);
+    // 排序：高频(甲) > 丁词(丁) > 手动词(乙) > 次高频(甲) > 低频(丙) > 丁冷词(丁)。
+    // 甲丁乙占满 3 来源：低频（第 4 来源）被跳过，丁冷词（来源丁已接受）继续入碟。
+    assert(tray_coh.size() == 5);
+    assert(tray_coh[0].word == "高频" && tray_coh[1].word == "丁词");
+    assert(tray_coh[2].word == "手动词" && tray_coh[3].word == "次高频");
+    assert(tray_coh[4].word == "丁冷词");
+    assert(std::none_of(tray_coh.begin(), tray_coh.end(),
+                        [](const HotwordTrayEntry& e) { return e.word == "低频"; }));
+
+    // 非法词（含空格）被过滤；同词跨分类取首个出现分类。
+    HotwordCategory dup1;
+    dup1.name = "先";
+    dup1.words = {"重复词"};
+    HotwordCategory dup2;
+    dup2.name = "后";
+    dup2.words = {"重复词"};
+    const auto tray_dup = BuildHotwordTray({}, {dup1, dup2}, "", {}, 10, 0.5, now);
+    assert(tray_dup.size() == 1 && tray_dup[0].category == "先");
+}
+
+void TestEvictedPoolJson() {
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_hotword_evicted_test.json";
+    std::filesystem::remove(temp);
+    // 空池保存/加载。
+    SaveEvictedPool(temp, {});
+    assert(LoadEvictedPool(temp).empty());
+    // 往返：字段逐项一致。
+    EvictedPool pool;
+    pool.push_back(EvictedWord{"词甲", "程序", 1'700'000'000, HotwordUsage{4, 0, 1'699'000'000, "manual"}});
+    pool.push_back(EvictedWord{"词乙", "", 1'700'000'100, HotwordUsage{0, 0, 0, "mined"}});
+    SaveEvictedPool(temp, pool);
+    auto loaded = LoadEvictedPool(temp);
+    assert(loaded.size() == 2);
+    assert(loaded[0].word == "词甲" && loaded[0].category == "程序");
+    assert(loaded[0].evicted_ts == 1'700'000'000);
+    assert(loaded[0].usage.count == 4 && loaded[0].usage.source == "manual");
+    assert(loaded[1].word == "词乙" && loaded[1].category.empty());
+    assert(loaded[1].usage.count == 0);
+    // 损坏 JSON 返回空池。
+    {
+        std::ofstream f(temp, std::ios::binary | std::ios::trunc);
+        f << "not-json";
+    }
+    assert(LoadEvictedPool(temp).empty());
+    std::filesystem::remove(temp);
+}
+
+void TestSmartHotwordConfig() {
+    // 默认开启；TOML 读写往返。
+    assert(AppConfig::Defaults().smart_hotword_enabled);
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_smart_hotword_test.toml";
+    std::filesystem::remove(temp);
+    AppConfig config = AppConfig::Defaults();
+    config.smart_hotword_enabled = false;
+    config.Save(temp);
+    assert(!AppConfig::Load(temp).smart_hotword_enabled);
+    std::filesystem::remove(temp);
+}
+
+void TestTencentHotwordCharFilter() {
+    // 腾讯词表 API 拒绝含 '.' 等字符的词（InvalidWordWeight），同步前必须过滤。
+    assert(TencentAsrVocabClient::IsValidHotwordChars("Opus"));
+    assert(TencentAsrVocabClient::IsValidHotwordChars("覃海洋"));
+    assert(TencentAsrVocabClient::IsValidHotwordChars("ESP32-S3"));
+    assert(TencentAsrVocabClient::IsValidHotwordChars("VB-CABLE"));
+    assert(TencentAsrVocabClient::IsValidHotwordChars("win_sparkle"));
+    assert(!TencentAsrVocabClient::IsValidHotwordChars("CLAUDE.md"));
+    assert(!TencentAsrVocabClient::IsValidHotwordChars("AGENTS.md"));
+    assert(!TencentAsrVocabClient::IsValidHotwordChars("带空格 的词"));
+    assert(!TencentAsrVocabClient::IsValidHotwordChars(""));
+}
+
+void TestVolcengineTableIdConfigRoundTrip() {
+    assert(AppConfig::Defaults().volcengine_boosting_table_id.empty());
+    assert(AppConfig::Defaults().volcengine_correct_table_id.empty());
+
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_volc_table_id_test.toml";
+    std::filesystem::remove(temp);
+
+    AppConfig config = AppConfig::Defaults();
+    config.volcengine_boosting_table_id = "  boost-123  ";
+    config.volcengine_correct_table_id = "correct-456";
+    config.Save(temp);
+
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.volcengine_boosting_table_id == "boost-123");
+    assert(loaded.volcengine_correct_table_id == "correct-456");
+
+    std::filesystem::remove(temp);
+}
+
+
+void TestAppConfig() {
+    AppConfig cloud = AppConfig::Defaults();
+    assert(cloud.asr_provider == AsrProvider::kVolcengine);
+    cloud.asr_provider = AsrProvider::kVoiceStickCloud;
+    cloud.voicestick_cloud_url = "";
+    assert(cloud.ActiveWebsocketUrl() == "wss://api.xiaozhi.me/voicestick/asr/");
+
+    cloud.voicestick_cloud_url = "  wss://example.test/asr?token=1  ";
+    assert(cloud.ActiveWebsocketUrl() == "wss://example.test/asr?token=1");
+
+    AppConfig volcengine = AppConfig::Defaults();
+    volcengine.asr_provider = AsrProvider::kVolcengine;
+    assert(volcengine.ActiveWebsocketUrl().starts_with("wss://openspeech.bytedance.com/"));
+
+    PairedDeviceEntry entry;
+    entry.device_id = "5A74";
+    entry.bluetooth_address = 0x70041DDA5A76;
+    entry.address_kind = BluetoothAddressKind::kPublic;
+    entry.name = "VS-5A74";
+    entry.hardware = "stick_s3";
+    entry.firmware_version = "0.1.2";
+    AppConfig cache = AppConfig::Defaults();
+    cache.paired_devices.push_back(entry);
+    cache.paired_device_ids.push_back(entry.device_id);
+    assert(cache.paired_devices.front().hardware == "stick_s3");
+    assert(cache.paired_devices.front().firmware_version == "0.1.2");
+    assert(OverlayThemeColorFromName("auto") == OverlayThemeColor::kAuto);
+    assert(OverlayThemeColorFromName("black") == OverlayThemeColor::kBlack);
+    assert(OverlayThemeColorFromName("pink") == OverlayThemeColor::kPink);
+    assert(OverlayThemeColorName(OverlayThemeColor::kAuto) == "auto");
+    assert(OverlayThemeColorName(OverlayThemeColor::kGreen) == "green");
+    assert(OverlayThemeColorName(OverlayThemeColor::kBlack) == "black");
+    assert(OverlayThemeColorDisplayName(OverlayThemeColor::kAuto) == "Auto");
+    assert(OverlayThemeColorDisplayName(OverlayThemeColor::kYellow) == "Yellow");
+    assert(OverlayThemeColorDisplayName(OverlayThemeColor::kBlack) == "Black");
+    assert(DefaultOverlayThemeColor() == OverlayThemeColor::kAuto);
+    assert(VoiceStickCoordinator::ThemeColorForConfig(AppConfig::Defaults(), "5A74") == OverlayThemeColor::kAuto);
+    assert(OverlayThemeSizeFromName("medium") == OverlayThemeSize::kMedium);
+    assert(OverlayThemeSizeFromName("small") == OverlayThemeSize::kSmall);
+    assert(OverlayThemeSizeFromName("big") == OverlayThemeSize::kBig);
+    assert(OverlayThemeSizeName(OverlayThemeSize::kMedium) == "medium");
+    assert(OverlayThemeSizeDisplayName(OverlayThemeSize::kSmall) == "Small");
+    assert(OverlayPositionFromName("bottom_center") == OverlayPosition::kBottomCenter);
+    assert(OverlayPositionFromName("middle_bottom") == OverlayPosition::kBottomCenter);
+    assert(OverlayPositionFromName("top_right") == OverlayPosition::kTopRight);
+    assert(OverlayPositionName(OverlayPosition::kBottomLeft) == "bottom_left");
+    assert(OverlayPositionName(OverlayPosition::kBottomCenter) == "bottom_center");
+    assert(OverlayPositionDisplayName(OverlayPosition::kCenter) == "Center");
+    assert(OverlayPositionDisplayName(OverlayPosition::kBottomCenter) == "Bottom Center");
+    assert(DefaultOverlayPosition() == OverlayPosition::kBottomCenter);
+    cache.default_output_profile.target = OutputTarget::kSubtitle;
+    cache.default_output_profile.transform = TextTransform::kOriginal;
+    cache.device_output_profiles["5A74"] = OutputProfile{
+        OutputTarget::kSubtitle,
+        TextTransform::kTranslate,
+        "zh-Hans",
+    };
+    auto profile = cache.OutputProfileForDevice(std::optional<std::string>("5A74"));
+    assert(profile.target == OutputTarget::kSubtitle);
+    assert(profile.transform == TextTransform::kTranslate);
+    assert(profile.translation_target == "zh-Hans");
+    assert(OutputTargetName(OutputTarget::kFocusedApp) == "focused_app");
+    assert(TextTransformFromName("translate") == TextTransform::kTranslate);
+    assert(AppConfig::Defaults().ui_language == UiLanguage::kSystem);
+    assert(AppConfig::Defaults().launch_at_login);
+    assert(UiLanguageFromName("system") == UiLanguage::kSystem);
+    assert(UiLanguageFromName("en") == UiLanguage::kEnglish);
+    assert(UiLanguageFromName("zh-Hans") == UiLanguage::kSimplifiedChinese);
+    assert(UiLanguageFromName("invalid") == UiLanguage::kSystem);
+    assert(UiLanguageName(UiLanguage::kSystem) == "system");
+    assert(UiLanguageName(UiLanguage::kEnglish) == "en");
+    assert(UiLanguageName(UiLanguage::kSimplifiedChinese) == "zh-Hans");
+    assert(UiLanguageFromLocaleName(L"en-US") == UiLanguage::kEnglish);
+    assert(UiLanguageFromLocaleName(L"en-GB") == UiLanguage::kEnglish);
+    assert(UiLanguageFromLocaleName(L"zh-CN") == UiLanguage::kSimplifiedChinese);
+    assert(UiLanguageFromLocaleName(L"zh-Hans") == UiLanguage::kSimplifiedChinese);
+    assert(UiLanguageFromLocaleName(L"zh-TW") == UiLanguage::kSimplifiedChinese);
+    assert(UiLanguageFromLocaleName(L"ja-JP") == UiLanguage::kEnglish);
+    assert(UiLanguageFromLocaleName(L"") == UiLanguage::kEnglish);
+    assert(!Tr(StringId::kSettingsTitle, UiLanguage::kEnglish).empty());
+    assert(Tr(StringId::kSettingsTitle, UiLanguage::kSimplifiedChinese) == "VoiceStick 设置");
+    assert(Tr(StringId::kSettingsLaunchAtLogin, UiLanguage::kEnglish) == "Start VoiceStick when Windows starts");
+    assert(Tr(StringId::kMenuLaunchAtLogin, UiLanguage::kSimplifiedChinese) == "开机自启动");
+    assert(Tr(StringId::kPairManualIdHint, UiLanguage::kEnglish) == "Can't find it? Enter the 4-digit ID shown on the Stick:");
+    assert(Tr(StringId::kPairManualIdHint, UiLanguage::kSimplifiedChinese) == "找不到设备？请输入 Stick 屏幕显示的 4 位 ID：");
+    assert(Tr(StringId::kHotkeyCapturePrompt, UiLanguage::kEnglish) == "Press a hotkey combination...");
+    assert(Tr(StringId::kFirmwareUpdateFinalizing, UiLanguage::kSimplifiedChinese) == "正在完成固件更新...");
+    assert(BatteryStatusText(83, false, false, UiLanguage::kEnglish) == "83%");
+    assert(BatteryStatusText(83, true, false, UiLanguage::kEnglish) == "83%, charging");
+    assert(BatteryStatusText(83, false, true, UiLanguage::kSimplifiedChinese) == "83%，外接电源");
+    assert(DeviceTitleWithBattery(L"VS-5A74", 83, true, false, UiLanguage::kSimplifiedChinese) == L"VS-5A74 (83%，充电中)");
+    assert(ImuWakeSensitivityFromName("low") == ImuWakeSensitivity::kLow);
+    assert(ImuWakeSensitivityFromName("medium") == ImuWakeSensitivity::kMedium);
+    assert(ImuWakeSensitivityFromName("high") == ImuWakeSensitivity::kHigh);
+    assert(ImuWakeSensitivityFromName("invalid") == ImuWakeSensitivity::kLow);
+    assert(ImuWakeSensitivityName(ImuWakeSensitivity::kLow) == "low");
+    assert(ImuWakeSensitivityName(ImuWakeSensitivity::kMedium) == "medium");
+    assert(ImuWakeSensitivityName(ImuWakeSensitivity::kHigh) == "high");
+    assert(ImuWakeSensitivityDisplayName(ImuWakeSensitivity::kLow) == "Low");
+    assert(ImuWakeSensitivityThresholdLsb(ImuWakeSensitivity::kLow) == 800);
+    assert(ImuWakeSensitivityThresholdLsb(ImuWakeSensitivity::kMedium) == 500);
+    assert(ImuWakeSensitivityThresholdLsb(ImuWakeSensitivity::kHigh) == 250);
+    assert(LocalizationTablesAreComplete());
+    const auto hotwords = ParseHotwordList(" 小智,VoiceStick\r\n小智\n豆包 ");
+    assert((hotwords == std::vector<std::string>{"小智", "VoiceStick", "豆包"}));
+}
+
+void TestLlmRefinePromptAndPayload() {
+    // 内置默认精修 prompt 含三类清理要求关键词（中文）。
+    const auto prompt = LLMRefinementClient::BuildRefinePrompt("");
+    assert(prompt.find("语音停顿") != std::string::npos);
+    assert(prompt.find("标点") != std::string::npos);
+    assert(prompt.find("填充词") != std::string::npos);
+
+    // 非空 override 去空白后原样返回。
+    const auto custom = LLMRefinementClient::BuildRefinePrompt("  my custom prompt  ");
+    assert(custom == "my custom prompt");
+
+    // 热词非空时追加热词替换指引（二遍 ASR 不吃 corpus 热词，由 LLM 精修兜底）；
+    // 默认 prompt 与用户 override 都追加；空热词不追加。
+    const auto refine_with_hotwords =
+        LLMRefinementClient::BuildRefinePrompt("", {"AGENTS.md", "CLAUDE.md"});
+    assert(refine_with_hotwords.find("热词表") != std::string::npos);
+    assert(refine_with_hotwords.find("AGENTS.md") != std::string::npos);
+    assert(refine_with_hotwords.find("CLAUDE.md") != std::string::npos);
+    assert(refine_with_hotwords.find("语音停顿") != std::string::npos);
+    const auto custom_with_hotwords =
+        LLMRefinementClient::BuildRefinePrompt("my custom prompt", {"AGENTS.md"});
+    assert(custom_with_hotwords.starts_with("my custom prompt"));
+    assert(custom_with_hotwords.find("AGENTS.md") != std::string::npos);
+    assert(LLMRefinementClient::BuildRefinePrompt("my custom prompt", {}) == "my custom prompt");
+
+    // few-shot 示例与「原文已正确的热词不得改写」约束在热词段中。
+    assert(refine_with_hotwords.find("示例") != std::string::npos);
+    assert(refine_with_hotwords.find("原样保留") != std::string::npos);
+
+    // 精修守卫：原文已出现的热词在精修结果中必须保留。
+    assert(LLMRefinementClient::RefineResultKeepsHotwords(
+        "编辑 AGENTS.md 文件", "编辑 AGENTS.md 这个文件。", {"AGENTS.md"}));
+    assert(!LLMRefinementClient::RefineResultKeepsHotwords(
+        "编辑 AGENTS.md 文件", "编辑 CLDE.md 这个文件。", {"AGENTS.md"}));
+    // 原文中没有的热词不受约束（精修纠错场景）；空热词表恒真。
+    assert(LLMRefinementClient::RefineResultKeepsHotwords(
+        "编辑 agentsdmd 文件", "编辑 AGENTS.md 文件。", {"AGENTS.md"}));
+    assert(LLMRefinementClient::RefineResultKeepsHotwords("a", "b", {}));
+    assert(LLMRefinementClient::RefineResultKeepsHotwords("a", "b", {""}));
+
+    // 翻译 prompt 已融合精修要求，且保留翻译语义与热词。
+    const auto translation_prompt = LLMTranslationClient::SystemPrompt("en", {});
+    assert(translation_prompt.find("Translate") != std::string::npos);
+    assert(translation_prompt.find("pause spaces") != std::string::npos);
+    const auto translation_with_hotwords = LLMTranslationClient::SystemPrompt("zh-Hans", {"小智", "VoiceStick"});
+    assert(translation_with_hotwords.find("小智") != std::string::npos);
+    assert(translation_with_hotwords.find("VoiceStick") != std::string::npos);
+
+    // 请求体为合法 JSON：temperature:0、system+user 两条消息、model 透传。
+    const auto payload = LLMChatClient::BuildChatPayload("gpt-x", "sys-prompt", "hello world");
+    assert(payload.find("\"model\":\"gpt-x\"") != std::string::npos);
+    assert(payload.find("\"temperature\":0") != std::string::npos);
+    assert(payload.find("\"role\":\"system\"") != std::string::npos);
+    assert(payload.find("\"role\":\"user\"") != std::string::npos);
+    auto* root = cJSON_Parse(payload.c_str());
+    assert(root != nullptr);
+    auto* model = cJSON_GetObjectItemCaseSensitive(root, "model");
+    assert(cJSON_IsString(model) && std::string(model->valuestring) == "gpt-x");
+    auto* messages = cJSON_GetObjectItemCaseSensitive(root, "messages");
+    assert(cJSON_IsArray(messages) && cJSON_GetArraySize(messages) == 2);
+    auto* user_msg = cJSON_GetArrayItem(messages, 1);
+    auto* user_content = cJSON_GetObjectItemCaseSensitive(user_msg, "content");
+    assert(cJSON_IsString(user_content) && std::string(user_content->valuestring) == "hello world");
+    cJSON_Delete(root);
+
+    // disable_thinking=true 时注入两种风格的关思考参数，且 payload 仍为合法 JSON。
+    const auto no_think_payload =
+        LLMChatClient::BuildChatPayload("gpt-x", "sys-prompt", "hello world",
+                                         /*stream=*/false, /*disable_thinking=*/true);
+    assert(no_think_payload.find("\"enable_thinking\":false") != std::string::npos);
+    assert(no_think_payload.find("\"chat_template_kwargs\":{\"enable_thinking\":false}") !=
+           std::string::npos);
+    auto* no_think_root = cJSON_Parse(no_think_payload.c_str());
+    assert(no_think_root != nullptr);
+    auto* enable_thinking = cJSON_GetObjectItemCaseSensitive(no_think_root, "enable_thinking");
+    assert(cJSON_IsBool(enable_thinking) && !cJSON_IsTrue(enable_thinking));
+    cJSON_Delete(no_think_root);
+
+    // 精修默认关闭、prompt 默认空。llm_disable_thinking 默认开启（关闭模型深度思考）。
+    assert(AppConfig::Defaults().refine_enabled == false);
+    assert(AppConfig::Defaults().refine_prompt.empty());
+    assert(AppConfig::Defaults().llm_disable_thinking == true);
+
+    // refine_prompt 多行字符串 TOML 保存/加载往返测试：
+    // 验证换行等控制字符被正确转义为 \n 等 TOML 转义序列，确保回读一致。
+    {
+        auto temp = std::filesystem::temp_directory_path() / "voicestick_refine_prompt_test.toml";
+        std::filesystem::remove(temp);
+
+        AppConfig config = AppConfig::Defaults();
+        config.refine_enabled = true;
+        // 含换行、tab、双引号和反斜杠的自定义 prompt
+        config.refine_prompt =
+            "你是一个后处理器。\n"
+            "规则：\n"
+            "\t• 去除\"多余\"空格\n"
+            "\t• 修正标点\\格式\n"
+            "仅返回文本。";
+        config.Save(temp);
+
+        AppConfig loaded = AppConfig::Load(temp);
+        assert(loaded.refine_enabled == true);
+        assert(loaded.refine_prompt == config.refine_prompt);
+        assert(loaded.refine_prompt.find("你是一个后处理器") != std::string::npos);
+        assert(loaded.refine_prompt.find("\n\t• ") != std::string::npos);
+        assert(loaded.refine_prompt.find("\"多余\"") != std::string::npos);
+        assert(loaded.refine_prompt.find("标点\\格式") != std::string::npos);
+
+        std::filesystem::remove(temp);
+    }
+
+    // refine_prompt 为空字符串时，保存为 "" 再加载仍为空（不落盘为带转义的多行）。
+    {
+        auto temp = std::filesystem::temp_directory_path() / "voicestick_refine_prompt_empty_test.toml";
+        std::filesystem::remove(temp);
+
+        AppConfig config = AppConfig::Defaults();
+        config.refine_prompt.clear();
+        config.Save(temp);
+
+        AppConfig loaded = AppConfig::Load(temp);
+        assert(loaded.refine_prompt.empty());
+
+        std::filesystem::remove(temp);
+    }
+}
+
+void TestHotwordProcessConfig() {
+    // 默认关闭、prompt 默认空（空 = 使用内置默认提示词）。
+    assert(AppConfig::Defaults().hotword_process_enabled == false);
+    assert(AppConfig::Defaults().hotword_process_prompt.empty());
+
+    // TOML 保存/加载往返。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_hotword_process_test.toml";
+    std::filesystem::remove(temp);
+    AppConfig config = AppConfig::Defaults();
+    config.hotword_process_enabled = true;
+    config.hotword_process_prompt = "自定义提炼提示词\n第二行";
+    config.Save(temp);
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.hotword_process_enabled == true);
+    assert(loaded.hotword_process_prompt == config.hotword_process_prompt);
+    std::filesystem::remove(temp);
+}
+
+void TestHotwordExtractorPromptAndParse() {
+    // 内置默认提示词含提取语义关键词；覆盖值 Trim 后原样返回。
+    const auto prompt = HotwordExtractor::BuildExtractPrompt("");
+    assert(prompt.find("热词") != std::string::npos);
+    assert(prompt.find("专有名词") != std::string::npos);
+    const auto custom = HotwordExtractor::BuildExtractPrompt("  my extract prompt  ");
+    assert(custom == "my extract prompt");
+
+    // 解析：换行/逗号切分、Trim、去重（复用 ParseHotwordList 语义）。
+    const auto words = HotwordExtractor::ParseExtractResult("小智\nVoiceStick\r\n小智\n豆包,AGI");
+    assert((words == std::vector<std::string>{"小智", "VoiceStick", "豆包", "AGI"}));
+
+    // 空输入 / 纯空白 → 空结果。
+    assert(HotwordExtractor::ParseExtractResult("").empty());
+    assert(HotwordExtractor::ParseExtractResult("  \n \n").empty());
+
+    // 单词超过 64 字符被过滤。
+    const std::string long_word(65, 'x');
+    assert(HotwordExtractor::ParseExtractResult(long_word).empty());
+
+    // 总量截断到 20 个。
+    std::string many;
+    for (int i = 0; i < 25; ++i) {
+        many += "w" + std::to_string(i);
+        many += "\n";
+    }
+    assert(HotwordExtractor::ParseExtractResult(many).size() == 20);
+
+    // DiffNewHotwords：保序、剔除已存在词、自身去重。
+    const auto diff = HotwordExtractor::DiffNewHotwords({"a", "b", "c", "a"}, {"b"});
+    assert((diff == std::vector<std::string>{"a", "c"}));
+    assert(HotwordExtractor::DiffNewHotwords({"b"}, {"b"}).empty());
+}
+
+void TestHotwordCandidateMiner() {
+    // 标识符提取：字母开头 + 含大写/数字/._-；普通小写词、版本号、CJK 不算；
+    // 尾部标点剥离。
+    const auto tokens = ExtractIdentifierTokens(
+        "编辑 AGENTS.md 和 hello world 文件，version 2.0 发布了 RamDisk、build_win.bat。");
+    assert((tokens == std::vector<std::string>{"AGENTS.md", "RamDisk", "build_win.bat"}));
+    assert(ExtractIdentifierTokens("plain english words only").empty());
+    assert((ExtractIdentifierTokens("kAutoHideTimerId.") == std::vector<std::string>{"kAutoHideTimerId"}));
+
+    // 挖掘：refined 新增且不在热词表的标识符。
+    const auto mined = MineRefinementCandidates(
+        "测试 agentsdmd 和 cloud dmd 文件", "测试 AGENTS.md 和 CLAUDE.md 文件。", {});
+    assert((mined == std::vector<std::string>{"AGENTS.md", "CLAUDE.md"}));
+    assert(MineRefinementCandidates("测试 agentsdmd 文件", "测试 AGENTS.md 文件。",
+                                    {"AGENTS.md"}).empty());
+    // 原文已有的词不重复挖掘。
+    assert(MineRefinementCandidates("测试 RamDisk 文件", "测试 RamDisk 文件。", {}).empty());
+
+    // 计数到阈值才建议；忽略词不建议；已通知词不重复建议。
+    HotwordCandidateStore store;
+    assert(RecordHotwordCandidates(store, {"AGENTS.md"}).empty());
+    assert(RecordHotwordCandidates(store, {"AGENTS.md"}).empty());
+    auto suggested = RecordHotwordCandidates(store, {"AGENTS.md", "CLAUDE.md"});
+    assert((suggested == std::vector<std::string>{"AGENTS.md"}));
+    assert(store.counts["AGENTS.md"] == 3);
+    assert(store.counts["CLAUDE.md"] == 1);
+    store.notified.insert("AGENTS.md");
+    assert(RecordHotwordCandidates(store, {"AGENTS.md"}).empty());
+    store.dismissed.insert("CLAUDE.md");
+    assert(RecordHotwordCandidates(store, {"CLAUDE.md", "CLAUDE.md"}).empty());
+
+    // 待确认列表：达阈值且未忽略。
+    assert((PendingHotwordSuggestions(store) == std::vector<std::string>{"AGENTS.md"}));
+    store.dismissed.insert("AGENTS.md");
+    assert(PendingHotwordSuggestions(store).empty());
+
+    // JSON 保存/加载往返。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_hotword_candidates_test.json";
+    std::filesystem::remove(temp);
+    HotwordCandidateStore round_trip;
+    round_trip.counts["AGENTS.md"] = 5;
+    round_trip.dismissed.insert("cloud dmd");
+    round_trip.notified.insert("VoiceStick");
+    SaveHotwordCandidates(temp, round_trip);
+    const auto loaded = LoadHotwordCandidates(temp);
+    assert(loaded.counts.at("AGENTS.md") == 5);
+    assert(loaded.dismissed.contains("cloud dmd"));
+    assert(loaded.notified.contains("VoiceStick"));
+    std::filesystem::remove(temp);
+
+    // 缺失文件返回空 store。
+    assert(LoadHotwordCandidates(temp).counts.empty());
+}
+
+void TestHotwordSelector() {
+    const std::int64_t now = 1760000000;  // 固定 now，保证确定性
+
+    // 评分：同 count 下手动词（source=manual）胜过挖掘词。
+    HotwordUsage manual{};
+    manual.count = 3;
+    manual.last_used_ts = now;
+    manual.source = "manual";
+    HotwordUsage mined{};
+    mined.count = 3;
+    mined.last_used_ts = now;
+    assert(HotwordScore(manual, now) > HotwordScore(mined, now));
+    // 高频词（count=30）能胜过低计数手动词——频率优先的设计意图。
+    HotwordUsage high{};
+    high.count = 30;
+    high.last_used_ts = now;
+    HotwordUsage low_manual{};
+    low_manual.count = 0;
+    low_manual.last_used_ts = now;
+    low_manual.source = "manual";
+    assert(HotwordScore(high, now) > HotwordScore(low_manual, now));
+    // 未知时间戳（0）新近度记 0：只剩 count 与 manual 项。
+    HotwordUsage unknown_ts{};
+    unknown_ts.count = 0;
+    unknown_ts.source = "manual";
+    assert(HotwordScore(unknown_ts, now) == kHotwordWManual);
+
+    // 合法性过滤：含空白 / 超长词被过滤。
+    assert(IsValidHotword("Opus"));
+    assert(IsValidHotword("覃海洋"));
+    assert(IsValidHotword("ESP32-S3"));
+    assert(!IsValidHotword(""));
+    assert(!IsValidHotword("带空格 的词"));
+    assert(!IsValidHotword(std::string(11, '热')));  // 11 个汉字超限
+    assert(!IsValidHotword(std::string(31, 'a')));   // 31 个 ASCII 超限
+
+    // 排序：评分降序；同分按字典序；库外词按 manual 处理。
+    HotwordUsageStore store;
+    HotwordUsage opus{};
+    opus.count = 3;
+    opus.last_used_ts = now;
+    store["Opus"] = opus;
+    HotwordUsage vs{};
+    vs.count = 3;
+    vs.last_used_ts = now;
+    vs.source = "manual";
+    store["VoiceStick"] = vs;
+    const auto ranked = RankHotwords(store, {"Opus", "VoiceStick", "带空格 的词"}, now);
+    assert((ranked == std::vector<std::string>{"VoiceStick", "Opus"}));
+    // 库外词（CLAUDE.md）按 manual（score=2.0），高于同 count 的 mined 词。
+    HotwordUsage mined3{};
+    mined3.count = 3;
+    mined3.last_used_ts = now;
+    store["BLE"] = mined3;
+    const auto ranked2 = RankHotwords(store, {"BLE", "CLAUDE.md"}, now);
+    assert((ranked2 == std::vector<std::string>{"CLAUDE.md", "BLE"}));
+    // 同分（count/时间戳/source 全同）按字典序稳定。
+    HotwordUsageStore equal_store;
+    HotwordUsage same{};
+    same.count = 1;
+    same.last_used_ts = now;
+    equal_store["zeta"] = same;
+    equal_store["alpha"] = same;
+    const auto ranked3 = RankHotwords(equal_store, {"zeta", "alpha"}, now);
+    assert((ranked3 == std::vector<std::string>{"alpha", "zeta"}));
+
+    // 预算裁剪：按评分序装入，高分词在前且累计不超预算。
+    std::vector<std::string> many;
+    HotwordUsageStore big_store;
+    for (int i = 0; i < 100; ++i) {
+        const std::string word = "术语" + std::to_string(i);  // 每词 2 tokens
+        many.push_back(word);
+        HotwordUsage u{};
+        u.count = 100 - i;  // 编号小的词频更高
+        u.last_used_ts = now;
+        big_store[word] = u;
+    }
+    const auto ranked_many = RankHotwords(big_store, many, now);
+    const auto fitted = AsrProtocol::FitHotwordsToCorpusBudget(ranked_many);
+    int used = 0;
+    for (const auto& word : fitted) used += AsrProtocol::EstimateHotwordTokens(word);
+    assert(used <= AsrProtocol::kHotwordCorpusTokenBudget);
+    assert(fitted.size() < ranked_many.size());
+    assert(ranked_many.front() == "术语0");
+    assert(fitted.front() == "术语0");
+
+    // prompt 段上限：top-N 且保持评分序。
+    const auto prompt_words = TrimHotwordsForPrompt(big_store, many, kHotwordPromptMaxWords, now);
+    assert(static_cast<int>(prompt_words.size()) == kHotwordPromptMaxWords);
+    assert(prompt_words.front() == "术语0");
+
+    // 使用统计记录：命中热词计数+刷新时间戳；未命中的不产生条目。
+    HotwordUsageStore usage_store;
+    RecordHotwordUsageInText(usage_store, "编辑 AGENTS.md 和 CLAUDE.md 文件", {"AGENTS.md", "BLE"}, now);
+    assert(usage_store.at("AGENTS.md").count == 1);
+    assert(usage_store.at("AGENTS.md").last_used_ts == now);
+    assert(usage_store.at("AGENTS.md").source == "manual");
+    assert(!usage_store.contains("BLE"));
+    // 大小写不敏感。
+    RecordHotwordUsageInText(usage_store, "编辑 agents.md 文件", {"AGENTS.md"}, now + 10);
+    assert(usage_store.at("AGENTS.md").count == 2);
+    assert(usage_store.at("AGENTS.md").last_used_ts == now + 10);
+
+    // JSON 往返（与 hotword_select.py load_stats_json 列表形态兼容）。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_hotword_usage_test.json";
+    std::filesystem::remove(temp);
+    SaveHotwordUsage(temp, usage_store);
+    const auto loaded = LoadHotwordUsage(temp);
+    assert(loaded.at("AGENTS.md").count == 2);
+    assert(loaded.at("AGENTS.md").last_used_ts == now + 10);
+    assert(loaded.at("AGENTS.md").source == "manual");
+    std::filesystem::remove(temp);
+    // 缺失/损坏文件返回空 store。
+    assert(LoadHotwordUsage(temp).empty());
+    auto bad_temp = std::filesystem::temp_directory_path() / "voicestick_hotword_usage_bad.json";
+    std::filesystem::remove(bad_temp);
+    {
+        std::ofstream f(bad_temp, std::ios::binary);
+        f << "{not-json";
+    }
+    assert(LoadHotwordUsage(bad_temp).empty());
+    std::filesystem::remove(bad_temp);
+}
+
+void TestHotwordCorrections() {
+    // ApplyHotwordCorrections：错误文本 -> 正确文本自动替换。
+    std::map<std::string, std::string> corrections;
+    // 空映射 / 空文本原样返回。
+    assert(ApplyHotwordCorrections("今天天气不错", corrections) == "今天天气不错");
+    corrections["小/zhi"] = "小智";
+    assert(ApplyHotwordCorrections("", corrections).empty());
+    // 基本替换：中文名词。
+    assert(ApplyHotwordCorrections("打开小/zhi的设置", corrections) == "打开小智的设置");
+    // 多次出现全部替换。
+    assert(ApplyHotwordCorrections("小/zhi和小/zhi", corrections) == "小智和小智");
+    // 英文大小写敏感精确匹配。
+    corrections["voicestick"] = "VoiceStick";
+    assert(ApplyHotwordCorrections("voicestick and VoiceStick", corrections) ==
+           "VoiceStick and VoiceStick");
+    // 链式不级联：A->B 与 B->C 同时存在时，"A" 只替换为 "B"（替换结果不二次匹配）。
+    std::map<std::string, std::string> chained;
+    chained["阿尔法"] = "Alpha";
+    chained["Alpha"] = "Beta";
+    assert(ApplyHotwordCorrections("阿尔法", chained) == "Alpha");
+    // UTF-8 多字节边界：替换结果中的字节不会与后续错误文本错误拼接成假命中。
+    std::map<std::string, std::string> utf8_edge;
+    utf8_edge["智"] = "A";
+    utf8_edge["A"] = "B";
+    assert(ApplyHotwordCorrections("智A", utf8_edge) == "AB");
+    assert(ApplyHotwordCorrections("小智", utf8_edge) == "小A");
+
+    // HotwordSuggestClient::ParseSuggestResponse：JSON 数组解析与容错。
+    assert(HotwordSuggestClient::ParseSuggestResponse("[\"小智\", \"小志\"]") ==
+           (std::vector<std::string>{"小智", "小志"}));
+    // 容错：前后包裹解释文字。
+    assert(HotwordSuggestClient::ParseSuggestResponse(
+               "以下是建议：\n[\"VoiceStick\"]\n以上。") ==
+           (std::vector<std::string>{"VoiceStick"}));
+    // 去重（忽略大小写）+ 限量 + 超长过滤 + 非字符串跳过。
+    const std::string dup_response =
+        R"([{"word":"x"}, "小智", "小智", "voicestick", "小智"])";
+    assert(HotwordSuggestClient::ParseSuggestResponse(dup_response) ==
+           (std::vector<std::string>{"小智", "voicestick"}));
+    assert(HotwordSuggestClient::ParseSuggestResponse(
+               "[\"" + std::string(65, 'a') + "\"]").empty());
+    // 无数组 / 非法 JSON 返回空。
+    assert(HotwordSuggestClient::ParseSuggestResponse("no array here").empty());
+    assert(HotwordSuggestClient::ParseSuggestResponse("[broken").empty());
+
+    // TOML 往返：[hotword_corrections] 表 Save/Load。
+    AppConfig config;
+    config.hotword_corrections["小/zhi"] = "小智";
+    config.hotword_corrections["voicestick"] = "VoiceStick";
+    auto roundtrip = std::filesystem::temp_directory_path() /
+                     "voicestick_hotword_corrections_test.toml";
+    std::filesystem::remove(roundtrip);
+    config.Save(roundtrip);
+    const auto loaded_config = AppConfig::Load(roundtrip);
+    assert(loaded_config.hotword_corrections.at("小/zhi") == "小智");
+    assert(loaded_config.hotword_corrections.at("voicestick") == "VoiceStick");
+    assert(loaded_config.hotword_corrections.size() == 2);
+    std::filesystem::remove(roundtrip);
+}
+
+void TestHotwordExtractionPromptAndParse() {
+    // prompt 附已知热词表（"已知热词表："列表行）；空表时不附加（注意基础规则文本里
+    // 含「已知热词表中的条目」字样，断言要匹配带冒号的列表行）。
+    const auto prompt = LLMRefinementClient::BuildHotwordExtractionPrompt({"AGENTS.md", "DeepSeek"});
+    assert(prompt.find("AGENTS.md") != std::string::npos);
+    assert(prompt.find("JSON") != std::string::npos);
+    assert(prompt.find("已知热词表：") != std::string::npos);
+    assert(LLMRefinementClient::BuildHotwordExtractionPrompt({}).find("已知热词表：") == std::string::npos);
+
+    const std::string source = "我们研究一下 Stack Chain 是怎么使用的，顺便问问 DeepSeek。";
+    const std::vector<std::string> hotwords = {"DeepSeek"};
+
+    // 正常 JSON 数组：过滤已在热词表的 DeepSeek，保留 Stack Chain。
+    auto words = LLMRefinementClient::ParseHotwordExtractionResponse(
+        "[\"Stack Chain\", \"DeepSeek\"]", source, hotwords);
+    assert((words == std::vector<std::string>{"Stack Chain"}));
+
+    // 前后裹解释文字也能容错解析。
+    words = LLMRefinementClient::ParseHotwordExtractionResponse(
+        "候选如下：[\"Stack Chain\"] 以上。", source, hotwords);
+    assert((words == std::vector<std::string>{"Stack Chain"}));
+
+    // 无候选 / 垃圾输出 / 非字符串元素 → 空。
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("[]", source, hotwords).empty());
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("没有候选", source, hotwords).empty());
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("[1, true, null]", source, hotwords).empty());
+
+    // 防臆造：不在原文出现的词被丢弃。
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("[\"OpenAI\"]", source, {}).empty());
+
+    // 忽略大小写：原文中的 "Stack Chain" 能匹配候选 "stack chain"；
+    // 与热词仅大小写不同也算重复（"deepseek" 命中热词 "DeepSeek"）。
+    words = LLMRefinementClient::ParseHotwordExtractionResponse("[\"stack chain\"]", source, hotwords);
+    assert((words == std::vector<std::string>{"stack chain"}));
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("[\"deepseek\"]", source, hotwords).empty());
+
+    // 过短 / 超长 / 超 3 词被过滤；同词大小写去重只留第一个。
+    const std::string words_source = "alpha beta gamma delta";
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("[\"x\"]", words_source, {}).empty());
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse(
+               "[\"alpha beta gamma delta\"]", words_source, {}).empty());
+    assert((LLMRefinementClient::ParseHotwordExtractionResponse("[\"alpha beta\"]", words_source, {})
+            == std::vector<std::string>{"alpha beta"}));
+    const std::string long_source = "abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz";
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse(
+               "[\"abcdefghijklmnopqrstuvwxyz abcdefghijklmnopqrstuvwxyz\"]", long_source, {}).empty());
+    assert((LLMRefinementClient::ParseHotwordExtractionResponse(
+                "[\"Stack Chain\", \"stack chain\"]", source, hotwords)
+            == std::vector<std::string>{"Stack Chain"}));
+
+    // 空白容忍：ASR 英文空格形态不稳定（双空格 / 连写），LLM 规范化输出不应被
+    // 防臆造误杀（生产环境 candidates=0 的已证实根因之一）。
+    const std::string double_space_source = "我刚才讲了 Stack  Chain 这个新词";
+    assert((LLMRefinementClient::ParseHotwordExtractionResponse(
+                "[\"Stack Chain\"]", double_space_source, hotwords)
+            == std::vector<std::string>{"Stack Chain"}));
+    const std::string concat_source = "我刚才讲了 StackChain 这个新词";
+    assert((LLMRefinementClient::ParseHotwordExtractionResponse(
+                "[\"Stack Chain\"]", concat_source, hotwords)
+            == std::vector<std::string>{"Stack Chain"}));
+
+    // 统计回填：bracket/json/items/各拒绝原因计数（只计数不记文本）。
+    LLMRefinementClient::HotwordExtractionStats stats;
+    words = LLMRefinementClient::ParseHotwordExtractionResponse(
+        "[\"Stack Chain\", \"DeepSeek\", \"OpenAI\", \"x\"]", source, hotwords, &stats);
+    assert((words == std::vector<std::string>{"Stack Chain"}));
+    assert(stats.bracket_found && stats.json_ok && stats.items == 4);
+    assert(stats.rejected_hotword == 1 && stats.rejected_not_in_text == 1 &&
+           stats.rejected_len == 1);
+    stats = {};
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("没有候选", source, hotwords, &stats)
+               .empty());
+    assert(!stats.bracket_found && !stats.json_ok);
+    stats = {};
+    assert(LLMRefinementClient::ParseHotwordExtractionResponse("[not json]", source, hotwords, &stats)
+               .empty());
+    assert(stats.bracket_found && !stats.json_ok);
+
+    // hotword_mining_enabled 配置往返，默认关闭。
+    assert(!AppConfig::Defaults().hotword_mining_enabled);
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_hotword_mining_test.toml";
+    std::filesystem::remove(temp);
+    AppConfig config = AppConfig::Defaults();
+    config.hotword_mining_enabled = true;
+    config.Save(temp);
+    assert(AppConfig::Load(temp).hotword_mining_enabled);
+    std::filesystem::remove(temp);
+}
+
+void TestFirmwareManifestParsingAndVersionCompare() {
+    const std::string json =
+        "{\"hardware\":\"sticks3\",\"version\":\"0.2.3\",\"ota_url\":\"https://example.test/ota.bin\","
+        "\"ota_sha256\":\"abc\",\"ota_size\":123,\"merged_url\":\"https://example.test/merged.bin\","
+        "\"merged_sha256\":\"def\",\"merged_size\":456}";
+    auto manifest = ParseFirmwareManifest(json);
+    assert(manifest.has_value());
+    assert(manifest->hardware == "sticks3");
+    assert(manifest->version == "0.2.3");
+    assert(manifest->ota_size == 123);
+    assert(FirmwareVersion::IsOlderThan("0.2.2", "0.2.3"));
+    assert(FirmwareVersion::IsOlderThan("0.2.3-beta", "0.2.3"));
+    assert(!FirmwareVersion::IsOlderThan("0.2.3", "0.2.3-beta"));
+    assert(IsFirmwareHardwareCompatible("sticks3", "0.1.2", "stick_s3"));
+    assert(IsFirmwareHardwareCompatible("", "0.1.2", "stick_s3"));
+    assert(IsFirmwareHardwareCompatible("", "", "stick_s3"));
+}
+
+void TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.imu_wake_sensitivity = ImuWakeSensitivity::kHigh;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    assert(!ble_ptr->sent_imu_wake_sensitivities.empty());
+    assert(ble_ptr->sent_imu_wake_sensitivities.back().threshold_lsb == 250);
+    // 设备交互设置按设备单播（IMU 唤醒灵敏度现属于设备级 InteractionSettings）。
+    assert(ble_ptr->sent_imu_wake_sensitivities.back().device_id == "5A74");
+
+    AppConfig updated = config;
+    updated.default_interaction_settings.imu_wake_sensitivity = ImuWakeSensitivity::kMedium;
+    coordinator.UpdateConfig(updated);
+
+    assert(ble_ptr->sent_imu_wake_sensitivities.back().threshold_lsb == 500);
+    assert(ble_ptr->sent_imu_wake_sensitivities.back().device_id == "5A74");
+}
+
+void TestCoordinatorUpdateFirmwareFromFile() {
+    const std::filesystem::path path =
+        std::filesystem::temp_directory_path() / "vs_local_fw_test.bin";
+    const ByteVector data{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02};
+    {
+        std::ofstream f(path, std::ios::binary);
+        f.write(reinterpret_cast<const char*>(data.data()),
+                static_cast<std::streamsize>(data.size()));
+    }
+
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    // 正常路径：读到的字节原样喂底层，device_id 透传。
+    bool ok = false;
+    coordinator.UpdateFirmwareFromFile(path.string(), "5A74", {},
+        [&](bool s, std::string) { ok = s; });
+    assert(ok);
+    assert(ble_ptr->captured_firmware_image == data);
+    assert(ble_ptr->captured_firmware_device_id == "5A74");
+
+    // 不存在文件：completion(false)，不触达底层（captured 维持上次成功值）。
+    bool ok2 = true;
+    coordinator.UpdateFirmwareFromFile("nonexistent_vs_fw.bin", "5A74", {},
+        [&](bool s, std::string) { ok2 = s; });
+    assert(!ok2);
+    assert(ble_ptr->captured_firmware_device_id == "5A74");
+
+    // 空文件：completion(false)，不触达底层。
+    const std::filesystem::path empty_path =
+        std::filesystem::temp_directory_path() / "vs_local_fw_empty.bin";
+    { std::ofstream f(empty_path, std::ios::binary); }
+    bool ok3 = true;
+    coordinator.UpdateFirmwareFromFile(empty_path.string(), "5A74", {},
+        [&](bool s, std::string) { ok3 = s; });
+    assert(!ok3);
+
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::remove(empty_path, ec);
+}
+
+void TestParseOtaCliArgs() {
+    using namespace voicestick;
+    // 无 --ota。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe"};
+        assert(!ParseOtaCliArgs(1, argv).has_value());
+    }
+    // --ota 带路径，无 --device。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--ota", L"C:/fw.bin"};
+        auto r = ParseOtaCliArgs(3, argv);
+        assert(r.has_value());
+        assert(r->file_path == "C:/fw.bin");
+        assert(!r->device_id.has_value());
+    }
+    // --ota + --device。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--ota", L"C:/fw.bin",
+                                 L"--device", L"5A74"};
+        auto r = ParseOtaCliArgs(5, argv);
+        assert(r.has_value());
+        assert(r->file_path == "C:/fw.bin");
+        assert(r->device_id.has_value());
+        assert(*r->device_id == "5A74");
+    }
+    // --device 在前，顺序无关。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--device", L"5A74",
+                                 L"--ota", L"C:/fw.bin"};
+        auto r = ParseOtaCliArgs(5, argv);
+        assert(r.has_value());
+        assert(r->file_path == "C:/fw.bin");
+        assert(*r->device_id == "5A74");
+    }
+    // --ota 缺路径 -> nullopt。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--ota"};
+        assert(!ParseOtaCliArgs(2, argv).has_value());
+    }
+    // 中文路径转 UTF-8。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--ota", L"C:/固件.bin"};
+        auto r = ParseOtaCliArgs(3, argv);
+        assert(r.has_value());
+        assert(r->file_path == "C:/固件.bin");
+    }
+    // --device 缺值但 --ota 正常 -> 忽略 --device。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--ota", L"C:/fw.bin", L"--device"};
+        auto r = ParseOtaCliArgs(4, argv);
+        assert(r.has_value());
+        assert(r->file_path == "C:/fw.bin");
+        assert(!r->device_id.has_value());
+    }
+}
+
+void TestParseRenameVirtualMicArgs() {
+    using namespace voicestick;
+    // 无 --rename-virtual-mic。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--ota", L"C:/fw.bin"};
+        assert(!ParseRenameVirtualMicArgs(3, argv).has_value());
+    }
+    // 基本形态：endpoint id + 无空格名字。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--rename-virtual-mic",
+                                 L"{0.0.1.00000000}.{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}",
+                                 L"VS-091C"};
+        auto r = ParseRenameVirtualMicArgs(4, argv);
+        assert(r.has_value());
+        assert(r->endpoint_id ==
+               L"{0.0.1.00000000}.{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}");
+        assert(r->new_name == L"VS-091C");
+    }
+    // 含空格名字：剩余参数以空格拼接还原。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--rename-virtual-mic",
+                                 L"{0.0.1.00000000}.{guid}", L"My", L"Stick", L"S3"};
+        auto r = ParseRenameVirtualMicArgs(6, argv);
+        assert(r.has_value());
+        assert(r->new_name == L"My Stick S3");
+    }
+    // 缺 endpoint-id / 缺名字 -> nullopt。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--rename-virtual-mic"};
+        assert(!ParseRenameVirtualMicArgs(2, argv).has_value());
+    }
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--rename-virtual-mic",
+                                 L"{0.0.1.00000000}.{guid}"};
+        assert(!ParseRenameVirtualMicArgs(3, argv).has_value());
+    }
+    // 中文名字（宽字符原样传递）。
+    {
+        const wchar_t* argv[] = {L"VoiceStick.exe", L"--rename-virtual-mic",
+                                 L"{0.0.1.00000000}.{guid}", L"我的语音棒"};
+        auto r = ParseRenameVirtualMicArgs(4, argv);
+        assert(r.has_value());
+        assert(r->new_name == L"我的语音棒");
+    }
+}
+
+void TestVirtualMicRenamerHelpers() {
+    using namespace voicestick;
+    // EndpointRegistryKeyName：endpoint id -> MMDevices 注册表键名。
+    assert(EndpointRegistryKeyName(
+               L"{0.0.1.00000000}.{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}") ==
+           L"{aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee}");
+    assert(EndpointRegistryKeyName(L"garbage").empty());
+    assert(EndpointRegistryKeyName(L"{0.0.1.00000000}.").empty());
+    assert(EndpointRegistryKeyName(L"{0.0.1.00000000}.nosuffix").empty());
+
+    // WriteEndpointFriendlyNameToRegistry：HKCU 沙箱（HKCU 下 MMDevices 键无系统
+    // 语义，写入无害），写后回读校验，最后清理。
+    const std::wstring endpoint_id = L"{0.0.1.00000000}.{eeeeeeee-0000-0000-0000-000000000001}";
+    const std::wstring key_path = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Capture\\"
+                                  L"{eeeeeeee-0000-0000-0000-000000000001}\\Properties";
+    assert(WriteEndpointFriendlyNameToRegistry(HKEY_CURRENT_USER, endpoint_id, L"VS-091C"));
+    {
+        HKEY key = nullptr;
+        assert(RegOpenKeyExW(HKEY_CURRENT_USER, key_path.c_str(), 0, KEY_QUERY_VALUE,
+                             &key) == ERROR_SUCCESS);
+        wchar_t buf[64] = {};
+        DWORD size = sizeof(buf);
+        DWORD type = 0;
+        assert(RegQueryValueExW(key, kEndpointFriendlyNameValueName, nullptr, &type,
+                                reinterpret_cast<BYTE*>(buf), &size) == ERROR_SUCCESS);
+        assert(type == REG_SZ);
+        assert(std::wstring(buf) == L"VS-091C");
+        RegCloseKey(key);
+    }
+    // 覆盖写回新名。
+    assert(WriteEndpointFriendlyNameToRegistry(HKEY_CURRENT_USER, endpoint_id, L"VS-5A74"));
+    {
+        HKEY key = nullptr;
+        assert(RegOpenKeyExW(HKEY_CURRENT_USER, key_path.c_str(), 0, KEY_QUERY_VALUE,
+                             &key) == ERROR_SUCCESS);
+        wchar_t buf[64] = {};
+        DWORD size = sizeof(buf);
+        assert(RegQueryValueExW(key, kEndpointFriendlyNameValueName, nullptr, nullptr,
+                                reinterpret_cast<BYTE*>(buf), &size) == ERROR_SUCCESS);
+        assert(std::wstring(buf) == L"VS-5A74");
+        RegCloseKey(key);
+    }
+    // 非法 endpoint id 拒写。
+    assert(!WriteEndpointFriendlyNameToRegistry(HKEY_CURRENT_USER, L"garbage", L"X"));
+    // 清理沙箱键（Properties 与父键）。
+    const std::wstring parent_key_path =
+        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Capture\\"
+        L"{eeeeeeee-0000-0000-0000-000000000001}";
+    RegDeleteKeyW(HKEY_CURRENT_USER, key_path.c_str());
+    RegDeleteKeyW(HKEY_CURRENT_USER, parent_key_path.c_str());
+
+    // PickVirtualMicDisplayName：无配对设备回退。
+    AppConfig config;
+    assert(PickVirtualMicDisplayName(config) == L"VoiceStick");
+    // 小米遥控器跳过（不做虚拟麦克风直通）。
+    {
+        PairedDeviceEntry rc;
+        rc.device_id = "5E6F";
+        rc.hardware = std::string(kHardwareXiaomiRemote2Pro);
+        rc.name = "RC-5E6F";
+        config.paired_devices.push_back(rc);
+    }
+    assert(PickVirtualMicDisplayName(config) == L"VoiceStick");
+    // StickS3：name 为空时回退 VS-<id>。
+    {
+        PairedDeviceEntry stick;
+        stick.device_id = "5A74";
+        config.paired_devices.push_back(stick);
+    }
+    assert(PickVirtualMicDisplayName(config) == L"VS-5A74");
+    // 有 name 的 StickS3：name 优先，但取第一个匹配到的（前面的 5A74 无 name）。
+    {
+        PairedDeviceEntry stick;
+        stick.device_id = "091C";
+        stick.name = "VS-091C";
+        config.paired_devices.push_back(stick);
+    }
+    assert(PickVirtualMicDisplayName(config) == L"VS-5A74");
+}
+
+void TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.tap_sensitivity = 7;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    assert(!ble_ptr->sent_tap_sensitivities.empty());
+    assert(ble_ptr->sent_tap_sensitivities.back().level == 7);
+    // 设备交互设置按设备单播（敲击灵敏度现属于设备级 InteractionSettings）。
+    assert(ble_ptr->sent_tap_sensitivities.back().device_id == "5A74");
+
+    AppConfig updated = config;
+    updated.default_interaction_settings.tap_sensitivity = 3;
+    coordinator.UpdateConfig(updated);
+
+    assert(ble_ptr->sent_tap_sensitivities.back().level == 3);
+    assert(ble_ptr->sent_tap_sensitivities.back().device_id == "5A74");
+}
+
+void TestBleEncoderPayloads() {
+    auto led = BleProtocol::EncoderLedColorPayload("cyan");
+    assert(std::string(led.begin(), led.end()) == "{\"event\":\"encoder_led_color\",\"color\":\"cyan\"}");
+    auto led_off = BleProtocol::EncoderLedColorPayload("off");
+    assert(std::string(led_off.begin(), led_off.end()) == "{\"event\":\"encoder_led_color\",\"color\":\"off\"}");
+
+    auto gate_off = BleProtocol::EncoderRecordingGatePayload(false);
+    assert(std::string(gate_off.begin(), gate_off.end()) == "{\"event\":\"encoder_recording_gate\",\"enabled\":false}");
+    auto gate_on = BleProtocol::EncoderRecordingGatePayload(true);
+    assert(std::string(gate_on.begin(), gate_on.end()) == "{\"event\":\"encoder_recording_gate\",\"enabled\":true}");
+}
+
+void TestCoordinatorSyncsEncoderSettingsOnConnectionAndConfigUpdate() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.led_color = "purple";
+    config.default_encoder_settings.press_action = "key";  // 派生门控关闭
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    // 连接时按设备单播有效配置：无覆盖设备收到全局默认值。
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    assert(ble_ptr->sent_encoder_led_colors.size() == 1);
+    assert(ble_ptr->sent_encoder_led_colors.back().first == "purple");
+    assert(ble_ptr->sent_encoder_led_colors.back().second.has_value());
+    assert(*ble_ptr->sent_encoder_led_colors.back().second == "5A74");
+    assert(ble_ptr->sent_encoder_recording_gates.size() == 1);
+    assert(ble_ptr->sent_encoder_recording_gates.back().first == false);
+    assert(ble_ptr->sent_encoder_recording_gates.back().second.has_value());
+    assert(*ble_ptr->sent_encoder_recording_gates.back().second == "5A74");
+
+    // UpdateConfig 对已连接设备逐台单播；press_action=recording 派生门控打开。
+    AppConfig updated = AppConfig::Defaults();
+    updated.default_encoder_settings.led_color = "green";
+    updated.default_encoder_settings.press_action = "recording";
+    coordinator.UpdateConfig(updated);
+    assert(ble_ptr->sent_encoder_led_colors.size() == 2);
+    assert(ble_ptr->sent_encoder_led_colors.back().first == "green");
+    assert(ble_ptr->sent_encoder_led_colors.back().second.has_value());
+    assert(*ble_ptr->sent_encoder_led_colors.back().second == "5A74");
+    assert(ble_ptr->sent_encoder_recording_gates.size() == 2);
+    assert(ble_ptr->sent_encoder_recording_gates.back().first == true);
+    assert(ble_ptr->sent_encoder_recording_gates.back().second.has_value());
+    assert(*ble_ptr->sent_encoder_recording_gates.back().second == "5A74");
+}
+
+void TestCoordinatorSyncsEncoderSettingsPerDeviceOverride() {
+    // 按设备覆盖：连接后每台设备收到各自的 led_color / recording_gate。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.led_color = "red";
+    config.default_encoder_settings.press_action = "recording";
+    config.paired_device_ids = {"5A74", "9BC1"};
+    EncoderSettings override_settings;
+    override_settings.led_color = "blue";
+    override_settings.press_action = "key";
+    config.device_encoder_settings["9BC1"] = override_settings;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->connected_device_ids.insert("9BC1");
+    ble_ptr->on_connection_change(
+        {ConnectedDevice{"5A74", "VS-5A74"}, ConnectedDevice{"9BC1", "VS-9BC1"}});
+    assert(ble_ptr->sent_encoder_led_colors.size() == 2);
+    assert(ble_ptr->sent_encoder_recording_gates.size() == 2);
+    // 5A74 无覆盖 → 全局默认 red + 门控开；9BC1 覆盖 → blue + 门控关。
+    for (const auto& [color, target] : ble_ptr->sent_encoder_led_colors) {
+        assert(target.has_value());
+        if (*target == "5A74") {
+            assert(color == "red");
+        } else {
+            assert(*target == "9BC1");
+            assert(color == "blue");
+        }
+    }
+    for (const auto& [gate, target] : ble_ptr->sent_encoder_recording_gates) {
+        assert(target.has_value());
+        if (*target == "5A74") {
+            assert(gate == true);
+        } else {
+            assert(*target == "9BC1");
+            assert(gate == false);
+        }
+    }
+}
+
+void TestCoordinatorSyncsInteractionSettingsPerDeviceOverride() {
+    // 设备交互设置按设备覆盖：连接后每台设备收到各自的有效配置（tap_to_arrow / 灵敏度 / IMU 唤醒）。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.tap_to_arrow = true;
+    config.default_interaction_settings.tap_sensitivity = 7;
+    config.default_interaction_settings.imu_wake_sensitivity = ImuWakeSensitivity::kHigh;
+    config.paired_device_ids = {"5A74", "9BC1"};
+    InteractionSettings override;
+    override.tap_to_arrow = false;
+    override.tap_sensitivity = 3;
+    override.imu_wake_sensitivity = ImuWakeSensitivity::kLow;
+    config.device_interaction_settings["9BC1"] = override;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->connected_device_ids.insert("9BC1");
+    ble_ptr->on_connection_change(
+        {ConnectedDevice{"5A74", "VS-5A74"}, ConnectedDevice{"9BC1", "VS-9BC1"}});
+
+    // tap_to_arrow：5A74 默认 true，9BC1 覆盖 false，均按设备单播。
+    assert(ble_ptr->sent_tap_enabled.size() == 2);
+    for (const auto& [enabled, target] : ble_ptr->sent_tap_enabled) {
+        assert(target.has_value());
+        if (*target == "5A74") {
+            assert(enabled == true);
+        } else {
+            assert(*target == "9BC1");
+            assert(enabled == false);
+        }
+    }
+
+    // tap_sensitivity：5A74=7，9BC1=3。
+    assert(ble_ptr->sent_tap_sensitivities.size() == 2);
+    for (const auto& sent : ble_ptr->sent_tap_sensitivities) {
+        assert(sent.device_id.has_value());
+        if (*sent.device_id == "5A74") {
+            assert(sent.level == 7);
+        } else {
+            assert(*sent.device_id == "9BC1");
+            assert(sent.level == 3);
+        }
+    }
+
+    // imu_wake_sensitivity：5A74=kHigh(250)，9BC1 覆盖 kLow(800)。
+    assert(ble_ptr->sent_imu_wake_sensitivities.size() == 2);
+    for (const auto& sent : ble_ptr->sent_imu_wake_sensitivities) {
+        assert(sent.device_id.has_value());
+        if (*sent.device_id == "5A74") {
+            assert(sent.threshold_lsb == 250);
+        } else {
+            assert(*sent.device_id == "9BC1");
+            assert(sent.threshold_lsb == 800);
+        }
+    }
+}
+
+void TestAppConfigTapSensitivityRoundTrip() {
+    // 默认档 5。
+    assert(AppConfig::Defaults().default_interaction_settings.tap_sensitivity == 5);
+
+    // 钳位：越界值回退默认档 5，合法值透传。
+    assert(TapSensitivityClamp(0) == 5);
+    assert(TapSensitivityClamp(11) == 5);
+    assert(TapSensitivityClamp(-1) == 5);
+    assert(TapSensitivityClamp(1) == 1);
+    assert(TapSensitivityClamp(10) == 10);
+    assert(TapSensitivityClamp(3) == 3);
+
+    // TOML 保存/加载往返。
+    {
+        auto temp = std::filesystem::temp_directory_path() / "voicestick_tap_sensitivity_test.toml";
+        std::filesystem::remove(temp);
+
+        AppConfig config = AppConfig::Defaults();
+        config.default_interaction_settings.tap_sensitivity = 8;
+        config.Save(temp);
+
+        AppConfig loaded = AppConfig::Load(temp);
+        assert(loaded.default_interaction_settings.tap_sensitivity == 8);
+
+        std::filesystem::remove(temp);
+    }
+
+    // 越界值落盘后回读应被钳位到默认档 5。
+    {
+        auto temp = std::filesystem::temp_directory_path() / "voicestick_tap_sensitivity_clamp_test.toml";
+        std::filesystem::remove(temp);
+
+        AppConfig config = AppConfig::Defaults();
+        config.default_interaction_settings.tap_sensitivity = 99;
+        config.Save(temp);
+
+        AppConfig loaded = AppConfig::Load(temp);
+        assert(loaded.default_interaction_settings.tap_sensitivity == 5);
+
+        std::filesystem::remove(temp);
+    }
+}
+
+void TestCoordinatorHotkeyWithoutConnectionShowsWakeHint() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.debug_audio_cache = true;
+    config.paired_device_ids.push_back("5A74");
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    coordinator.HandleGlobalHotkeyPressed();
+
+    assert(ble_ptr->sent_remote_buttons.empty());
+    assert(!ui.statuses.empty());
+    assert(ui.statuses.back() == "Hotkey: VoiceStick not connected; press the main button to wake it");
+    assert(!ui.notifications.empty());
+    assert(ui.notifications.back().find("按主键唤醒") != std::string::npos);
+}
+
+void TestCoordinatorHotkeyWithConnectionSendsRemoteButton() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.paired_device_ids.push_back("5A74");
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    coordinator.HandleGlobalHotkeyPressed();
+
+    assert(ble_ptr->sent_remote_buttons.size() == 1);
+    assert(ble_ptr->sent_remote_buttons.back().action == RemoteButtonAction::kDown);
+    assert(ble_ptr->sent_remote_buttons.back().button == "primary");
+    assert(ble_ptr->sent_remote_buttons.back().device_id == std::optional<std::string>("5A74"));
+}
+
+void TestCoordinatorCancelsShortPrimaryPress() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 42));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 42));
+
+    assert(asr_ptr->cancelled);
+    assert(ui.show_listening_count == 1);
+    assert(ui.hide_overlay_count == 1);
+    assert(HasUiState(*ble_ptr, "recording", "5A74"));
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+}
+
+void TestCoordinatorPrimaryDuringFinalizingRefreshesThinking() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 7));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(7, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 7));
+    assert(!asr_ptr->started);
+
+    const auto before = ble_ptr->sent_ui_states.size();
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", std::nullopt));
+
+    assert(ble_ptr->sent_ui_states.size() == before + 1);
+    assert(ble_ptr->sent_ui_states.back().state == "thinking");
+    assert(ble_ptr->sent_ui_states.back().device_id == std::optional<std::string>("5A74"));
+
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(7, 2));
+    assert(asr_ptr->started);
+    assert(asr_ptr->last_chunk_was_final);
+}
+
+void TestCoordinatorSecondaryCancelsFinalizing() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 8));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(8, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 8));
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "secondary"));
+
+    assert(asr_ptr->cancelled);
+    assert(ui.hide_overlay_count == 1);
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+}
+
+void TestCoordinatorAcceptsAudioFramesAfterButtonUpUntilEnd() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 14));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(14, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 14));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(14, 2));
+
+    assert(!asr_ptr->started);
+
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(14, 3));
+
+    assert(asr_ptr->started);
+    assert(asr_ptr->sent_chunks >= 3);
+    assert(asr_ptr->last_chunk_was_final);
+}
+
+// BLE 断连（僵尸链路）发生在 final 音频块已发出、ASR final 尚在网络侧在途时：
+// 不得取消 ASR——final 到达后应照常粘贴。修复「流式已上屏但断连导致不粘贴」。
+void TestCoordinatorDisconnectAwaitingAsrFinalKeepsSession() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;  // 关异步精修，聚焦断连与 ASR final 的交互
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 21));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(21, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 21));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(21, 2));
+    assert(asr_ptr->started);
+    assert(asr_ptr->last_chunk_was_final);
+
+    ble_ptr->connected_device_ids.erase("5A74");
+    ble_ptr->on_connection_change({});
+    assert(!asr_ptr->cancelled);
+
+    // ASR final 在断连后到达（走网络与 BLE 无关）：必须照常粘贴。
+    asr_ptr->on_final("hello");
+    assert(input.pasted_text == "hello");
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+}
+
+// 对照：仍在录音（final 块未发出）时断连，维持原有取消语义。
+void TestCoordinatorDisconnectDuringRecordingCancelsSession() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 22));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(22, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+
+    ble_ptr->connected_device_ids.erase("5A74");
+    ble_ptr->on_connection_change({});
+    assert(asr_ptr->cancelled);
+}
+
+void TestCoordinatorMainFinalPastesWithoutConfirmation() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;  // 本用例验证同步粘贴流程，关闭异步精修以免触发真实 LLM 调用
+    config.auto_enter = true;       // 默认已改为 false，本用例显式开启以验证粘贴后回车
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 9));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(9, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 9));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(9, 2));
+    asr_ptr->on_final("hello");
+
+    assert(input.pasted_text == "hello");
+    assert(input.pasted_enter);
+    assert(ui.final_countdowns.empty());
+    assert(ui.paused_finals.empty());
+    assert(ui.hide_overlay_count == 1);
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+}
+
+// 开启精修时，ASR final 到达后应立即把原文刷上悬浮窗（ShowRefining），
+// 而非冻结在旧 partial 上等待 LLM 首 token。不可达 base_url 使精修快速失败回退到原文。
+void TestCoordinatorRefineShowsOriginalTextImmediately() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    // refine_enabled 默认 true；用不可达 base_url 强制 LLM 快速失败回退。
+    // 不依赖 llm_api_key 空：开发/MSI 构建内置 key 非空时 ActiveLlmApiKey 仍非空，
+    // 改用无效 base_url 让 WinHttpCrackUrl 同步失败，触发 on_error →
+    // Refine → ChatSync 同样失败 → on_complete(false, 原文)。
+    config.refine_enabled = true;  // 默认已改为 false，本用例显式开启以验证精修回退路径
+    assert(config.refine_enabled);
+    config.llm_base_url = "http://[";
+    config.auto_enter = true;      // 默认已改为 false，本用例显式开启以验证粘贴后回车
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 21));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(21, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 21));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(21, 2));
+    asr_ptr->on_final("hello refine");
+
+    // 关键断言：final 后立即调用 ShowRefining 显示原文，不等 LLM 首 token。
+    assert(!ui.refining_texts.empty());
+    assert(ui.refining_texts.front() == "hello refine");
+
+    // 等待后台精修失败回退完成，最终粘贴原文。
+    for (int i = 0; i < 50 && input.pasted_text.empty(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    assert(input.pasted_text == "hello refine");
+    assert(input.pasted_enter);
+}
+
+void TestCoordinatorOtherDeviceDuringRecordingGetsReady() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 10));
+
+    const auto before = ble_ptr->sent_ui_states.size();
+    ble_ptr->on_state_event("6B85", ButtonEvent("button_down", "primary", 11));
+
+    assert(ble_ptr->sent_ui_states.size() == before + 1);
+    assert(ble_ptr->sent_ui_states.back().state == "ready");
+    assert(ble_ptr->sent_ui_states.back().device_id == std::optional<std::string>("6B85"));
+}
+
+void TestCoordinatorSubtitleOutputSkipsPaste() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto primary_asr = std::make_unique<FakeAsrClient>();
+    FakeAsrClient* subtitle_asr_ptr = nullptr;
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kSubtitle;
+    config.interaction_mode = InteractionMode::kClickToTalk;
+    config.refine_enabled = false;  // 字幕用例验证同步显示流程，关闭异步精修以免触发真实 LLM 调用
+    config.device_theme_colors["5A74"] = OverlayThemeColor::kBlue;
+    VoiceStickCoordinator coordinator(
+        config,
+        std::move(ble),
+        std::move(primary_asr),
+        &ui,
+        &input,
+        [&](const AppConfig&) {
+            auto asr = std::make_unique<FakeAsrClient>();
+            subtitle_asr_ptr = asr.get();
+            return asr;
+        });
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 12));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(12, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 12));
+    assert(subtitle_asr_ptr != nullptr);
+    assert(!subtitle_asr_ptr->started);
+    subtitle_asr_ptr->on_partial("early subtitle");
+    assert(!ui.partials.empty());
+    assert(ui.partials.back() == "early subtitle");
+    assert(ble_ptr->sent_ui_states.back().text != "early subtitle");
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(12, 2));
+    assert(subtitle_asr_ptr->started);
+    assert(subtitle_asr_ptr->last_options.show_utterances);
+    assert(subtitle_asr_ptr->last_options.result_type == AsrResultType::kSingle);
+    subtitle_asr_ptr->on_partial("interim subtitle");
+    assert(!ui.partials.empty());
+    assert(ui.partials.back() == "interim subtitle");
+    subtitle_asr_ptr->on_final("hello subtitle");
+
+    assert(input.pasted_text.empty());
+    assert(!ui.subtitles.empty());
+    assert(ui.subtitles.back() == "5A74:hello subtitle:blue");
+    assert(ui.hide_overlay_count > 0);
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+}
+
+void TestCoordinatorSubtitleFinalDoesNotBlockNextSession() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto primary_asr = std::make_unique<FakeAsrClient>();
+    std::vector<FakeAsrClient*> subtitle_asrs;
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kSubtitle;
+    config.interaction_mode = InteractionMode::kHoldToTalk;
+    config.refine_enabled = false;  // 字幕用例验证同步显示流程，关闭异步精修以免触发真实 LLM 调用
+    config.device_theme_colors["5A74"] = OverlayThemeColor::kBlue;
+    VoiceStickCoordinator coordinator(
+        config,
+        std::move(ble),
+        std::move(primary_asr),
+        &ui,
+        &input,
+        [&](const AppConfig&) {
+            auto asr = std::make_unique<FakeAsrClient>();
+            subtitle_asrs.push_back(asr.get());
+            return asr;
+        });
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 12));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(12, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 12));
+    assert(subtitle_asrs.size() == 1);
+    assert(!subtitle_asrs[0]->started);
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+
+    const auto ready_count_after_first_release = std::count_if(
+        ble_ptr->sent_ui_states.begin(), ble_ptr->sent_ui_states.end(), [](const SentUiState& sent) {
+            return sent.state == "ready" && sent.device_id == std::optional<std::string>("5A74");
+        });
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 13));
+    assert(subtitle_asrs.size() == 2);
+    assert(ble_ptr->sent_ui_states.back().state == "recording");
+
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(12, 2));
+    assert(subtitle_asrs[0]->started);
+    subtitle_asrs[0]->on_final("first late subtitle");
+    assert(!ui.subtitles.empty());
+    assert(ui.subtitles.back() == "5A74:first late subtitle:blue");
+    const auto ready_count_after_late_final = std::count_if(
+        ble_ptr->sent_ui_states.begin(), ble_ptr->sent_ui_states.end(), [](const SentUiState& sent) {
+            return sent.state == "ready" && sent.device_id == std::optional<std::string>("5A74");
+        });
+    assert(ready_count_after_late_final == ready_count_after_first_release);
+}
+
+void TestCoordinatorShortSubtitleEndReturnsReady() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto primary_asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kSubtitle;
+    config.interaction_mode = InteractionMode::kHoldToTalk;
+    VoiceStickCoordinator coordinator(
+        config,
+        std::move(ble),
+        std::move(primary_asr),
+        &ui,
+        &input,
+        [](const AppConfig&) {
+            return std::make_unique<FakeAsrClient>();
+        });
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 12));
+    assert(ble_ptr->sent_ui_states.back().state == "recording");
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(12, 1));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 12));
+
+    assert(ui.hide_overlay_count > 0);
+    assert(!ui.statuses.empty());
+    assert(ui.statuses.back() == "Ready");
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+}
+
+void TestCoordinatorClickToTalkPrimaryClickTogglesRecording() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.interaction_mode = InteractionMode::kClickToTalk;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 21));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(21, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 21));
+
+    assert(!asr_ptr->started);
+    assert(ble_ptr->sent_ui_states.back().state == "thinking");
+
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(21, 2));
+    assert(asr_ptr->started);
+    assert(asr_ptr->last_chunk_was_final);
+}
+
+// click_to_talk 消歧回归：固件启动 click 发 duration_ms=0、停止 click 发 >0（均带
+// session_id）。无活跃会话时收到停止 click 属于失步残留（典型：识别中启动 click 被忽略、
+// 固件仍在录音，桌面回 ready 后停止 click 才到），必须忽略；否则启动永远收不到音频的
+// 幽灵会话，数秒后经停滞看门狗以 "No audio frames from device" 报错。
+void TestCoordinatorClickToTalkIgnoresStrayStopClick() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.interaction_mode = InteractionMode::kClickToTalk;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 99, 3000));
+    assert(ui.show_listening_count == 0);
+    assert(!HasUiState(*ble_ptr, "recording", "5A74"));
+}
+
+// 完整失步链路：识别中（finalizing）点击启动被桌面忽略但固件已在录音 → ASR final 后桌面
+// 回 ready → 停止 click 到达。该 click 不得误判为启动新会话。
+void TestCoordinatorClickToTalkStaleStopClickAfterFinalizingIgnored() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.interaction_mode = InteractionMode::kClickToTalk;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    // 会话 50：正常启动、说话、停止 → 等 audio_end（finalizing）。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 50, 0));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(50, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 50, 3000));
+    assert(ble_ptr->sent_ui_states.back().state == "thinking");
+    assert(ui.show_listening_count == 1);
+
+    // finalizing 期间点击启动会话 51：桌面忽略（设备屏 thinking），固件实际在录音。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 51, 0));
+    assert(ui.show_listening_count == 1);
+    assert(ble_ptr->sent_ui_states.back().state == "thinking");
+
+    // 会话 50 收尾：audio_end → ASR final → 粘贴回 ready。
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(50, 2));
+    assert(asr_ptr->started);
+    asr_ptr->on_final("hello");
+    assert(input.pasted_text == "hello");
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+
+    // 会话 51 的停止 click 迟到：不得启动幽灵会话。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 51, 4200));
+    assert(ui.show_listening_count == 1);
+}
+
+// 停止 click 的 session_id 与活跃会话不匹配时不得停止当前会话：固件录音中只对本次会话
+// 发停止 click，不匹配说明该 click 属于另一个已结束会话（失步残留）。
+void TestCoordinatorClickToTalkStopClickSessionMismatchIgnored() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.interaction_mode = InteractionMode::kClickToTalk;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 70, 0));
+    assert(ui.show_listening_count == 1);
+    assert(ble_ptr->sent_ui_states.back().state == "recording");
+
+    // 不匹配的停止 click：当前会话 70 保持录音，不被误停。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 71, 3000));
+    assert(ui.hide_overlay_count == 0);
+    assert(ble_ptr->sent_ui_states.back().state == "recording");
+}
+
+// 录音中收到新启动 click（旧会话停止 click 丢失的失步自愈）：先取消残留旧会话，
+// 再以新 session_id 启动新会话，与 button_down 路径的残留自愈一致。
+void TestCoordinatorClickToTalkStartClickDuringRecordingStartsNew() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.interaction_mode = InteractionMode::kClickToTalk;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 80, 0));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(80, 1));
+    assert(ui.show_listening_count == 1);
+
+    // 固件已结束 80 并开启 81（其停止 click 丢失）：启动 click(81) 自愈切换到新会话。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 81, 0));
+    assert(ui.show_listening_count == 2);
+    assert(ble_ptr->sent_ui_states.back().state == "recording");
+
+    // 新会话正常工作：音频帧被接受，匹配停止 click 正常结束。
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(81, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 81, 3000));
+    assert(ble_ptr->sent_ui_states.back().state == "thinking");
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(81, 2));
+    assert(asr_ptr->started);
+    assert(asr_ptr->last_chunk_was_final);
+}
+
+void TestCoordinatorMainPartialSentToDeviceOnlyAfterFinalAudio() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 22));
+    asr_ptr->on_partial("early");
+    assert(!ui.partials.empty());
+    assert(ui.partials.back() == "early");
+    assert(ble_ptr->sent_ui_states.back().text != "early");
+
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(22, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 22));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(22, 2));
+    asr_ptr->on_partial("late");
+
+    assert(ble_ptr->sent_ui_states.back().state == "thinking");
+    assert(ble_ptr->sent_ui_states.back().text == "late");
+}
+
+void TestCoordinatorShowsDetailedAsrStartError() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    asr_ptr->start_result = false;
+    asr_ptr->start_error = "Missing ASR API key";
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 23));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(23, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 23));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(23, 2));
+
+    assert(!ui.errors.empty());
+    assert(ui.errors.back() == "Missing ASR API key");
+    assert(HasUiStateText(*ble_ptr, "error", "Missing ASR API key", "5A74"));
+}
+
+// 系统休眠/恢复后 ASR 保活 WebSocket 底层 TCP 已断，但 AsrClientWin 状态机仍认为
+// kReady。平台层在 WM_POWERBROADCAST resume 时调 InvalidateAsrConnection() 通知
+// 协调器丢弃保活连接，下次 Start 强制重新握手。本测试验证协调器正确转发给 asr_。
+void TestCoordinatorInvalidateAsrConnectionForwardsToClient() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    assert(asr_ptr->invalidate_call_count == 0);
+    coordinator.InvalidateAsrConnection();
+    assert(asr_ptr->invalidate_call_count == 1);
+}
+
+void TestTapEventInjectsArrowDown() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.tap_to_arrow = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+
+    assert(input.arrow_down_count == 1);
+    assert(!ble_ptr->sent_ui_states.empty());
+    assert(ble_ptr->sent_ui_states.back().state == "ready");
+}
+
+void TestTapDisabledWhenConfigOff() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.tap_to_arrow = false;  // 总开关关闭
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+
+    assert(input.arrow_down_count == 0);
+}
+
+void TestTapIgnoredDuringRecording() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.tap_to_arrow = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入录音态（hold_to_talk 默认，主键按下即录音）。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));
+
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+
+    // 录音中 tap 应被忽略，不注入方向键，也不取消当前录音。
+    assert(input.arrow_down_count == 0);
+}
+
+void TestTapThrottledWithin500ms() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.tap_to_arrow = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 500ms 内连续两次 tap：第二次应被节流，只注入一次方向键。
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+
+    assert(input.arrow_down_count == 1);
+}
+
+void TestTapThrottleRecoversAfter500ms() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.tap_to_arrow = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 第一次 tap 注入；间隔超过 500ms 后第二次 tap 应再次注入。
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+    assert(input.arrow_down_count == 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+
+    assert(input.arrow_down_count == 2);
+}
+
+void TestInputInjectorArrowUpFakeWiring() {
+    // Fake 直连验证 SendArrowUp 接线：协调器映射测试（Task 8）依赖此计数。
+    FakeInputInjector input;
+    input.SendArrowUp();
+    assert(input.arrow_up_count == 1);
+    assert(input.arrow_down_count == 0);
+}
+
+void TestInputInjectorKeyComboFakeWiring() {
+    // Fake 直连验证 SendKeyCombo 接线：协调器路由测试（Task 9）依赖此记录。
+    FakeInputInjector input;
+    const auto spec = ParseKeySpec("ctrl+shift+v");
+    assert(spec.has_value());
+    input.SendKeyCombo(*spec);
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Ctrl+Shift+V");
+}
+
+void TestKeySpecParse() {
+    // 单键：方向键/enter/单字符/f 键/音量键。
+    auto down = ParseKeySpec("down");
+    assert(down.has_value());
+    assert(down->modifiers.empty());
+    assert(down->vk == VK_DOWN);
+    assert(down->display_text == "Down");
+
+    auto up = ParseKeySpec("UP");  // 大小写不敏感
+    assert(up.has_value() && up->vk == VK_UP);
+
+    auto enter = ParseKeySpec(" enter ");  // 前后空白容忍
+    assert(enter.has_value() && enter->vk == VK_RETURN && enter->display_text == "Enter");
+
+    auto v = ParseKeySpec("v");
+    assert(v.has_value() && v->vk == 'V' && v->display_text == "V");
+
+    auto f5 = ParseKeySpec("f5");
+    assert(f5.has_value() && f5->vk == VK_F5 && f5->display_text == "F5");
+
+    auto vol = ParseKeySpec("volumeup");
+    assert(vol.has_value() && vol->vk == VK_VOLUME_UP);
+
+    auto pgdn = ParseKeySpec("pagedown");
+    assert(pgdn.has_value() && pgdn->vk == VK_NEXT);
+
+    // 修饰键组合：display_text 修饰键固定 Ctrl/Alt/Shift/Win 序。
+    auto combo = ParseKeySpec("win+shift+ctrl+v");
+    assert(combo.has_value());
+    assert(combo->vk == 'V');
+    assert(combo->modifiers.size() == 3);
+    assert(combo->modifiers[0] == VK_CONTROL);
+    assert(combo->modifiers[1] == VK_SHIFT);
+    assert(combo->modifiers[2] == VK_LWIN);
+    assert(combo->display_text == "Ctrl+Shift+Win+V");
+
+    auto alt_f4 = ParseKeySpec("alt+f4");
+    assert(alt_f4.has_value() && alt_f4->vk == VK_F4 && alt_f4->display_text == "Alt+F4");
+
+    // 非法：未知键名、仅修饰键、空串、重复主键。
+    assert(!ParseKeySpec("bogus").has_value());
+    assert(!ParseKeySpec("ctrl").has_value());
+    assert(!ParseKeySpec("").has_value());
+    assert(!ParseKeySpec("ctrl+").has_value());
+    assert(!ParseKeySpec("a+b").has_value());
+
+    // 分支覆盖：重复修饰键、空中间 part、f 键边界、大写修饰键、纯数字主键、非 ASCII。
+    assert(!ParseKeySpec("ctrl+ctrl+v").has_value());
+    assert(!ParseKeySpec("ctrl++v").has_value());
+    assert(!ParseKeySpec("f0").has_value());
+    assert(!ParseKeySpec("f25").has_value());
+    auto f24 = ParseKeySpec("f24");
+    assert(f24.has_value() && f24->vk == VK_F24);
+    auto ctrl_v = ParseKeySpec("CTRL+V");
+    assert(ctrl_v.has_value() && ctrl_v->display_text == "Ctrl+V");
+    auto digit5 = ParseKeySpec("5");
+    assert(digit5.has_value() && digit5->vk == '5');
+    assert(!ParseKeySpec("上").has_value());  // UTF-8 非 ASCII 输入不崩且拒绝
+}
+
+void TestKeySpecMakeFromVk() {
+    // 单键无修饰键（按键映射场景）。
+    const auto single = MakeKeySpecFromVk({}, VK_DOWN);
+    assert(single.modifiers.empty());
+    assert(single.vk == VK_DOWN);
+    assert(single.display_text == "Down");
+
+    // 乱序修饰键输入归一化为 Ctrl/Alt/Shift/Win 序；重复项去重（按集合语义）。
+    const auto combo = MakeKeySpecFromVk({VK_LWIN, VK_SHIFT, VK_CONTROL}, 'V');
+    assert(combo.vk == 'V');
+    assert(combo.modifiers.size() == 3);
+    assert(combo.modifiers[0] == VK_CONTROL);
+    assert(combo.modifiers[1] == VK_SHIFT);
+    assert(combo.modifiers[2] == VK_LWIN);
+    assert(combo.display_text == "Ctrl+Shift+Win+V");
+
+    // 不可识别 VK：display_text 退化 "VK0xXX" 大写十六进制，恒成功。
+    const auto unknown = MakeKeySpecFromVk({}, 0x1F);
+    assert(unknown.vk == 0x1F);
+    assert(unknown.display_text == "VK0x1F");
+
+    // 非白名单修饰键不进结果。
+    const auto stray = MakeKeySpecFromVk({VK_CAPITAL, VK_MENU}, VK_F4);
+    assert(stray.modifiers.size() == 1 && stray.modifiers[0] == VK_MENU);
+    assert(stray.display_text == "Alt+F4");
+}
+
+void TestAppConfigEncoderRoundTrip() {
+    // 默认值：旋转注入开、不翻转。
+    assert(AppConfig::Defaults().default_encoder_settings.to_arrow == true);
+    assert(AppConfig::Defaults().default_encoder_settings.rotation_invert == false);
+
+    // TOML 保存/加载往返。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_encoder_config_test.toml";
+    std::filesystem::remove(temp);
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.to_arrow = false;
+    config.default_encoder_settings.rotation_invert = true;
+    config.Save(temp);
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.default_encoder_settings.to_arrow == false);
+    assert(loaded.default_encoder_settings.rotation_invert == true);
+    std::filesystem::remove(temp);
+}
+
+void TestAppConfigEncoderSettingsRoundTrip() {
+    // 默认值等价当前硬编码行为。
+    const AppConfig defaults = AppConfig::Defaults();
+    assert(defaults.default_encoder_settings.rotate_cw_key == "down");
+    assert(defaults.default_encoder_settings.rotate_ccw_key == "up");
+    assert(defaults.default_encoder_settings.led_color == "red");
+    assert(defaults.default_encoder_settings.press_action == "recording");
+    assert(defaults.default_encoder_settings.press_key.empty());
+    assert(defaults.default_encoder_settings.double_click_action == "key");
+    assert(defaults.default_encoder_settings.double_click_key == "enter");
+
+    // 保存/加载往返。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_encoder_settings_test.toml";
+    std::filesystem::remove(temp);
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_cw_key = "pageup";
+    config.default_encoder_settings.rotate_ccw_key = "pagedown";
+    config.default_encoder_settings.led_color = "cyan";
+    config.default_encoder_settings.press_action = "key";
+    config.default_encoder_settings.press_key = "ctrl+z";
+    config.default_encoder_settings.double_click_action = "recording";
+    config.default_encoder_settings.double_click_key = "ctrl+enter";
+    config.Save(temp);
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.default_encoder_settings.rotate_cw_key == "pageup");
+    assert(loaded.default_encoder_settings.rotate_ccw_key == "pagedown");
+    assert(loaded.default_encoder_settings.led_color == "cyan");
+    assert(loaded.default_encoder_settings.press_action == "key");
+    assert(loaded.default_encoder_settings.press_key == "ctrl+z");
+    assert(loaded.default_encoder_settings.double_click_action == "recording");
+    assert(loaded.default_encoder_settings.double_click_key == "ctrl+enter");
+    std::filesystem::remove(temp);
+}
+
+void TestAppConfigEncoderSettingsInvalidFallback() {
+    // 非法值回退默认：未知 action/颜色/按键语法。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_encoder_invalid_test.toml";
+    std::filesystem::remove(temp);
+    {
+        std::ofstream out(temp);
+        out << "encoder_rotate_cw_key = \"bogus\"\n";
+        out << "encoder_led_color = \"pink\"\n";
+        out << "encoder_press_action = \"fly\"\n";
+        out << "encoder_press_key = \"ctrl+\"\n";
+        out << "encoder_double_click_action = \"fly\"\n";
+        out << "encoder_double_click_key = \"a+b\"\n";
+    }
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.default_encoder_settings.rotate_cw_key == "down");
+    assert(loaded.default_encoder_settings.led_color == "red");
+    assert(loaded.default_encoder_settings.press_action == "recording");
+    assert(loaded.default_encoder_settings.press_key.empty());
+    assert(loaded.default_encoder_settings.double_click_action == "key");
+    assert(loaded.default_encoder_settings.double_click_key == "enter");
+    std::filesystem::remove(temp);
+}
+
+void TestEncoderRotateMapsDirectionToArrows() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定，专注验证方向映射
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 默认映射：cw→Down、ccw→Up，每个 step 注入一次。默认配置 down/up 合法，
+    // 走 SendKeyCombo 通道（与 SendArrowDown/Up 等价：同一 VK_DOWN/VK_UP 键事件）。
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+
+    assert(input.sent_key_combos.size() == 3);
+    assert(input.sent_key_combos[0] == "Down");
+    assert(input.sent_key_combos[1] == "Down");
+    assert(input.sent_key_combos[2] == "Up");
+}
+
+void TestEncoderRotateInvertFlipsDirection() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotation_invert = true;
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 翻转后：cw→Up、ccw→Down（同样走 SendKeyCombo 通道）。
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+
+    assert(input.sent_key_combos.size() == 3);
+    assert(input.sent_key_combos[0] == "Up");
+    assert(input.sent_key_combos[1] == "Up");
+    assert(input.sent_key_combos[2] == "Down");
+}
+
+void TestEncoderRotateDisabledWhenConfigOff() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.to_arrow = false;  // 总开关关闭
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+
+    assert(input.arrow_down_count == 0);
+    assert(input.arrow_up_count == 0);
+}
+
+void TestEncoderRotateIgnoredDuringRecording() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入录音态（hold_to_talk 默认，主键按下即录音）。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
+
+    // 录音中旋转应被忽略，不注入方向键，也不取消当前录音。
+    assert(input.arrow_down_count == 0);
+    assert(input.arrow_up_count == 0);
+}
+
+void TestEncoderRotateUnknownDirectionTreatedAsCw() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 未知 direction（固件拼写错误/未来新值）兜底按 cw 处理（SendKeyCombo 通道）。
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("up", 2));
+
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[0] == "Down");
+    assert(input.sent_key_combos[1] == "Down");
+}
+
+void TestEncoderRotateStepsClamped() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    // 抬高快慢分档阈值，隔离快慢分档对注入按键的影响，专注验证 steps 钳制。
+    config.default_encoder_settings.rotate_fast_threshold = 100000;
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 异常大步数应被钳到 kMaxEncoderRotateSteps=64，防伪造帧放大注入循环（SendKeyCombo 通道）。
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 300));
+
+    assert(input.sent_key_combos.size() == 64);
+    assert(std::all_of(input.sent_key_combos.begin(), input.sent_key_combos.end(),
+                       [](const std::string& s) { return s == "Down"; }));
+}
+
+void TestEncoderPressRecordingStartsSession() {
+    // 默认 press_action=recording：编码器 button_down 走主键路径启动录音会话。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_down", 30));
+    // 与物理主键 down 同一行为：进入录音态；ASR 与物理路径一致在首帧音频且
+    // 录音时长过阈值后懒启动。
+    assert(HasUiState(*ble_ptr, "recording", "5A74"));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(30, 1));
+    assert(asr_ptr->started);
+    assert(input.sent_key_combos.empty());
+}
+
+void TestEncoderPressKeyInjectsComboWithoutRecording() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.press_action = "key";
+    config.default_encoder_settings.press_key = "ctrl+z";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_click"));
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Ctrl+Z");
+    assert(!asr_ptr->started);  // 不录音
+}
+
+void TestEncoderPressKeyInvalidIgnored() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.press_action = "key";
+    config.default_encoder_settings.press_key = "bogus";  // 运行期非法（绕过配置校验直造）
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_click"));
+    assert(input.sent_key_combos.empty());  // 记日志忽略，不注入
+}
+
+void TestEncoderDoubleClickDefaultEnterCancelsSession() {
+    // 双击默认 enter：取消活跃录音 + 注入 Enter（等价物理主键双击现行为）。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));  // 物理键开播
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));  // 过最短录音时长阈值
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(30, 1));  // 首帧音频触发 ASR 懒启动
+    assert(asr_ptr->started);
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_double_click"));
+    // 合法配置键经 SendKeyCombo 注入（默认 enter 与 SendEnter 同为 VK_RETURN 按下/松开，
+    // 物理行为等价），不再走 SendEnter 专用通道。
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Enter");
+    assert(asr_ptr->cancelled);
+}
+
+void TestEncoderDoubleClickCustomKey() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.double_click_action = "key";
+    config.default_encoder_settings.double_click_key = "ctrl+enter";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_double_click"));
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Ctrl+Enter");
+    assert(!input.send_enter_called);  // 不再走 SendEnter
+}
+
+void TestEncoderDoubleClickRecordingTogglesRemoteButton() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.double_click_action = "recording";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 空闲双击 → remote down 开播。
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_double_click"));
+    assert(!ble_ptr->sent_remote_buttons.empty());
+    assert(ble_ptr->sent_remote_buttons.back().action == RemoteButtonAction::kDown);
+
+    // 录音中双击 → remote up 停播。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));  // 过最短录音时长阈值
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(30, 1));  // 首帧音频触发 ASR 懒启动
+    assert(asr_ptr->started);
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_double_click"));
+    assert(ble_ptr->sent_remote_buttons.back().action == RemoteButtonAction::kUp);
+}
+
+void TestEncoderRotateCustomKeys() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_cw_key = "pagedown";
+    config.default_encoder_settings.rotate_ccw_key = "pageup";
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+    assert(input.sent_key_combos.size() == 3);
+    assert(input.sent_key_combos[0] == "PageDown");
+    assert(input.sent_key_combos[1] == "PageDown");
+    assert(input.sent_key_combos[2] == "PageUp");
+    assert(input.arrow_down_count == 0);  // 不再走硬编码方向键
+}
+
+void TestEncoderRotateCustomKeysPendingPath() {
+    // 与 TestEncoderRotateCustomKeys 的区别：不关闭延迟判定（rotate_decide_window_ms
+    // 保持默认 80），走 pending -> EncoderRotateTick -> FlushEncoderRotatePending 路径，
+    // 验证 FlushEncoderRotatePending 重新读取 config 时能拿到自定义按键。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_cw_key = "pagedown";
+    config.default_encoder_settings.rotate_ccw_key = "pageup";
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档
+    // rotate_decide_window_ms 保持默认 80（pending 路径）
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));
+    assert(input.sent_key_combos.empty());  // 窗内未冲刷
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "PageDown");  // 自定义按键，非默认 Down
+    assert(input.arrow_down_count == 0);
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+    assert(input.sent_key_combos.size() == 1);  // 窗内未冲刷
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[1] == "PageUp");  // 自定义按键，非默认 Up
+    assert(input.arrow_up_count == 0);
+}
+
+void TestEncoderRotateCustomKeysPendingPathDeviceOverride() {
+    // 设备覆盖场景的 pending -> EncoderRotateTick -> FlushEncoderRotatePending 回归测试：
+    // 冲刷必须使用该设备的 [device.<id>.encoder] 覆盖键而非全局默认。
+    // 历史 bug：FlushEncoderRotatePending 参数以 const 引用绑定成员 encoder_pending_device_id_，
+    // 函数体内 clear() 成员把参数引用的对象清空成空串，EncoderSettingsForDevice("") 查不到
+    // 设备覆盖，回落全局默认 Down/Up——慢速旋转输出锁死在方向键。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档
+    EncoderSettings override_settings;
+    override_settings.rotate_cw_key = "pagedown";
+    override_settings.rotate_ccw_key = "pageup";
+    override_settings.rotate_fast_threshold = 100000;
+    config.device_encoder_settings["5A74"] = override_settings;
+    // rotate_decide_window_ms 保持默认 80（pending 路径）
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));
+    assert(input.sent_key_combos.empty());  // 窗内未冲刷
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "PageDown");  // 设备覆盖键，非全局默认 Down
+    assert(input.arrow_down_count == 0);
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+    assert(input.sent_key_combos.size() == 1);  // 窗内未冲刷
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[1] == "PageUp");  // 设备覆盖键，非全局默认 Up
+    assert(input.arrow_up_count == 0);
+}
+
+void TestEncoderRotateCustomKeysAfterUpdateConfig() {
+    // 模拟生产场景：协调器以默认配置启动，用户通过对话框 UpdateConfig 改旋转键，
+    // 随后旋转编码器。验证 UpdateConfig 后 pending 路径使用新按键。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 先用默认配置旋转一次，确认默认键 Down
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Down");
+
+    // UpdateConfig 改旋转键（模拟对话框保存）
+    AppConfig updated = AppConfig::Defaults();
+    updated.default_encoder_settings.rotate_cw_key = "pagedown";
+    updated.default_encoder_settings.rotate_ccw_key = "pageup";
+    updated.default_encoder_settings.rotate_fast_threshold = 100000;
+    coordinator.UpdateConfig(updated);
+
+    // 旋转后应注入自定义键 PageDown
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));
+    assert(input.sent_key_combos.size() == 1);  // pending 未冲刷
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[1] == "PageDown");
+}
+
+void TestEncoderRotateInvalidKeyFallsBackToArrows() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_cw_key = "bogus";  // 运行期非法
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
+    assert(input.arrow_down_count == 2);  // 回退方向键
+    assert(input.sent_key_combos.empty());
+}
+
+void TestEncoderRotateSpeedThreshold() {
+    // 判快纯函数：对 EWMA 平滑估计值比较阈值；threshold<=0 视为关闭，永不判快。
+    assert(!EncoderRotateIsFast(99.9, 100));
+    assert(EncoderRotateIsFast(100.0, 100));   // 边界判快
+    assert(EncoderRotateIsFast(350.0, 300));
+    assert(!EncoderRotateIsFast(299.9, 300));
+    assert(!EncoderRotateIsFast(800.0, 0));    // 阈值 <=0 永不判快
+    assert(!EncoderRotateIsFast(800.0, -1));
+}
+
+void TestEncoderRotateSpeedEstimatorEwma() {
+    // EWMA 平滑测速：单窗口格速 steps*100 按 α=0.5 指数平均，冷启动从零。
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+    EncoderRotateSpeedEstimator est;
+    // 持续 1 步/窗（100 格/秒）：估计渐近 100，永不达到。
+    assert(est.AddSample(t0, 1) == 50.0);
+    assert(est.AddSample(t0 + std::chrono::milliseconds(10), 1) == 75.0);
+    double v = 0.0;
+    for (int i = 0; i < 20; ++i) {
+        v = est.AddSample(t0 + std::chrono::milliseconds(10 * (i + 2)), 1);
+    }
+    assert(v > 99.0 && v < 100.0);
+    // 偶发 2 步窗口只把估计抬到 ~100，不会瞬间翻倍（阈值 110 不再误判）。
+    EncoderRotateSpeedEstimator est2;
+    assert(est2.AddSample(t0, 2) == 100.0);  // 孤立 2 步窗：冷启动减半
+    // 持续 2 步/窗（真实 200 格/秒）：估计 2~3 窗后越过 150 区间。
+    assert(est2.AddSample(t0 + std::chrono::milliseconds(10), 2) == 150.0);
+    assert(est2.AddSample(t0 + std::chrono::milliseconds(20), 2) == 175.0);
+    // 快甩首窗 8 步：估计 400，默认阈值 200 下立即判快。
+    EncoderRotateSpeedEstimator est3;
+    assert(est3.AddSample(t0, 8) == 400.0);
+    assert(EncoderRotateIsFast(est3.AddSample(t0 + std::chrono::milliseconds(10), 8), 200));
+}
+
+void TestEncoderRotateSpeedEstimatorGestureGapResets() {
+    // 静默超过停转窗口（250ms）视为新手势：估计值清零冷启动，旧手势高速不残留。
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+    EncoderRotateSpeedEstimator est;
+    est.AddSample(t0, 8);
+    est.AddSample(t0 + std::chrono::milliseconds(10), 8);
+    // 300ms 静默后 1 步：若未清零估计会远超 50。
+    assert(est.AddSample(t0 + std::chrono::milliseconds(310), 1) == 50.0);
+    // Reset 同样清零。
+    est.AddSample(t0 + std::chrono::milliseconds(320), 8);
+    est.Reset();
+    assert(est.AddSample(t0 + std::chrono::milliseconds(330), 1) == 50.0);
+}
+
+void TestEncoderRotateFastBurstUsesFastKey() {
+    // 默认配置：快甩（steps=8 → 800 格/秒 ≥ 默认阈值 400）走快速档按键，一次手势只注入一次。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 8));   // 快：注入 PageDown ×1，进入停转锁定
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 5));  // 锁定中（含换向），屏蔽
+
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "PageDown");
+    assert(input.arrow_down_count == 0);
+    assert(input.arrow_up_count == 0);
+}
+
+void TestEncoderRotateDirectionChangeAfterStopStartsNewGesture() {
+    // 停转（静默超 250ms）后换向快甩：正常开启新手势注入。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 8));
+    assert(input.sent_key_combos.size() == 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 5));
+
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[0] == "PageDown");
+    assert(input.sent_key_combos[1] == "PageUp");
+}
+
+void TestEncoderRotateFastBurstInjectsOncePerGesture() {
+    // 一次快甩跨多个 10ms 窗口（多个快速事件）也只注入一次，避免连续翻页。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 8));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 6));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 4));
+
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "PageDown");
+}
+
+void TestEncoderRotateFastBurstNewGestureAfterGap() {
+    // 快速事件间隔超过停转窗口（250ms）后视为停稳，新手势再次注入。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 8));
+    assert(input.sent_key_combos.size() == 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 8));
+
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[1] == "PageDown");
+}
+
+void TestEncoderRotateLockoutSuppressesDeceleration() {
+    // 快甩后的减速段慢速事件被屏蔽：必须等停转才恢复识别。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 8));  // 快：注入 PageDown ×1，进入锁定
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));  // 减速段慢速：屏蔽
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));  // 减速段慢速：屏蔽
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 6));  // 锁定中快速：屏蔽
+
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "PageDown");
+}
+
+void TestEncoderRotateSlowResumesAfterStop() {
+    // 停转后慢速识别恢复：屏蔽减速段 → 静默停稳 → 慢转逐格注入。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定，专注验证停转锁定/恢复
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 8));  // 快：PageDown ×1，进入锁定
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));  // 减速段：屏蔽
+    assert(input.sent_key_combos.size() == 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));   // 停稳
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));  // 慢转恢复：Down ×1
+
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[0] == "PageDown");
+    assert(input.sent_key_combos[1] == "Down");
+}
+
+void TestEncoderRotateSlowStillUsesNormalKey() {
+    // 慢速事件不受快速档配置影响：steps=2 → 200 格/秒 < 400，走普通按键。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_decide_window_ms = 0;  // 关闭延迟判定
+    config.default_encoder_settings.rotate_fast_threshold = 100000;  // 隔离快慢分档，专注验证普通键路径
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[0] == "Down");
+    assert(input.sent_key_combos[1] == "Down");
+}
+
+void TestEncoderRotateAccelerationDiscardedByFast() {
+    // 延迟判定（默认 80ms 窗）：加速段慢速事件先挂起，窗内判快后整段丢弃，
+    // 一次快甩只输出快速键，不夹带加速段的慢速注入。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));  // 加速段：挂起，不注入
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));  // 加速段：挂起，不注入
+    assert(input.sent_key_combos.empty());
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 8));  // 判快：丢弃 pending，注入快速键
+
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "PageDown");
+}
+
+void TestEncoderRotateSlowFlushesAfterDecisionWindow() {
+    // 真慢转：判定窗（80ms）内无快速事件，到期由 tick 冲刷，按累计格数注入。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));
+    assert(input.sent_key_combos.empty());  // 窗内未冲刷
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Down");
+}
+
+void TestEncoderRotateIsolatedTwoStepNudgeStaysSlow() {
+    // 低阈值（110 格/秒）下的孤立 2 步轻拨：EWMA 冷启动把单窗 200 格/秒减半到 100，
+    // 不误判快速档；判定窗到期按普通按键补注 2 格。修复单窗口量化导致的
+    // 「阈值 100~200 间手感相同、稍微快一点就触发快速档」的非线性。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_fast_threshold = 110;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));  // 估计 100 < 110：挂起
+    assert(input.sent_key_combos.empty());
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 2);  // 普通按键补注 2 格，无 PageDown
+    assert(input.sent_key_combos[0] == "Down");
+    assert(input.sent_key_combos[1] == "Down");
+}
+
+void TestEncoderRotateSustainedTwoStepRotationGoesFast() {
+    // 同样阈值 110：持续 2 步/窗（真实 200 格/秒）第二窗估计即达 150 ≥ 110，
+    // 判快并丢弃起步 pending——阈值在 100~300 全程获得近线性单调手感。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_fast_threshold = 110;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));  // 估计 100 < 110：挂起
+    assert(input.sent_key_combos.empty());
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));  // 估计 150 ≥ 110：判快
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "PageDown");
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 2));  // 锁定中：屏蔽
+    assert(input.sent_key_combos.size() == 1);
+}
+
+void TestEncoderRotateSlowContinuousBatches() {
+    // 连续慢转：pending 跨事件累计，到期一次性补注全部格数（总量不变）。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));
+    assert(input.sent_key_combos.empty());
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 3);
+    assert(std::all_of(input.sent_key_combos.begin(), input.sent_key_combos.end(),
+                       [](const std::string& s) { return s == "Up"; }));
+}
+
+void TestEncoderRotatePendingDirectionChangeFlushesOld() {
+    // pending 期间换向：旧方向 pending 立即冲刷（不是加速段），新方向重新挂起。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 1));   // cw pending 1 格
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("ccw", 1));  // 换向：冲刷 cw，ccw 挂起
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Down");
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    coordinator.EncoderRotateTick();
+
+    assert(input.sent_key_combos.size() == 2);
+    assert(input.sent_key_combos[1] == "Up");
+}
+
+void TestEncoderRotateFastInvalidKeyFallsBackToNormalKey() {
+    // 快速档按键运行期非法时回退普通按键（而非方向键兜底），一次手势仍只注入一次。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_cw_fast_key = "bogus";  // 运行期非法
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderRotateEvent("cw", 8));
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Down");
+    assert(input.arrow_down_count == 0);  // 普通按键合法，不触发方向键兜底
+}
+
+void TestAppConfigEncoderFastSettingsRoundTrip() {
+    // 默认值等价当前硬编码行为。
+    const AppConfig defaults = AppConfig::Defaults();
+    assert(defaults.default_encoder_settings.rotate_fast_threshold == 200);
+    assert(defaults.default_encoder_settings.rotate_cw_fast_key == "pagedown");
+    assert(defaults.default_encoder_settings.rotate_ccw_fast_key == "pageup");
+    assert(defaults.default_encoder_settings.rotate_decide_window_ms == 80);
+
+    // 保存/加载往返。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_encoder_fast_test.toml";
+    std::filesystem::remove(temp);
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.rotate_fast_threshold = 250;
+    config.default_encoder_settings.rotate_cw_fast_key = "ctrl+pagedown";
+    config.default_encoder_settings.rotate_ccw_fast_key = "ctrl+pageup";
+    config.default_encoder_settings.rotate_decide_window_ms = 120;
+    config.Save(temp);
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.default_encoder_settings.rotate_fast_threshold == 250);
+    assert(loaded.default_encoder_settings.rotate_cw_fast_key == "ctrl+pagedown");
+    assert(loaded.default_encoder_settings.rotate_ccw_fast_key == "ctrl+pageup");
+    assert(loaded.default_encoder_settings.rotate_decide_window_ms == 120);
+    std::filesystem::remove(temp);
+}
+
+void TestAppConfigEncoderFastSettingsInvalidFallback() {
+    // 非法值回退默认：阈值 <=0、按键语法非法。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_encoder_fast_invalid_test.toml";
+    std::filesystem::remove(temp);
+    {
+        std::ofstream out(temp);
+        out << "encoder_rotate_fast_threshold = -5\n";
+        out << "encoder_rotate_cw_fast_key = \"bogus\"\n";
+        out << "encoder_rotate_ccw_fast_key = \"ctrl+\"\n";
+        out << "encoder_rotate_decide_window_ms = -10\n";
+    }
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(loaded.default_encoder_settings.rotate_fast_threshold == 200);
+    assert(loaded.default_encoder_settings.rotate_cw_fast_key == "pagedown");
+    assert(loaded.default_encoder_settings.rotate_ccw_fast_key == "pageup");
+    assert(loaded.default_encoder_settings.rotate_decide_window_ms == 80);
+    std::filesystem::remove(temp);
+}
+
+void TestPhysicalPrimaryUnaffectedByEncoderConfig() {
+    // press_action=key 只影响 source=encoder 的事件；物理主键单击行为不变。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_encoder_settings.press_action = "key";
+    config.default_encoder_settings.press_key = "ctrl+z";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 物理主键单击（无 source）：hold_to_talk 默认下走现有 ready 回写，不注入组合键。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary"));
+    assert(input.sent_key_combos.empty());
+}
+
+void TestEncoderPressRecordingButtonUpStopsSession() {
+    // press_action=recording（默认）：编码器 button_up 与物理主键 up 同一收尾路径。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_down", 40));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));  // 过最短录音时长阈值
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(40, 1));  // 首帧音频触发 ASR 懒启动
+    assert(asr_ptr->started);
+    assert(!asr_ptr->last_chunk_was_final);
+
+    // 编码器 button_up → 走主键 up 路径进入等 audio_end（ui_state=thinking）。
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_up"));
+    assert(HasUiState(*ble_ptr, "thinking", "5A74"));
+
+    // audio_end 到达后正常收尾：最终帧标记 is_last。
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(40, 2));
+    assert(asr_ptr->last_chunk_was_final);
+}
+
+void TestEncoderSourceSecondaryFallsBackToPhysicalPath() {
+    // source=encoder 只分流 primary；button=secondary 即使带 encoder 标签也走物理侧键路径。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->sent_air_mouse_enabled.clear();
+
+    StateEvent event;
+    event.event = "button_click";
+    event.button = "secondary";
+    event.source = "encoder";
+    ble_ptr->sent_ui_states.clear();
+    ble_ptr->on_state_event("5A74", event);
+
+    // 与物理侧键单击一致：空闲态不再进入体感鼠标（断言方式对齐 TestCoordinatorAirMouseToggleViaSecondary）。
+    assert(ble_ptr->sent_air_mouse_enabled.empty());
+    assert(!HasUiState(*ble_ptr, "air_mouse", "5A74"));
+    assert(input.sent_key_combos.empty());
+}
+
+void TestEncoderConfigUpdateTakesEffectImmediately() {
+    // UpdateConfig 改 press_action 后无需重启协调器，编码器单击行为立即切换。
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 初始 press_action=recording：编码器 down 开播确认。
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_down", 50));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));  // 过最短录音时长阈值
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(50, 1));
+    assert(asr_ptr->started);
+
+    // 热更新为 key 动作（UpdateConfig 会取消活跃会话，属既有语义）。
+    AppConfig updated = AppConfig::Defaults();
+    updated.default_encoder_settings.press_action = "key";
+    updated.default_encoder_settings.press_key = "ctrl+z";
+    coordinator.UpdateConfig(updated);
+
+    ble_ptr->on_state_event("5A74", EncoderButtonEvent("button_click"));
+    assert(input.sent_key_combos.size() == 1);
+    assert(input.sent_key_combos[0] == "Ctrl+Z");
+}
+
+// 空闲态侧键单击不再进入体感鼠标；体感态下侧键单击退出（体感优先决策）。
+void TestCoordinatorAirMouseToggleViaSecondary() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->sent_air_mouse_enabled.clear();
+
+    // 空闲态侧键单击 → 无操作：不进入体感，无 air_mouse_enabled 下发、无 air_mouse ui_state。
+    ble_ptr->sent_ui_states.clear();
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    assert(ble_ptr->sent_air_mouse_enabled.empty());
+    assert(!HasUiState(*ble_ptr, "air_mouse", "5A74"));
+
+    // 直接切换进入体感，下发 air_mouse_enabled:true + ui_state:air_mouse。
+    // ui_state=air_mouse 让设备显示体感态提示，避免用户不知情下主键变鼠标左键。
+    ble_ptr->sent_ui_states.clear();
+    coordinator.ToggleAirMouse("5A74");
+    assert(!ble_ptr->sent_air_mouse_enabled.empty());
+    assert(ble_ptr->sent_air_mouse_enabled.back().first == true);
+    assert(HasUiState(*ble_ptr, "air_mouse", "5A74"));
+
+    // 体感态下侧键单击 → 退出体感，下发 air_mouse_enabled:false + ui_state:ready。
+    ble_ptr->sent_ui_states.clear();
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    assert(ble_ptr->sent_air_mouse_enabled.back().first == false);
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+}
+
+// 体感态下主键单击映射为鼠标左键，不启动录音。
+void TestCoordinatorAirMousePrimaryClickIsLeftButton() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入体感态。
+    coordinator.ToggleAirMouse("5A74");
+
+    // 主键单击 → 左键点击，不启动 ASR/录音。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "primary", 5));
+    assert(input.left_click_count == 1);
+    assert(!asr_ptr->started);
+    assert(ui.show_listening_count == 0);
+}
+
+// 体感态下 motion 帧只更新 omega，不直接注入；由 AirMouseTick 驱动光标移动。非体感态忽略。
+void TestCoordinatorMotionMovesCursorOnlyWhenActive() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.air_mouse_sensitivity_x = 5;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 未进入体感态时 motion 应被忽略。
+    ble_ptr->on_motion_event("5A74", MotionEvent{10, -5});
+    assert(input.move_mouse_count == 0);
+
+    // 进入体感态后 motion 不直接注入（由 AirMouseTick 驱动）。
+    coordinator.ToggleAirMouse("5A74");
+    ble_ptr->on_motion_event("5A74", MotionEvent{100, 0});
+    assert(input.move_mouse_count == 0);
+
+    // AirMouseTick 驱动速度控制；v 累积后注入光标位移。
+    for (int i = 0; i < 20; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{100, 0});
+        coordinator.AirMouseTick();
+    }
+    assert(input.move_mouse_count >= 1);
+}
+
+// AirMouseTick 驱动速度环：进入体感 + motion 后，tick 产生非零位移。
+void TestCoordinatorAirMouseTickMovesCursor() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.air_mouse_sensitivity_x = 5;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    coordinator.ToggleAirMouse("5A74");
+    for (int i = 0; i < 20; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{100, 0});
+        coordinator.AirMouseTick();
+    }
+    assert(input.move_mouse_count >= 1);
+    assert(input.total_dx > 0);  // omega_x=100 正向，位移为正
+}
+
+// 退出再进入体感，速度状态复位（v 从 0 开始，无残留漂移）。
+void TestCoordinatorAirMouseStateResetOnToggle() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.air_mouse_sensitivity_x = 5;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入并累积角度。
+    coordinator.ToggleAirMouse("5A74");
+    for (int i = 0; i < 20; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{100, 0});
+        coordinator.AirMouseTick();
+    }
+    assert(input.move_mouse_count >= 1);
+
+    // 退出再进入：状态应复位。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    coordinator.ToggleAirMouse("5A74");
+    const int count_before = input.move_mouse_count;
+    // 无 motion，立即 tick：v=0、omega=0，应产生零位移（不调 MoveMouse）。
+    coordinator.AirMouseTick();
+    assert(input.move_mouse_count == count_before);
+}
+
+// 进入/退出体感触发 on_air_mouse_active_changed 回调。
+void TestCoordinatorAirMouseActiveChangedCallback() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    bool callback_called = false;
+    bool last_active = false;
+    coordinator.on_air_mouse_active_changed = [&](bool active) {
+        callback_called = true;
+        last_active = active;
+    };
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入体感 → 回调 true。
+    coordinator.ToggleAirMouse("5A74");
+    assert(callback_called);
+    assert(last_active);
+
+    // 退出 → 回调 false（体感态下侧键单击退出）。
+    callback_called = false;
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_click", "secondary"));
+    assert(callback_called);
+    assert(!last_active);
+}
+
+// 体感态下主键长按（button_down）不启动录音，tap 事件被忽略。
+void TestCoordinatorAirMouseGatesRecordingAndTap() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.tap_to_arrow = true;
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入体感态。
+    coordinator.ToggleAirMouse("5A74");
+
+    // 主键按下不启动录音。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));
+    assert(ui.show_listening_count == 0);
+    assert(!asr_ptr->started);
+
+    // tap 被忽略。
+    ble_ptr->on_state_event("5A74", TapEvent("double"));
+    assert(input.arrow_down_count == 0);
+}
+
+// 设备断连时清理体感态，避免残留激活拦截重连后的主键录音。
+void TestCoordinatorAirMouseResetOnDisconnect() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    bool last_active = false;
+    coordinator.on_air_mouse_active_changed = [&](bool active) { last_active = active; };
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入体感态 → 回调 true。
+    coordinator.ToggleAirMouse("5A74");
+    assert(last_active);
+
+    // 断连 → 体感态必须清理（回调 false），否则残留激活会吞掉后续主键录音。
+    ble_ptr->connected_device_ids.erase("5A74");
+    ble_ptr->on_connection_change({});
+    assert(!last_active);
+
+    // 重连后主键按下应启动录音（体感已清，不再被拦截）。
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    ble_ptr->sent_air_mouse_enabled.clear();
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 30));
+    assert(ui.show_listening_count >= 1);
+    // 重连后不应残留体感下发。
+    assert(ble_ptr->sent_air_mouse_enabled.empty());
+}
+
+// forget 设备时清理体感态，避免残留拦截重连后的主键录音。
+void TestCoordinatorAirMouseResetOnForget() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.paired_device_ids = {"5A74"};
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    bool last_active = false;
+    coordinator.on_air_mouse_active_changed = [&](bool active) { last_active = active; };
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    coordinator.ToggleAirMouse("5A74");
+    assert(last_active);
+
+    // forget → 体感态必须清理（回调 false + 下发 false 通知固件停表）。
+    coordinator.RemovePairedDevice("5A74");
+    assert(!last_active);
+    assert(!ble_ptr->sent_air_mouse_enabled.empty());
+    assert(ble_ptr->sent_air_mouse_enabled.back().first == false);
+}
+
+// 10 级灵敏度下，真机典型手腕角速率(omega=40dps，firmware dx=160 @ REPORT_GAIN=4)在 0.8s 内应产生足够光标位移。
+// kAngle 模式现直接用瞬时 omega 驱动速度：v = omega×gain×factor(|omega|)，
+// 转动期间即达到稳态速度，位移充足。
+void TestCoordinatorAirMouseHighSensitivityRealisticSpeed() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.air_mouse_sensitivity_x = 10;  // 最高档
+    config.air_mouse_control_mode = "angle";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    coordinator.ToggleAirMouse("5A74");
+    for (int i = 0; i < 50; ++i) {  // 0.8s @60Hz
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});  // 真机典型手腕转动（40dps @ REPORT_GAIN=4）
+        coordinator.AirMouseTick();
+    }
+    assert(input.total_dx >= 4000);  // 角度模型 theta 累积，0.8s 应产生足够位移
+}
+
+// P0 回归：kAngle 模式持续匀速转动时，光标速度应恒定（不随转动时长增长），即无失控。
+// 旧实现把积分转角 theta 套入增益曲线，匀速转 3s 速度从万级飙到数十万 px/s。
+void TestCoordinatorAirMouseSustainedRunBounded() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.air_mouse_sensitivity_x = 10;
+    config.air_mouse_control_mode = "angle";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    coordinator.ToggleAirMouse("5A74");
+    // 阶段 1：匀速转动 0.5s（omega=40dps 恒定），光标达到稳态速度。
+    for (int i = 0; i < 30; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
+        coordinator.AirMouseTick();
+    }
+    const int dx_first = input.total_dx;
+    // 阶段 2：继续匀速转动 4.5s（omega=40dps 恒定）。速度应保持不变（无失控）。
+    for (int i = 0; i < 270; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
+        coordinator.AirMouseTick();
+    }
+    const int dx_second = input.total_dx - dx_first;
+    const double v1 = static_cast<double>(dx_first) / 0.5;
+    const double v2 = static_cast<double>(dx_second) / 4.5;
+    // 两段时长不同(0.5s vs 4.5s)，但都是匀速转动：稳态速度应一致，v2 不应因转动更久而变大。
+    // 允许速度环收敛/帧边界差异，但绝不应指数增长（旧 bug 下 v2 会是 v1 的数十倍）。
+    assert(v2 <= v1 * 2.0);
+    // 整体有界：5s 总位移不应离谱（旧 bug 会到数百万 px）。
+    const double avg_speed = static_cast<double>(input.total_dx) / 5.0;
+    assert(avg_speed <= 200000.0);
+}
+
+// 角度控制（kAngle）：停手（omega=0）后光标应在 tau 惯性滑行（≈0.15s）后彻底停止，
+// 而非持续移动。等价于旧的"回正即停"。
+void TestCoordinatorAirMouseStopsWhenOmegaZero() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.air_mouse_sensitivity_x = 10;
+    config.air_mouse_control_mode = "angle";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    coordinator.ToggleAirMouse("5A74");
+
+    // 转动 0.5s：光标移动。
+    for (int i = 0; i < 30; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
+        coordinator.AirMouseTick();
+    }
+    const int dx_during = input.total_dx;
+    assert(dx_during > 0);
+
+    // 停手：omega=0 持续 1.0s，光标应在惯性滑行后停止。
+    for (int i = 0; i < 60; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{0, 0});
+        coordinator.AirMouseTick();
+    }
+    // 关键：再额外 0.5s 中立应几乎不动（确认已停，而非持续移动）。
+    const int count_before_extra = input.total_dx;
+    for (int i = 0; i < 30; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{0, 0});
+        coordinator.AirMouseTick();
+    }
+    const int dx_extra = input.total_dx - count_before_extra;
+    assert(dx_extra < 500);  // 已停，额外位移极小
+}
+
+// kAngle 模式：光标仅在手腕转动（omega≠0）时移动；停转（omega=0）后应在惯性滑行后停止，
+// 不再持续移动。这是 P0 修复的核心行为——旧实现"保持 theta 即持续移动"，会导致持续旋转失控。
+void TestCoordinatorAngleMovesOnlyWhileRotating() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.air_mouse_sensitivity_x = 10;
+    config.air_mouse_control_mode = "angle";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    coordinator.ToggleAirMouse("5A74");
+
+    // 阶段 1：转动 0.5s。
+    for (int i = 0; i < 30; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
+        coordinator.AirMouseTick();
+    }
+    const int dx_while_moving = input.total_dx;
+    assert(dx_while_moving > 0);
+
+    // 阶段 2：omega=0 保持 0.5s，光标仅余 tau 惯性滑行（≈0.15s）后停止，不应持续移动。
+    for (int i = 0; i < 30; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{0, 0});
+        coordinator.AirMouseTick();
+    }
+    const int dx_while_holding = input.total_dx - dx_while_moving;
+    // 保持阶段位移应远小于"等同时长持续转动"的贡献（即不是 sustained，仅是惯性滑行）。
+    assert(dx_while_holding < dx_while_moving * 0.2);
+
+    // 阶段 3：再 0.5s 中立，应基本不动（已停）。
+    const int before_extra = input.total_dx;
+    for (int i = 0; i < 30; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{0, 0});
+        coordinator.AirMouseTick();
+    }
+    const int dx_extra = input.total_dx - before_extra;
+    assert(dx_extra < 500);
+}
+
+// P0 显式回归：匀速转动下，任意等长时段的位移应近似相等（速度恒定），
+// 证明增益曲线不再对"累计转角"作用而正反馈失控。
+void TestCoordinatorAirMouseSustainedRotationConstantSpeed() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_interaction_settings.air_mouse_sensitivity_x = 10;
+    config.air_mouse_control_mode = "angle";
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.on_air_mouse_active_changed = [](bool) {};
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    coordinator.ToggleAirMouse("5A74");
+
+    // 预热 0.3s 让速度环收敛到稳态。
+    for (int i = 0; i < 18; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
+        coordinator.AirMouseTick();
+    }
+    const int base = input.total_dx;
+    // 窗口 A：匀速转动 1.0s（omega=40dps 恒定）。
+    for (int i = 0; i < 60; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
+        coordinator.AirMouseTick();
+    }
+    const int dx_a = input.total_dx - base;
+    // 窗口 B：继续匀速转动 1.0s（同样 omega=40dps）。
+    for (int i = 0; i < 60; ++i) {
+        ble_ptr->on_motion_event("5A74", MotionEvent{160, 0});
+        coordinator.AirMouseTick();
+    }
+    const int dx_b = input.total_dx - base - dx_a;
+    // 匀速转动时两窗口位移应近似相等（速度恒定，无增长/失控）。
+    assert(dx_b > 0);
+    assert(std::fabs(static_cast<double>(dx_b) - static_cast<double>(dx_a)) <=
+           std::fabs(static_cast<double>(dx_a)) * 0.2);
+}
+
+// 侧键双击恢复上次输入确认（与单击进体感分离）。
+void TestCoordinatorSecondaryDoubleClickRestoresLastInput() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;  // 关闭异步精修，走同步粘贴以填充 last_recoverable_text_
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+
+    // 先完成一次录音→final→粘贴，产生可恢复输入。
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 9));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(9, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 9));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(9, 2));
+    asr_ptr->on_final("hello");
+    assert(input.pasted_text == "hello");
+
+    // 空闲态侧键双击 → 恢复上次输入（ShowPausedFinal），不进入体感。
+    ble_ptr->sent_air_mouse_enabled.clear();
+    ble_ptr->on_state_event("5A74", DoubleClickEvent("secondary"));
+    assert(!ui.paused_finals.empty());
+    assert(ui.paused_finals.back() == "hello");
+    assert(ble_ptr->sent_air_mouse_enabled.empty());  // 双击不触发体感
+}
+
+// 体感态下侧键双击被忽略（不恢复输入，避免冲突）。
+void TestCoordinatorSecondaryDoubleClickIgnoredInAirMouse() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->connected_device_ids.insert("5A74");
+    ble_ptr->on_connection_change({ConnectedDevice{"5A74", "VS-5A74"}});
+    // 进入体感态。
+    coordinator.ToggleAirMouse("5A74");
+
+    // 体感态下双击被忽略：无恢复、体感仍开启。
+    ble_ptr->on_state_event("5A74", DoubleClickEvent("secondary"));
+    assert(ui.paused_finals.empty());
+    assert(ble_ptr->sent_air_mouse_enabled.back().first == true);
+}
+
+void TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    VoiceStickCoordinator coordinator(AppConfig::Defaults(), std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_down", "primary", 24));
+    ble_ptr->on_audio_frame("5A74", AudioDataFrame(24, 1));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    ble_ptr->on_state_event("5A74", ButtonEvent("button_up", "primary", 24));
+    ble_ptr->on_audio_frame("5A74", EmptyEndFrame(24, 2));
+    asr_ptr->on_error("ASR 44002: VoiceStick Cloud API key is invalid.");
+    asr_ptr->on_upgrade_url("https://example.test/upgrade",
+                            "ASR 44002: VoiceStick Cloud API key is invalid.");
+
+    assert(HasUiStateText(*ble_ptr, "error", "ASR 44002: VoiceStick Cloud API key is invalid.", "5A74"));
+    assert(HasUiState(*ble_ptr, "ready", "5A74"));
+    assert(!ui.cloud_upgrades.empty());
+}
+
+void TestSseParser() {
+    // 正常 token
+    bool done = false;
+    const auto line1 = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}";
+    auto token1 = LLMChatClient::ParseSseLine(line1, &done);
+    assert(!done);
+    assert(token1 == "Hello");
+
+    // 空 delta（finish_reason 但没有 content）
+    const auto line2 = "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}";
+    auto token2 = LLMChatClient::ParseSseLine(line2, &done);
+    assert(!done);
+    assert(token2.empty());
+
+    // [DONE] 信号
+    const auto line3 = "data: [DONE]";
+    auto token3 = LLMChatClient::ParseSseLine(line3, &done);
+    assert(done);
+    assert(token3.empty());
+
+    // 注释行（以 : 开头）
+    bool done4 = false;
+    auto token4 = LLMChatClient::ParseSseLine(": heartbeat", &done4);
+    assert(!done4);
+    assert(token4.empty());
+
+    // 空行
+    bool done5 = false;
+    auto token5 = LLMChatClient::ParseSseLine("", &done5);
+    assert(!done5);
+    assert(token5.empty());
+
+    // data: 后有前导空格
+    bool done6 = false;
+    const auto line6 = "data:     {\"choices\":[{\"delta\":{\"content\":\"World\"}}]}";
+    auto token6 = LLMChatClient::ParseSseLine(line6, &done6);
+    assert(!done6);
+    assert(token6 == "World");
+
+    // 非法 JSON（不崩溃，返回空）
+    bool done7 = false;
+    auto token7 = LLMChatClient::ParseSseLine("data: {not valid json", &done7);
+    assert(!done7);
+    assert(token7.empty());
+
+    // 多字节 UTF-8 中文 token
+    bool done8 = false;
+    const auto line8 = "data: {\"choices\":[{\"delta\":{\"content\":\"你好世界\"}}]}";
+    auto token8 = LLMChatClient::ParseSseLine(line8, &done8);
+    assert(!done8);
+    assert(token8 == "你好世界");
+
+    // 非 data: 前缀的 event: 行（SSE event 字段，忽略）
+    bool done9 = false;
+    auto token9 = LLMChatClient::ParseSseLine("event: message", &done9);
+    assert(!done9);
+    assert(token9.empty());
+}
+
+void TestStreamPayload() {
+    // 流式 payload 包含 "stream":true
+    const auto payload = LLMChatClient::BuildChatPayload("gpt-x", "sys", "user text", /*stream=*/true);
+    assert(payload.find("\"stream\":true") != std::string::npos);
+    assert(payload.find("\"model\":\"gpt-x\"") != std::string::npos);
+    assert(payload.find("\"temperature\":0") != std::string::npos);
+
+    // 非流式 payload 不含 stream 字段（向后兼容）
+    const auto regular = LLMChatClient::BuildChatPayload("gpt-x", "sys", "user text", /*stream=*/false);
+    assert(regular.find("\"stream\"") == std::string::npos);
+
+    // 默认无 stream 参数（向后兼容）
+    const auto default_payload = LLMChatClient::BuildChatPayload("gpt-x", "sys", "user text");
+    assert(default_payload.find("\"stream\"") == std::string::npos);
+
+    // 默认不注入关思考参数；显式开启时流式 payload 也带（disable_thinking 与 stream 正交）。
+    assert(default_payload.find("enable_thinking") == std::string::npos);
+    const auto no_think_stream = LLMChatClient::BuildChatPayload(
+        "gpt-x", "sys", "user text", /*stream=*/true, /*disable_thinking=*/true);
+    assert(no_think_stream.find("\"stream\":true") != std::string::npos);
+    assert(no_think_stream.find("\"enable_thinking\":false") != std::string::npos);
+}
+
+void TestDeepSeekThinkingDisabled() {
+    // DeepSeek V4 系列思考模式默认开启且 effort=high，会显著拖慢精修/翻译 TTFT。
+    // disable_thinking=true 时 BuildChatPayload 检测到模型名含 "deepseek" 应额外
+    // 注入 thinking:{type:disabled} 关闭思考模式。
+    const auto ds_payload = LLMChatClient::BuildChatPayload(
+        "deepseek-v4-flash", "sys", "user", /*stream=*/false, /*disable_thinking=*/true);
+    assert(ds_payload.find("\"thinking\":{\"type\":\"disabled\"}") != std::string::npos);
+    // 同样适用于 deepseek-v4-pro 与 deepseek-chat 别名。
+    const auto pro_payload = LLMChatClient::BuildChatPayload(
+        "deepseek-v4-pro", "sys", "user", /*stream=*/false, /*disable_thinking=*/true);
+    assert(pro_payload.find("\"thinking\":{\"type\":\"disabled\"}") != std::string::npos);
+    const auto chat_payload = LLMChatClient::BuildChatPayload(
+        "deepseek-chat", "sys", "user", /*stream=*/false, /*disable_thinking=*/true);
+    assert(chat_payload.find("\"thinking\":{\"type\":\"disabled\"}") != std::string::npos);
+    // 非 DeepSeek 模型不应添加 thinking 字段，避免对其他 OpenAI 兼容端点造成干扰。
+    const auto gpt_payload = LLMChatClient::BuildChatPayload(
+        "gpt-5.5", "sys", "user", /*stream=*/false, /*disable_thinking=*/true);
+    assert(gpt_payload.find("\"thinking\"") == std::string::npos);
+    // 流式 + DeepSeek 也应关闭思考模式。
+    const auto ds_stream = LLMChatClient::BuildChatPayload(
+        "deepseek-v4-flash", "sys", "user", /*stream=*/true, /*disable_thinking=*/true);
+    assert(ds_stream.find("\"thinking\":{\"type\":\"disabled\"}") != std::string::npos);
+    assert(ds_stream.find("\"stream\":true") != std::string::npos);
+    // 大小写不敏感匹配：用户可能配置 "DeepSeek-V4-Flash" 等大写写法。
+    const auto caps_payload = LLMChatClient::BuildChatPayload(
+        "DeepSeek-V4-Flash", "sys", "user", /*stream=*/false, /*disable_thinking=*/true);
+    assert(caps_payload.find("\"thinking\":{\"type\":\"disabled\"}") != std::string::npos);
+    // 整体仍是合法 JSON。
+    auto* root = cJSON_Parse(ds_payload.c_str());
+    assert(root != nullptr);
+    auto* thinking = cJSON_GetObjectItemCaseSensitive(root, "thinking");
+    assert(cJSON_IsObject(thinking));
+    auto* type = cJSON_GetObjectItemCaseSensitive(thinking, "type");
+    assert(cJSON_IsString(type) && std::string(type->valuestring) == "disabled");
+    cJSON_Delete(root);
+}
+
+// 构造一个 16 kHz、40 ms（640 样本）的单声道正弦波 PCM 帧。
+std::vector<int16_t> MakeSinePcm(int frequency_hz, int sample_rate = 16000) {
+    constexpr double kPi = 3.14159265358979323846;
+    const int kFrameSize = sample_rate * 40 / 1000;  // 40 ms
+    std::vector<int16_t> pcm(kFrameSize);
+    for (int i = 0; i < kFrameSize; ++i) {
+        const double t = static_cast<double>(i) / sample_rate;
+        pcm[i] = static_cast<int16_t>(std::sin(2.0 * kPi * frequency_hz * t) * 30000.0);
+    }
+    return pcm;
+}
+
+// 使用 opus_encoder 将 PCM 编码为 Opus packet，用于解码器测试。
+std::vector<uint8_t> EncodeOpusPacket(const std::vector<int16_t>& pcm,
+                                      int sample_rate = 16000) {
+    int error = 0;
+    OpusEncoder* encoder = opus_encoder_create(sample_rate, 1, OPUS_APPLICATION_VOIP, &error);
+    assert(encoder != nullptr);
+    assert(error == OPUS_OK);
+
+    std::vector<uint8_t> packet(1275);  // Opus 单帧最大长度。
+    const int encoded_bytes = opus_encode(encoder, pcm.data(), static_cast<int>(pcm.size()),
+                                          packet.data(), static_cast<int>(packet.size()));
+    assert(encoded_bytes > 0);
+    packet.resize(encoded_bytes);
+
+    opus_encoder_destroy(encoder);
+    return packet;
+}
+
+void TestAudioOpusDecoderRoundTrip() {
+    const auto pcm_in = MakeSinePcm(440);
+    const auto packet = EncodeOpusPacket(pcm_in);
+
+    AudioOpusDecoder decoder(16000, 1);
+    std::vector<int16_t> pcm_out(pcm_in.size(), 0);
+    auto result = decoder.Decode(packet.data(), packet.size(), pcm_out.data(), pcm_out.size());
+
+    assert(result.opus_error == 0);
+    assert(result.decoded_samples == static_cast<int>(pcm_in.size()));
+
+    // 验证解码输出不是静音，且能量与原始信号处于同一数量级。
+    double input_rms = 0.0;
+    double output_rms = 0.0;
+    for (std::size_t i = 0; i < pcm_in.size(); ++i) {
+        input_rms += static_cast<double>(pcm_in[i]) * pcm_in[i];
+        output_rms += static_cast<double>(pcm_out[i]) * pcm_out[i];
+    }
+    input_rms = std::sqrt(input_rms / pcm_in.size());
+    output_rms = std::sqrt(output_rms / pcm_out.size());
+    assert(output_rms > 1000.0);  // 明显不是静音。
+    assert(output_rms > input_rms * 0.3 && output_rms < input_rms * 3.0);  // 能量在同一数量级。
+}
+
+void TestAudioOpusDecoderNullData() {
+    AudioOpusDecoder decoder(16000, 1);
+    std::vector<int16_t> pcm_out(640, 0);
+    auto result = decoder.Decode(nullptr, 10, pcm_out.data(), pcm_out.size());
+    assert(result.opus_error != 0);
+    assert(result.decoded_samples == 0);
+}
+
+void TestAudioOpusDecoderInvalidData() {
+    AudioOpusDecoder decoder(16000, 1);
+    std::vector<uint8_t> garbage = {0xFF, 0xFF, 0xFF, 0xFF};
+    std::vector<int16_t> pcm_out(640, 0);
+    auto result = decoder.Decode(garbage.data(), garbage.size(), pcm_out.data(), pcm_out.size());
+    assert(result.opus_error != 0);
+    assert(result.decoded_samples == 0);
+}
+
+void TestAudioOpusDecoderSmallBuffer() {
+    const auto pcm_in = MakeSinePcm(440);
+    const auto packet = EncodeOpusPacket(pcm_in);
+
+    AudioOpusDecoder decoder(16000, 1);
+    std::vector<int16_t> pcm_out(10, 0);  // 远小于 640 样本。
+    auto result = decoder.Decode(packet.data(), packet.size(), pcm_out.data(), pcm_out.size());
+    assert(result.opus_error != 0);
+    assert(result.decoded_samples == 0);
+}
+
+// ---- 小米蓝牙遥控器 2 Pro（ATVV）core 纯逻辑层 ----
+// 协议规范见 Doc/Plan/xiaomi-remote-2-pro-support.md §3；按键语义镜像固件双击设计。
+
+// 会话动作列表查找/收集辅助。
+const XiaomiAtvvWriteTx* FindAtvvWriteTx(const std::vector<XiaomiAtvvAction>& actions) {
+    for (const auto& action : actions) {
+        if (const auto* tx = std::get_if<XiaomiAtvvWriteTx>(&action)) return tx;
+    }
+    return nullptr;
+}
+
+const StateEvent* FindAtvvEvent(const std::vector<XiaomiAtvvAction>& actions, std::string_view name) {
+    for (const auto& action : actions) {
+        if (const auto* event = std::get_if<XiaomiAtvvStateEvent>(&action)) {
+            if (event->event.event == name) return &event->event;
+        }
+    }
+    return nullptr;
+}
+
+std::vector<AudioFrame> CollectAtvvFrames(const std::vector<XiaomiAtvvAction>& actions) {
+    std::vector<AudioFrame> frames;
+    for (const auto& action : actions) {
+        if (const auto* frame = std::get_if<XiaomiAtvvAudioFrame>(&action)) {
+            frames.push_back(frame->frame);
+        }
+    }
+    return frames;
+}
+
+bool HasAtvvError(const std::vector<XiaomiAtvvAction>& actions, std::string_view code) {
+    for (const auto& action : actions) {
+        if (const auto* error = std::get_if<XiaomiAtvvError>(&action)) {
+            if (error->code == code) return true;
+        }
+    }
+    return false;
+}
+
+// 快速完成握手进入 Ready（Start + v1.0 CAPS：16kHz、帧长 120）。
+void AtvvHandshakeReady(XiaomiAtvvSession& session, std::int64_t now_ms) {
+    session.Start(now_ms);
+    session.HandleControlCommand(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x78}, now_ms + 10);
+}
+
+void TestXiaomiAtvvCapsParsing() {
+    // TX 命令构造。
+    assert(XiaomiAtvvProtocol::GetCapsCommand() == (ByteVector{0x0A, 0x01, 0x00, 0x00, 0x03, 0x03}));
+    assert(XiaomiAtvvProtocol::MicOpenAckCommand(false) == (ByteVector{0x0C, 0x00}));
+    assert(XiaomiAtvvProtocol::MicOpenAckCommand(true) == (ByteVector{0x0C, 0x00, 0x02}));
+    assert(XiaomiAtvvProtocol::MicCloseCommand(false, 0x07) == (ByteVector{0x0D, 0x07}));
+    assert(XiaomiAtvvProtocol::MicCloseCommand(true, 0x07) == (ByteVector{0x0D}));
+
+    // v1.0 标准布局：16kHz、interaction=3、协商帧长 120。
+    auto caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x78});
+    assert(caps.has_value());
+    assert(caps->IsV1OrLater());
+    assert(caps->codecs == 0x02 && caps->Supports16kHz());
+    assert(caps->interaction == 0x03);
+    assert(caps->frame_bytes == 120);
+
+    // 协商帧长 0 → 默认 120；自定义帧长 256；无帧长字段（len 5）→ 默认 120。
+    caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x00});
+    assert(caps && caps->frame_bytes == XiaomiAtvvProtocol::default_frame_bytes);
+    caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x01, 0x00});
+    assert(caps && caps->frame_bytes == 256);
+    caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03});
+    assert(caps && caps->frame_bytes == 120);
+
+    // 兼容分支：报 v1 但 codecs==0，旧版双字节 codec 布局（[4]=0x02 且 len≥9）；
+    // 旧版布局未定义帧长字段，[5:7] 的垃圾值（0x0100=256）不得被采用，保持默认 120。
+    caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00});
+    assert(caps && caps->codecs == 0x02 && caps->interaction == 0x03 && caps->Supports16kHz());
+    assert(caps->frame_bytes == XiaomiAtvvProtocol::default_frame_bytes);
+
+    // 旧版 v0 布局：len≥9，codecs=[4]，interaction=0，帧长默认。
+    caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00});
+    assert(caps && !caps->IsV1OrLater());
+    assert(caps->codecs == 0x02 && caps->interaction == 0x00);
+    assert(caps->frame_bytes == XiaomiAtvvProtocol::default_frame_bytes);
+
+    // 8kHz-only：解析成功但不支持 16kHz（由会话层判 Error）。
+    caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x01, 0x03, 0x00, 0x78});
+    assert(caps && !caps->Supports16kHz());
+    // v1 codecs==0 且不满足兼容分支（[4]&0x03==0）→ 无可用 codec。
+    caps = XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x00, 0x00, 0x00, 0x78});
+    assert(caps && caps->codecs == 0x00 && !caps->Supports16kHz());
+
+    // 拒绝：空包/短包/错 opcode/v1 缺 interaction 字段/旧版短包。
+    assert(!XiaomiAtvvProtocol::ParseCaps(ByteVector{}).has_value());
+    assert(!XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B}).has_value());
+    assert(!XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01}).has_value());
+    assert(!XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0C, 0x01, 0x00, 0x02, 0x03}).has_value());
+    assert(!XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x01, 0x00, 0x02}).has_value());
+    assert(!XiaomiAtvvProtocol::ParseCaps(ByteVector{0x0B, 0x00, 0x01, 0x00, 0x02}).has_value());
+}
+
+// 测试本地 IMA 编码器（公开标准算法的独立实现）：输出编码字节与编码器内部
+// predictor 轨迹（即标准解码的期望输出），用于与解码器逐样本对拍。
+struct ImaGoldenVector {
+    ByteVector encoded;
+    std::vector<std::int16_t> expected_decoded;
+};
+
+ImaGoldenVector ImaEncodeForTest(const std::vector<std::int16_t>& pcm) {
+    static const int kStepTable[89] = {
+        7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45,
+        50, 55, 60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230,
+        253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963,
+        1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327,
+        3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493, 10442,
+        11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794,
+        32767,
+    };
+    static const int kIndexTable[8] = {-1, -1, -1, -1, 2, 4, 6, 8};
+    ImaGoldenVector out;
+    int predictor = 0;
+    int index = 0;
+    std::optional<std::uint8_t> high_nibble;  // 高半字节优先
+    for (const std::int16_t sample : pcm) {
+        const int step = kStepTable[index];
+        int nibble = 0;
+        int diff = step >> 3;
+        int delta = sample - predictor;
+        if (delta < 0) {
+            nibble = 8;
+            delta = -delta;
+        }
+        if (delta >= step) {
+            nibble |= 4;
+            delta -= step;
+            diff += step;
+        }
+        if (delta >= (step >> 1)) {
+            nibble |= 2;
+            delta -= step >> 1;
+            diff += step >> 1;
+        }
+        if (delta >= (step >> 2)) {
+            nibble |= 1;
+            diff += step >> 2;
+        }
+        predictor = (nibble & 8) ? predictor - diff : predictor + diff;
+        predictor = std::clamp(predictor, -32768, 32767);
+        index = std::clamp(index + kIndexTable[nibble & 7], 0, 88);
+        out.expected_decoded.push_back(static_cast<std::int16_t>(predictor));
+        if (high_nibble.has_value()) {
+            out.encoded.push_back(static_cast<std::uint8_t>((*high_nibble << 4) | nibble));
+            high_nibble.reset();
+        } else {
+            high_nibble = static_cast<std::uint8_t>(nibble);
+        }
+    }
+    // 奇数样本需补低半字节，会多解一个样本；测试只用偶数样本输入，此处不处理。
+    assert(!high_nibble.has_value());
+    return out;
+}
+
+void TestImaAdpcmDecoderGolden() {
+    ImaAdpcmDecoder decoder;
+    // 标准向量：reset(0,0) 后 0x11 → [1,2]。
+    decoder.Reset(0, 0);
+    auto out = decoder.Decode(ByteVector{0x11});
+    assert((out == std::vector<std::int16_t>{1, 2}));
+    // 预计算 golden（独立 Python 实现对拍，高半字节优先）。
+    decoder.Reset(0, 0);
+    out = decoder.Decode(ByteVector{0x11, 0x22, 0x77, 0x88, 0xF0, 0x0F, 0x45, 0x54});
+    assert((out == std::vector<std::int16_t>{1, 2, 5, 8, 19, 49, 45, 42,
+                                             -10, -3, 3, -90, 30, 208, 468, 781}));
+    // 状态连续推进：分段解码与一次性解码逐样本相等。
+    decoder.Reset(0, 0);
+    auto joined = decoder.Decode(ByteVector{0x11, 0x22, 0x77});
+    auto rest = decoder.Decode(ByteVector{0x88, 0xF0, 0x0F, 0x45, 0x54});
+    joined.insert(joined.end(), rest.begin(), rest.end());
+    assert(joined == out);
+
+    // 编码往返：正弦+斜波（480 样本，偶数）经测试编码器后与解码器逐样本对拍。
+    std::vector<std::int16_t> pcm(480);
+    for (int i = 0; i < 480; ++i) {
+        pcm[i] = static_cast<std::int16_t>(std::sin(i * 0.05) * 12000.0 + i * 10);
+    }
+    const auto golden = ImaEncodeForTest(pcm);
+    decoder.Reset(0, 0);
+    out = decoder.Decode(golden.encoded);
+    assert(out == golden.expected_decoded);
+
+    // Reset 钳位边界。
+    decoder.Reset(0, 200);
+    assert(decoder.step_index() == 88);
+    decoder.Reset(0, -5);
+    assert(decoder.step_index() == 0);
+    decoder.Reset(-100, 40);
+    assert(decoder.predictor() == -100 && decoder.step_index() == 40);
+    // 高 step 起步解码正常推进。
+    out = decoder.Decode(ByteVector{0x11, 0x11});
+    assert(out.size() == 4);
+}
+
+// ===== ATVV golden fixtures 对拍 =====
+// 数据源：atvv_capture.py 真机采集（或 atvv_bench.py --emit-demo-fixture 合成），
+// 默认扫描 scripts/e2e_test/fixtures/xiaomi/**（VOICESTICK_REPO_ROOT 编译宏解析，
+// 可用 VOICESTICK_ATVV_FIXTURES_DIR 环境变量覆盖）。每会话四件套：
+// session_N.adpcm（原始流）、session_N.json（sidecar：帧长/增益/逐段 reset 区间）、
+// session_N.raw.wav（纯解码）、session_N.wav（解码+三点平滑+增益）。
+// 本测试按 sidecar 段落复现 C++ 解码路径，与两份 WAV 逐样本对拍。
+// 无 fixtures 时打印 SKIP 直接返回（不算失败，不伪造结果）。
+
+std::filesystem::path ResolveAtvvFixturesRoot() {
+    if (const char* env = std::getenv("VOICESTICK_ATVV_FIXTURES_DIR");
+        env != nullptr && *env != '\0') {
+        return std::filesystem::path(env);
+    }
+#ifdef VOICESTICK_REPO_ROOT
+    return std::filesystem::path(VOICESTICK_REPO_ROOT) /
+           "scripts" / "e2e_test" / "fixtures" / "xiaomi";
+#else
+    return std::filesystem::path("scripts") / "e2e_test" / "fixtures" / "xiaomi";
+#endif
+}
+
+std::string ReadTextFileForTest(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    return std::string(std::istreambuf_iterator<char>(in),
+                       std::istreambuf_iterator<char>());
+}
+
+// 读 PCM16 mono WAV（Python wave 模块产物）：walk RIFF chunk 取 fmt/data。
+std::vector<std::int16_t> ReadWavPcm16ForTest(const std::filesystem::path& path) {
+    const std::string bytes = ReadTextFileForTest(path);
+    if (bytes.size() < 12 || bytes.compare(0, 4, "RIFF") != 0 ||
+        bytes.compare(8, 4, "WAVE") != 0) {
+        return {};
+    }
+    auto u16 = [&bytes](std::size_t off) -> std::uint16_t {
+        return static_cast<std::uint16_t>(
+            static_cast<unsigned char>(bytes[off]) |
+            (static_cast<unsigned int>(static_cast<unsigned char>(bytes[off + 1])) << 8));
+    };
+    auto u32 = [&bytes](std::size_t off) -> std::uint32_t {
+        return static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[off])) |
+               (static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[off + 1])) << 8) |
+               (static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[off + 2])) << 16) |
+               (static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[off + 3])) << 24);
+    };
+    std::size_t pos = 12;
+    bool fmt_ok = false;
+    while (pos + 8 <= bytes.size()) {
+        const std::string id = bytes.substr(pos, 4);
+        const std::uint32_t size = u32(pos + 4);
+        const std::size_t payload = pos + 8;
+        if (payload + size > bytes.size()) break;
+        if (id == "fmt ") {
+            fmt_ok = size >= 16 && u16(payload) == 1 &&      // PCM
+                     u16(payload + 2) == 1 &&                // mono
+                     u16(payload + 14) == 16;                // 16bit
+        } else if (id == "data" && fmt_ok) {
+            std::vector<std::int16_t> out(size / 2);
+            for (std::size_t i = 0; i < out.size(); ++i) {
+                out[i] = static_cast<std::int16_t>(u16(payload + i * 2));
+            }
+            return out;
+        }
+        pos = payload + size + (size & 1);  // chunk 按偶数字节对齐
+    }
+    return {};
+}
+
+struct AtvvGoldenSegment {
+    std::size_t offset = 0;
+    std::size_t bytes = 0;
+    int predictor = 0;
+    int step_index = 0;
+};
+
+bool ParseAtvvSidecarForTest(const std::string& json_text, double* gain_db,
+                             std::vector<AtvvGoldenSegment>* segments) {
+    cJSON* root = cJSON_Parse(json_text.c_str());
+    if (root == nullptr) return false;
+    const cJSON* gain = cJSON_GetObjectItemCaseSensitive(root, "gain_db");
+    const cJSON* segs = cJSON_GetObjectItemCaseSensitive(root, "segments");
+    bool ok = cJSON_IsNumber(gain) && cJSON_IsArray(segs) &&
+              !cJSON_IsInvalid(segs) && cJSON_GetArraySize(segs) > 0;
+    if (ok) {
+        *gain_db = gain->valuedouble;
+        const cJSON* item = nullptr;
+        cJSON_ArrayForEach(item, segs) {
+            const cJSON* offset = cJSON_GetObjectItemCaseSensitive(item, "offset");
+            const cJSON* nbytes = cJSON_GetObjectItemCaseSensitive(item, "bytes");
+            const cJSON* predictor = cJSON_GetObjectItemCaseSensitive(item, "predictor");
+            const cJSON* step_index = cJSON_GetObjectItemCaseSensitive(item, "step_index");
+            if (!cJSON_IsNumber(offset) || !cJSON_IsNumber(nbytes) ||
+                !cJSON_IsNumber(predictor) || !cJSON_IsNumber(step_index)) {
+                ok = false;
+                break;
+            }
+            // double→size_t 窄化前提：sidecar 是本仓库自生成 fixtures 资产
+            // （atvv_capture.py / atvv_bench.py --emit-demo-fixture 写出），
+            // offset/bytes 为非负小整数；万一出现畸形值，由下方 golden 解码循环的
+            // assert(seg.offset + seg.bytes <= adpcm_size) 兜底，属可接受前提。
+            segments->push_back(AtvvGoldenSegment{
+                static_cast<std::size_t>(offset->valuedouble),
+                static_cast<std::size_t>(nbytes->valuedouble),
+                predictor->valueint, step_index->valueint});
+        }
+    }
+    cJSON_Delete(root);
+    return ok;
+}
+
+void TestImaAdpcmDecoderGoldenFixtures() {
+    const auto root = ResolveAtvvFixturesRoot();
+    std::error_code ec;
+    if (!std::filesystem::exists(root, ec)) {
+        std::printf("SKIP: ATVV golden fixtures 目录不存在: %s\n",
+                    root.string().c_str());
+        return;
+    }
+    std::vector<std::filesystem::path> adpcm_files;
+    for (std::filesystem::recursive_directory_iterator it(root, ec), end;
+         it != end && !ec; it.increment(ec)) {
+        const auto& p = it->path();
+        if (it->is_regular_file(ec) && p.extension() == ".adpcm" &&
+            p.filename().string().rfind("session_", 0) == 0) {
+            adpcm_files.push_back(p);
+        }
+    }
+    std::sort(adpcm_files.begin(), adpcm_files.end());
+    if (adpcm_files.empty()) {
+        std::printf("SKIP: %s 下无 session_*.adpcm\n", root.string().c_str());
+        return;
+    }
+
+    int checked = 0;
+    for (const auto& adpcm_path : adpcm_files) {
+        const std::string stem = adpcm_path.stem().string();  // session_N
+        const auto dir = adpcm_path.parent_path();
+        const auto sidecar_path = dir / (stem + ".json");
+        const auto raw_wav_path = dir / (stem + ".raw.wav");
+        const auto wav_path = dir / (stem + ".wav");
+        // 有 .adpcm 但缺 sidecar/WAV 属于残缺 fixtures，直接失败暴露问题。
+        assert(std::filesystem::exists(sidecar_path, ec));
+        assert(std::filesystem::exists(raw_wav_path, ec));
+        assert(std::filesystem::exists(wav_path, ec));
+
+        double gain_db = 0.0;
+        std::vector<AtvvGoldenSegment> segments;
+        assert(ParseAtvvSidecarForTest(ReadTextFileForTest(sidecar_path),
+                                       &gain_db, &segments));
+
+        const std::string adpcm_text = ReadTextFileForTest(adpcm_path);
+        const auto* adpcm = reinterpret_cast<const std::uint8_t*>(adpcm_text.data());
+        const std::size_t adpcm_size = adpcm_text.size();
+        ImaAdpcmDecoder decoder;
+        std::vector<std::int16_t> pcm;
+        for (const auto& seg : segments) {
+            assert(seg.offset + seg.bytes <= adpcm_size);
+            decoder.Reset(static_cast<std::int16_t>(seg.predictor), seg.step_index);
+            auto part = decoder.Decode(
+                std::span<const std::uint8_t>(adpcm + seg.offset, seg.bytes));
+            pcm.insert(pcm.end(), part.begin(), part.end());
+        }
+
+        // 对拍 1：纯解码 == session_N.raw.wav（逐样本相等）。
+        const auto expected_raw = ReadWavPcm16ForTest(raw_wav_path);
+        if (pcm != expected_raw) {
+            std::size_t diff = 0;
+            while (diff < std::min(pcm.size(), expected_raw.size()) &&
+                   pcm[diff] == expected_raw[diff]) {
+                ++diff;
+            }
+            std::printf("FAIL %s raw.wav 对拍失败: sizes %zu vs %zu, "
+                        "首个差异样本 #%zu\n", stem.c_str(), pcm.size(),
+                        expected_raw.size(), diff);
+        }
+        assert(pcm == expected_raw);
+
+        // 对拍 2：解码 + PcmPostprocessor(sidecar 增益) == session_N.wav。
+        // Python 侧 smooth3+apply_gain 的舍入已对齐 std::lround。
+        PcmPostprocessor postprocessor(gain_db);
+        const auto processed = postprocessor.Process(pcm);
+        const auto expected_wav = ReadWavPcm16ForTest(wav_path);
+        if (processed != expected_wav) {
+            std::printf("FAIL %s wav 对拍失败（gain_db=%.2f）\n",
+                        stem.c_str(), gain_db);
+        }
+        assert(processed == expected_wav);
+
+        ++checked;
+        std::printf("  golden %s: %zu samples, %zu segment(s) OK\n",
+                    (dir.filename().string() + "/" + stem).c_str(),
+                    pcm.size(), segments.size());
+    }
+    std::printf("ATVV golden fixtures: %d session(s) checked\n", checked);
+}
+
+
+void TestFrameAccumulator() {
+    // 跨包切帧：3 + 5 字节凑出两个 4 字节帧。
+    FrameAccumulator accumulator(4);
+    assert(accumulator.Append(ByteVector{1, 2, 3}).empty());
+    assert(accumulator.pending_bytes() == 3);
+    const auto frames = accumulator.Append(ByteVector{4, 5, 6, 7, 8});
+    assert(frames.size() == 2);
+    assert((frames[0] == ByteVector{1, 2, 3, 4}));
+    assert((frames[1] == ByteVector{5, 6, 7, 8}));
+    assert(accumulator.pending_bytes() == 0);  // 8 字节恰好两帧
+
+    // Reset 清空部分累积。
+    accumulator.Reset();
+    assert(accumulator.pending_bytes() == 0);
+
+    // 自定义协商帧长。
+    accumulator.set_frame_bytes(3);
+    assert(accumulator.frame_bytes() == 3);
+    assert(accumulator.pending_bytes() == 0);  // set_frame_bytes 同时清空
+    const auto custom = accumulator.Append(ByteVector{1, 2, 3, 4});
+    assert(custom.size() == 1 && (custom[0] == ByteVector{1, 2, 3}));
+    assert(accumulator.pending_bytes() == 1);
+}
+
+void TestAudioOpusEncoderRoundTrip() {
+    const auto pcm_in = MakeSinePcm(440);  // 640 采样（40ms）
+    AudioOpusEncoder encoder;
+    std::vector<std::uint8_t> packet(1500);
+    const auto result = encoder.Encode(pcm_in.data(), pcm_in.size(), packet.data(), packet.size());
+    assert(result.opus_error == 0);
+    assert(result.encoded_bytes > 0);
+
+    AudioOpusDecoder decoder(16000, 1);
+    std::vector<int16_t> pcm_out(pcm_in.size(), 0);
+    const auto decoded = decoder.Decode(packet.data(), result.encoded_bytes,
+                                        pcm_out.data(), pcm_out.size());
+    assert(decoded.opus_error == 0);
+    assert(decoded.decoded_samples == static_cast<int>(pcm_in.size()));
+
+    // 能量 sanity：不是静音，且与输入同数量级（Opus 有损，容差放宽）。
+    double input_rms = 0.0;
+    double output_rms = 0.0;
+    for (std::size_t i = 0; i < pcm_in.size(); ++i) {
+        input_rms += static_cast<double>(pcm_in[i]) * pcm_in[i];
+        output_rms += static_cast<double>(pcm_out[i]) * pcm_out[i];
+    }
+    input_rms = std::sqrt(input_rms / pcm_in.size());
+    output_rms = std::sqrt(output_rms / pcm_out.size());
+    assert(output_rms > 1000.0);
+    assert(output_rms > input_rms * 0.5 && output_rms < input_rms * 2.0);
+
+    // 非法参数：空指针、非 Opus 合法帧长。
+    auto bad = encoder.Encode(nullptr, 640, packet.data(), packet.size());
+    assert(bad.opus_error != 0 && bad.encoded_bytes == 0);
+    bad = encoder.Encode(pcm_in.data(), 319, packet.data(), packet.size());
+    assert(bad.opus_error != 0 && bad.encoded_bytes == 0);
+
+    // 组帧器：不足 640 采样不吐帧，跨 Append 累积，余量正确。
+    OpusFrameSlicer slicer;
+    std::vector<std::int16_t> chunk(300, 7);
+    assert(slicer.Append(chunk).empty());
+    assert(slicer.remainder().size() == 300);
+    chunk.assign(400, 9);
+    const auto frames = slicer.Append(chunk);
+    assert(frames.size() == 1);
+    assert(frames[0].size() == AudioOpusEncoder::kFrameSamples);
+    assert(frames[0][0] == 7 && frames[0][299] == 7 && frames[0][300] == 9);
+    assert(slicer.remainder().size() == 60);
+    const auto rest_pcm = slicer.TakeRemainder();
+    assert(rest_pcm.size() == 60 && slicer.remainder().empty());
+    slicer.Reset();
+    assert(slicer.remainder().empty());
+}
+
+void TestXiaomiAtvvSessionFlow() {
+    // CAPS 初始化超时 → Error。
+    {
+        XiaomiAtvvSession session;
+        assert(session.Start(0).size() == 1);
+        assert(session.Tick(XiaomiAtvvSession::kCapsTimeoutMs - 1).empty());
+        const auto actions = session.Tick(XiaomiAtvvSession::kCapsTimeoutMs);
+        assert(HasAtvvError(actions, "caps_timeout"));
+        assert(session.state() == XiaomiAtvvSessionState::kError);
+    }
+
+    XiaomiAtvvSession session;
+    // 未握手时 MIC_OPEN 不应答。
+    assert(session.HandleControlCommand(ByteVector{0x08}, 0).empty());
+
+    auto actions = session.Start(0);
+    const auto* tx = FindAtvvWriteTx(actions);
+    assert(tx != nullptr);
+    assert(tx->bytes == (ByteVector{0x0A, 0x01, 0x00, 0x00, 0x03, 0x03}));
+    assert(session.state() == XiaomiAtvvSessionState::kCapsRequested);
+
+    actions = session.HandleControlCommand(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x78}, 10);
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // MIC_OPEN：只回 0C 00，暂不发送 button_down。
+    actions = session.HandleControlCommand(ByteVector{0x08}, 1000);
+    tx = FindAtvvWriteTx(actions);
+    assert(tx != nullptr && tx->bytes == (ByteVector{0x0C, 0x00}));
+    assert(FindAtvvEvent(actions, "button_down") == nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kTapPending);
+
+    // 0x04 流开始（无 SYNC）：硬重置解码器。
+    actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x09}, 1010);
+    assert(actions.empty());
+    assert(session.decoder().predictor() == 0 && session.decoder().step_index() == 0);
+
+    // 120B ADPCM = 240 采样，不足 640 采样帧，无输出。
+    assert(session.HandleAudioData(ByteVector(120, 0x11), 1020).empty());
+
+    // 300ms 长按阈值前不发 button_down；跨过阈值才发（session_id=1）。
+    assert(session.Tick(1000 + XiaomiAtvvSession::kHoldThresholdMs - 1).empty());
+    actions = session.Tick(1000 + XiaomiAtvvSession::kHoldThresholdMs);
+    const auto* down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && down->button == "primary");
+    assert(down->session_id.has_value() && *down->session_id == 1);
+    assert(session.state() == XiaomiAtvvSessionState::kStreaming);
+
+    // 再喂 240B（480 采样）→ 累计 720 → 出首帧（640 采样，start flag）。
+    actions = session.HandleAudioData(ByteVector(240, 0x11), 1320);
+    auto frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1);
+    assert(frames[0].session_id == 1 && frames[0].seq == 1);
+    assert(frames[0].IsStart() && !frames[0].IsEnd());
+    assert(!frames[0].payload.empty());
+
+    // STOP → button_up + Draining。
+    actions = session.HandleControlCommand(ByteVector{0x00}, 2000);
+    const auto* up = FindAtvvEvent(actions, "button_up");
+    assert(up != nullptr && up->button == "primary");
+    assert(session.state() == XiaomiAtvvSessionState::kDraining);
+
+    // 150ms 宽限内尾包收下：再 480B（960 采样）→ 出一帧。
+    actions = session.HandleAudioData(ByteVector(480, 0x11), 2100);
+    frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1 && frames[0].seq == 2 && !frames[0].IsEnd());
+
+    // 超宽限的尾包丢弃（Tick 尚未收尾，仍处 Draining）。
+    assert(session.HandleAudioData(ByteVector(120, 0x11),
+                                   2000 + XiaomiAtvvSession::kAudioTailGraceMs + 1).empty());
+
+    // 宽限到期：余量补零出末帧（end flag），回 Ready。
+    actions = session.Tick(2000 + XiaomiAtvvSession::kAudioTailGraceMs + 2);
+    frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1 && frames[0].seq == 3);
+    assert(frames[0].IsEnd() && !frames[0].IsStart());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // STOP 已收到，断开不再发 MIC_CLOSE。
+    assert(session.Stop(3000).empty());
+    assert(session.state() == XiaomiAtvvSessionState::kIdle);
+
+    // Stop 回到 Idle 后需重新握手（模拟断连重连；session id 计数保持递增）。
+    session.Start(3100);
+    session.HandleControlCommand(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x78}, 3110);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // RC003 坑：第二次会话不发 SYNC，0x04 必须硬重置解码器。
+    // 第一次会话把 predictor 推到饱和（0x77 连发）。
+    session.HandleControlCommand(ByteVector{0x08}, 4000);
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x0A}, 4010);
+    session.Tick(4000 + XiaomiAtvvSession::kHoldThresholdMs);
+    session.HandleAudioData(ByteVector(120, 0x77), 4320);
+    assert(session.decoder().predictor() == 32767);
+    session.HandleControlCommand(ByteVector{0x00}, 5000);
+    session.Tick(5000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // 第二次会话 0x04 无 SYNC → predictor/step 归零。
+    session.HandleControlCommand(ByteVector{0x08}, 6000);
+    actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x0B}, 6010);
+    assert(session.decoder().predictor() == 0 && session.decoder().step_index() == 0);
+
+    // 0x0A AUDIO_SYNC：按值重置并清空帧累积器。
+    session.HandleAudioData(ByteVector(100, 0x11), 6020);
+    assert(session.accumulator().pending_bytes() == 100);
+    session.HandleControlCommand(ByteVector{0x0A, 0x00, 0x00, 0x00, 0x01, 0x00, 10}, 6030);
+    assert(session.decoder().predictor() == 256 && session.decoder().step_index() == 10);
+    assert(session.accumulator().pending_bytes() == 0);
+    // predictor 为 BE 有符号：0xFF00 = -256。
+    session.HandleControlCommand(ByteVector{0x0A, 0x00, 0x00, 0x00, 0xFF, 0x00, 5}, 6040);
+    assert(session.decoder().predictor() == -256 && session.decoder().step_index() == 5);
+    // SYNC 后确认长按（session_id=3）并收尾。
+    actions = session.Tick(6000 + XiaomiAtvvSession::kHoldThresholdMs);
+    down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && *down->session_id == 3);
+    session.HandleControlCommand(ByteVector{0x00}, 7000);
+    session.Tick(7000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // 8kHz-only → Error，后续输入全部忽略。
+    XiaomiAtvvSession unsupported;
+    unsupported.Start(0);
+    actions = unsupported.HandleControlCommand(ByteVector{0x0B, 0x01, 0x00, 0x01, 0x03, 0x00, 0x78}, 10);
+    assert(HasAtvvError(actions, "unsupported_codec"));
+    assert(unsupported.state() == XiaomiAtvvSessionState::kError);
+    assert(unsupported.HandleControlCommand(ByteVector{0x08}, 100).empty());
+    assert(unsupported.HandleAudioData(ByteVector(120, 0x11), 100).empty());
+
+    // 旧版布局：MIC_OPEN 应答带 codec 字节；MIC_CLOSE 仅 0x0D。
+    XiaomiAtvvSession legacy;
+    legacy.Start(0);
+    legacy.HandleControlCommand(ByteVector{0x0B, 0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00}, 10);
+    actions = legacy.HandleControlCommand(ByteVector{0x08}, 100);
+    tx = FindAtvvWriteTx(actions);
+    assert(tx != nullptr && tx->bytes == (ByteVector{0x0C, 0x00, 0x02}));
+    actions = legacy.Stop(200);
+    tx = FindAtvvWriteTx(actions);
+    assert(tx != nullptr && tx->bytes == (ByteVector{0x0D}));
+
+    // v1 且 mic 未 STOP 时断开：MIC_CLOSE 透传 0x04 的 session id。
+    XiaomiAtvvSession closing;
+    AtvvHandshakeReady(closing, 0);
+    closing.HandleControlCommand(ByteVector{0x08}, 100);
+    closing.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x09}, 110);
+    actions = closing.Stop(200);
+    tx = FindAtvvWriteTx(actions);
+    assert(tx != nullptr && tx->bytes == (ByteVector{0x0D, 0x09}));
+}
+
+void TestXiaomiAtvvSessionKeyMapping() {
+    // 默认 hold_to_talk，双击窗 350ms。
+    XiaomiAtvvSession session;
+    AtvvHandshakeReady(session, 0);
+
+    // 长按：MIC_OPEN 只应答不发事件；缓冲音频在确认后流出（不丢前 300ms 语音）。
+    auto actions = session.HandleControlCommand(ByteVector{0x08}, 100);
+    assert(FindAtvvWriteTx(actions) != nullptr);
+    assert(FindAtvvEvent(actions, "button_down") == nullptr);
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, 110);
+    assert(session.HandleAudioData(ByteVector(480, 0x11), 150).empty());  // 960 采样暂存
+    assert(session.Tick(399).empty());
+    actions = session.Tick(100 + XiaomiAtvvSession::kHoldThresholdMs);
+    const auto* down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && down->button == "primary" && *down->session_id == 1);
+    auto frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1 && frames[0].session_id == 1 && frames[0].IsStart());
+    session.HandleControlCommand(ByteVector{0x00}, 2000);
+    session.Tick(2000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // 短击：缓冲音频丢弃，无 button_down/up；窗超时发 button_click。
+    session.HandleControlCommand(ByteVector{0x08}, 3000);
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x02}, 3010);
+    session.HandleAudioData(ByteVector(240, 0x11), 3020);
+    actions = session.HandleControlCommand(ByteVector{0x00}, 3150);  // 150ms < 300ms
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    assert(session.Tick(3150 + 349).empty());
+    actions = session.Tick(3150 + 350);
+    const auto* click = FindAtvvEvent(actions, "button_click");
+    assert(click != nullptr && click->button == "primary");
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // 双击：窗内第二次 MIC_OPEN → button_double_click（仍应答 TX），不录音。
+    session.HandleControlCommand(ByteVector{0x08}, 5000);
+    session.HandleControlCommand(ByteVector{0x00}, 5100);
+    actions = session.HandleControlCommand(ByteVector{0x08}, 5200);  // 5100+350 窗内
+    assert(FindAtvvEvent(actions, "button_double_click") != nullptr);
+    assert(FindAtvvEvent(actions, "button_down") == nullptr);
+    assert(FindAtvvWriteTx(actions) != nullptr);
+    // 被双击消费的第二次按下：音频丢弃、跨阈值不发事件、松开不再发事件。
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x03}, 5210);
+    assert(session.HandleAudioData(ByteVector(480, 0x11), 5220).empty());
+    assert(session.Tick(5600).empty());
+    actions = session.HandleControlCommand(ByteVector{0x00}, 5700);
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+    assert(session.Tick(6100).empty());  // 无滞留双击窗
+
+    // 三击：双击窗只合成一次 double_click，第三次按下正常开录（会话 id 自增）。
+    session.HandleControlCommand(ByteVector{0x08}, 7000);
+    session.HandleControlCommand(ByteVector{0x00}, 7100);
+    actions = session.HandleControlCommand(ByteVector{0x08}, 7200);
+    assert(FindAtvvEvent(actions, "button_double_click") != nullptr);
+    session.HandleControlCommand(ByteVector{0x00}, 7300);
+    session.HandleControlCommand(ByteVector{0x08}, 8000);
+    actions = session.Tick(8000 + XiaomiAtvvSession::kHoldThresholdMs);
+    down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && *down->session_id == 2);
+    session.HandleControlCommand(ByteVector{0x00}, 9000);
+    session.Tick(9000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // session_id 在 button_down 与 AudioFrame 间一致且逐会话自增。
+    session.HandleControlCommand(ByteVector{0x08}, 10000);
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x04}, 10010);
+    actions = session.Tick(10000 + XiaomiAtvvSession::kHoldThresholdMs);
+    down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && *down->session_id == 3);
+    actions = session.HandleAudioData(ByteVector(480, 0x11), 10310);
+    frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1 && frames[0].session_id == 3);
+    session.HandleControlCommand(ByteVector{0x00}, 11000);
+    session.Tick(11000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // click_to_talk：MIC_OPEN 立即发 button_down，STOP 发 button_up；双击仍合成。
+    XiaomiAtvvSession::Options click_options;
+    click_options.interaction_mode = InteractionMode::kClickToTalk;
+    XiaomiAtvvSession click_session(click_options);
+    AtvvHandshakeReady(click_session, 0);
+    actions = click_session.HandleControlCommand(ByteVector{0x08}, 100);
+    down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && *down->session_id == 1);
+    assert(click_session.state() == XiaomiAtvvSessionState::kStreaming);
+    actions = click_session.HandleControlCommand(ByteVector{0x00}, 250);  // 短按 150ms
+    assert(FindAtvvEvent(actions, "button_up") != nullptr);
+    // 尾包宽限收尾后进入双击窗（短按）。
+    click_session.Tick(250 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(click_session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    actions = click_session.HandleControlCommand(ByteVector{0x08}, 500);  // 250+350 窗内
+    assert(FindAtvvEvent(actions, "button_double_click") != nullptr);
+    click_session.HandleControlCommand(ByteVector{0x00}, 600);
+    assert(click_session.state() == XiaomiAtvvSessionState::kReady);
+    // 窗后按下：立即开录新会话。
+    actions = click_session.HandleControlCommand(ByteVector{0x08}, 5000);
+    down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && *down->session_id == 2);
+}
+
+void TestXiaomiAtvvSessionClickTapTimeoutSilent() {
+    // click_to_talk：短按已由 button_down/up 完整表达并开录，双击窗超时不得再补发
+    // button_click（否则协调器 click 分支把空闲态无 duration_ms 的 click 当启动，
+    // 产生永远收不到音频的幽灵会话，靠硬超时报错收场）。
+    XiaomiAtvvSession::Options click_options;
+    click_options.interaction_mode = InteractionMode::kClickToTalk;
+    XiaomiAtvvSession session(click_options);
+    AtvvHandshakeReady(session, 0);
+
+    auto actions = session.HandleControlCommand(ByteVector{0x08}, 100);
+    assert(FindAtvvEvent(actions, "button_down") != nullptr);  // 按下即开录
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, 110);
+    session.HandleAudioData(ByteVector(240, 0x11), 120);
+    actions = session.HandleControlCommand(ByteVector{0x00}, 200);  // 短按 100ms
+    assert(FindAtvvEvent(actions, "button_up") != nullptr);
+    // 尾包宽限收尾：click 短按武装双击窗。
+    session.Tick(200 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    // 双击窗超时：无任何补发事件，仅回 Ready。
+    actions = session.Tick(200 + 350);
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // Tick 未跑、窗已过恰好 MIC_OPEN：同样不补发 button_click，直接开新会话。
+    session.HandleControlCommand(ByteVector{0x08}, 1000);
+    session.HandleControlCommand(ByteVector{0x00}, 1100);
+    session.Tick(1100 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    actions = session.HandleControlCommand(ByteVector{0x08}, 1100 + 350 + 10);
+    assert(FindAtvvEvent(actions, "button_click") == nullptr);
+    const auto* down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr);  // 新按下立即开录
+    assert(session.state() == XiaomiAtvvSessionState::kStreaming);
+    session.HandleControlCommand(ByteVector{0x00}, 2000);
+    session.Tick(2000 + XiaomiAtvvSession::kAudioTailGraceMs);
+
+    // 对照：hold_to_talk 窗超时仍补发 button_click（短击未发过任何事件，
+    // 协调器 hold 分支对 click 是无害 no-op）。Tick 未跑窗已过的路径同样补发。
+    XiaomiAtvvSession hold_session;
+    AtvvHandshakeReady(hold_session, 0);
+    hold_session.HandleControlCommand(ByteVector{0x08}, 100);
+    hold_session.HandleControlCommand(ByteVector{0x00}, 200);
+    assert(hold_session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    actions = hold_session.Tick(200 + 350);
+    assert(FindAtvvEvent(actions, "button_click") != nullptr);
+    assert(hold_session.state() == XiaomiAtvvSessionState::kReady);
+
+    hold_session.HandleControlCommand(ByteVector{0x08}, 1000);
+    hold_session.HandleControlCommand(ByteVector{0x00}, 1100);
+    assert(hold_session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    actions = hold_session.HandleControlCommand(ByteVector{0x08}, 1100 + 350 + 10);
+    assert(FindAtvvEvent(actions, "button_click") != nullptr);
+    assert(hold_session.state() == XiaomiAtvvSessionState::kTapPending);
+    hold_session.HandleControlCommand(ByteVector{0x00}, 2000);
+}
+
+void TestXiaomiAtvvSessionReopenRejectWindow() {
+    // 规格：STOP 后 300ms 内拒绝重开会话（防遥控器抖动/急速重开）。
+    XiaomiAtvvSession session;  // hold_to_talk
+    AtvvHandshakeReady(session, 0);
+
+    // 长按完整键程：MIC_OPEN → STREAM_START → 长按确认 → STOP → Draining。
+    session.HandleControlCommand(ByteVector{0x08}, 1000);
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, 1010);
+    auto actions = session.Tick(1000 + XiaomiAtvvSession::kHoldThresholdMs);
+    assert(FindAtvvEvent(actions, "button_down") != nullptr);
+    actions = session.HandleControlCommand(ByteVector{0x00}, 2000);
+    assert(FindAtvvEvent(actions, "button_up") != nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kDraining);
+
+    // 拒绝窗内（Draining，STOP 后 100ms）MIC_OPEN：忽略，无 ACK、无事件、状态不变。
+    actions = session.HandleControlCommand(ByteVector{0x08}, 2100);
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kDraining);
+
+    // 尾包宽限到期收尾回 Ready，但拒绝窗（300ms）仍未满：MIC_OPEN 依旧忽略。
+    session.Tick(2000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+    actions = session.HandleControlCommand(ByteVector{0x08}, 2200);  // STOP 后 200ms
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // 窗满（STOP 后 ≥300ms）：正常应答并开新按下。
+    actions = session.HandleControlCommand(ByteVector{0x08}, 2000 + XiaomiAtvvSession::kReopenRejectMs);
+    assert(FindAtvvWriteTx(actions) != nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kTapPending);
+    session.HandleControlCommand(ByteVector{0x00}, 2400);  // 短击收尾
+    session.Tick(2400 + 350 + 1);  // 双击窗超时回 Ready
+
+    // 双击路径不受拒绝窗影响：click 短按的 STOP 也武装拒绝窗，
+    // 但第二击走 kWaitSecondTap 分支，窗内照常合成 button_double_click。
+    XiaomiAtvvSession::Options click_options;
+    click_options.interaction_mode = InteractionMode::kClickToTalk;
+    XiaomiAtvvSession click_session(click_options);
+    AtvvHandshakeReady(click_session, 0);
+    click_session.HandleControlCommand(ByteVector{0x08}, 1000);
+    click_session.HandleControlCommand(ByteVector{0x00}, 1100);  // 短按 → Draining + 拒绝窗
+    click_session.Tick(1100 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(click_session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    actions = click_session.HandleControlCommand(ByteVector{0x08}, 1200);  // STOP 后 100ms，拒绝窗内
+    assert(FindAtvvEvent(actions, "button_double_click") != nullptr);
+    click_session.HandleControlCommand(ByteVector{0x00}, 1300);
+
+    // Stop 复位清窗：重连握手后立即可开录（不残留拒绝窗）。
+    XiaomiAtvvSession restart;
+    AtvvHandshakeReady(restart, 0);
+    restart.HandleControlCommand(ByteVector{0x08}, 1000);
+    restart.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, 1010);
+    restart.Tick(1000 + XiaomiAtvvSession::kHoldThresholdMs);
+    restart.HandleControlCommand(ByteVector{0x00}, 2000);  // 武装拒绝窗（至 2300）
+    restart.Stop(2050);  // 断连复位
+    AtvvHandshakeReady(restart, 2100);
+    actions = restart.HandleControlCommand(ByteVector{0x08}, 2150);  // 旧窗内时刻
+    assert(FindAtvvWriteTx(actions) != nullptr);
+    assert(restart.state() == XiaomiAtvvSessionState::kTapPending);
+}
+
+void TestXiaomiAtvvStreamStartOpensSession() {
+    // 2 Pro 入径（真机实测）：按下语音键直接发 0x04 <interaction> <codec> <sid>
+    //（按下+开流一体帧，无 0x08、主机不写 0x0C ACK），松开发 0x00（可带尾字节）。
+    // hold_to_talk：0x04 → TapPending（无 ACK、无事件），音频即刻缓冲。
+    XiaomiAtvvSession session;
+    AtvvHandshakeReady(session, 0);
+
+    auto actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x03}, 1000);
+    assert(actions.empty());  // 无 ACK、无事件
+    assert(session.state() == XiaomiAtvvSessionState::kTapPending);
+
+    // 流已激活：音频立即缓冲（240B=480 采样 <640 不出帧）；跨阈值确认长按。
+    assert(session.HandleAudioData(ByteVector(240, 0x11), 1010).empty());
+    actions = session.Tick(1000 + XiaomiAtvvSession::kHoldThresholdMs);
+    const auto* down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && down->session_id.has_value() && *down->session_id == 1);
+    assert(session.state() == XiaomiAtvvSessionState::kStreaming);
+
+    actions = session.HandleAudioData(ByteVector(240, 0x11), 1310);  // 累计 960 → 出首帧
+    auto frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1 && frames[0].session_id == 1 && frames[0].IsStart());
+
+    // STOP 带尾字节（00 02）：button_up + Draining，宽限到期出末帧回 Ready。
+    actions = session.HandleControlCommand(ByteVector{0x00, 0x02}, 2000);
+    assert(FindAtvvEvent(actions, "button_up") != nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kDraining);
+    actions = session.Tick(2000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1 && frames[0].IsEnd());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // codec 非 16kHz（byte2=0x01）：上报错误、不开会话、不回 ACK。
+    actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x01, 0x05}, 3000);
+    assert(HasAtvvError(actions, "unsupported_codec"));
+    assert(FindAtvvWriteTx(actions) == nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // STOP 后 300ms 重开拒绝窗对 0x04 同样生效：先跑一轮长按键程武装拒绝窗。
+    session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x06}, 4000);
+    session.Tick(4000 + XiaomiAtvvSession::kHoldThresholdMs);
+    session.HandleControlCommand(ByteVector{0x00, 0x02}, 5000);  // Draining，拒绝窗至 5300
+    actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x07}, 5100);
+    assert(actions.empty());  // 窗内忽略
+    assert(session.state() == XiaomiAtvvSessionState::kDraining);
+
+    // 窗外 0x04 重开：Draining 收尾（本轮无音频故无末帧）后直接开新按下。
+    actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x08}, 5400);
+    assert(FindAtvvWriteTx(actions) == nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kTapPending);
+
+    // 短击松开 → 双击窗；窗内第二个 0x04 合成 button_double_click，按下被消费
+    //（无 ACK、音频丢弃、跨阈值不确认、松手无事件）。
+    actions = session.HandleControlCommand(ByteVector{0x00, 0x02}, 5410);
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kWaitSecondTap);
+    actions = session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x09}, 5500);
+    assert(FindAtvvEvent(actions, "button_double_click") != nullptr);
+    assert(FindAtvvWriteTx(actions) == nullptr);
+    assert(session.state() == XiaomiAtvvSessionState::kTapPending);
+    assert(session.HandleAudioData(ByteVector(240, 0x11), 5510).empty());
+    assert(session.Tick(5500 + XiaomiAtvvSession::kHoldThresholdMs).empty());
+    actions = session.HandleControlCommand(ByteVector{0x00, 0x02}, 5700);
+    assert(actions.empty());
+    assert(session.state() == XiaomiAtvvSessionState::kReady);
+
+    // click_to_talk：0x04 直开立即发 button_down，音频即时流出。
+    XiaomiAtvvSession::Options click_options;
+    click_options.interaction_mode = InteractionMode::kClickToTalk;
+    XiaomiAtvvSession clicker(click_options);
+    AtvvHandshakeReady(clicker, 0);
+    actions = clicker.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, 100);
+    assert(FindAtvvWriteTx(actions) == nullptr);
+    down = FindAtvvEvent(actions, "button_down");
+    assert(down != nullptr && *down->session_id == 1);
+    assert(clicker.state() == XiaomiAtvvSessionState::kStreaming);
+    clicker.HandleAudioData(ByteVector(240, 0x11), 110);
+    actions = clicker.HandleAudioData(ByteVector(240, 0x11), 120);
+    frames = CollectAtvvFrames(actions);
+    assert(frames.size() == 1 && frames[0].IsStart());
+    actions = clicker.HandleControlCommand(ByteVector{0x00, 0x02}, 200);
+    assert(FindAtvvEvent(actions, "button_up") != nullptr);
+
+    // 0x04 直开路径下断开：MIC_CLOSE 透传 0x04 byte3 的会话计数。
+    XiaomiAtvvSession closing;
+    AtvvHandshakeReady(closing, 0);
+    closing.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x42}, 100);
+    actions = closing.Stop(200);
+    const auto* tx = FindAtvvWriteTx(actions);
+    assert(tx != nullptr && tx->bytes == (ByteVector{0x0D, 0x42}));
+}
+
+void TestXiaomiAtvvSessionEncoderResetPerSession() {
+    // 上一会话的 Opus 编码器残余状态不得污染下一会话（对齐固件 audio_pipeline.c
+    // 每次会话开始 OPUS_RESET_STATE）：复用 session 的第二会话首帧须与全新
+    // session 的首帧逐字节一致；无 Reset 时 SILK/CELT 内部预测器状态会使其不同。
+    const auto kHoldFirstFramePayload = [](XiaomiAtvvSession& session, std::int64_t t) {
+        session.HandleControlCommand(ByteVector{0x08}, t);
+        session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, t + 10);
+        session.HandleAudioData(ByteVector(480, 0x11), t + 20);  // 960 采样 → 暂存 1 帧
+        const auto actions = session.Tick(t + XiaomiAtvvSession::kHoldThresholdMs);
+        const auto frames = CollectAtvvFrames(actions);
+        assert(frames.size() == 1 && frames[0].IsStart());
+        return frames[0].payload;
+    };
+
+    // 全新 session 的首会话首帧（编码器出厂状态）。
+    XiaomiAtvvSession fresh;
+    AtvvHandshakeReady(fresh, 0);
+    const auto fresh_first = kHoldFirstFramePayload(fresh, 1000);
+
+    // 复用 session：会话 1（多编几帧改变内部状态）结束后开会话 2。
+    XiaomiAtvvSession reused;
+    AtvvHandshakeReady(reused, 0);
+    const auto reused_first = kHoldFirstFramePayload(reused, 1000);
+    assert(reused_first == fresh_first);  // sanity：首会话本就该一致
+    reused.HandleAudioData(ByteVector(480, 0x77), 1400);  // 会话 1 多喂两帧
+    reused.HandleControlCommand(ByteVector{0x00}, 2000);
+    reused.Tick(2000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(reused.state() == XiaomiAtvvSessionState::kReady);
+    const auto reused_second = kHoldFirstFramePayload(reused, 10000);  // 远超拒绝窗
+    assert(reused_second == fresh_first);  // 关键：Reset 后与全新逐字节一致
+
+    // click_to_talk 立即路径同样每会话 Reset（BeginPress 非 suppressed 分支覆盖）。
+    const auto kClickFirstFramePayload = [](XiaomiAtvvSession& session, std::int64_t t) {
+        session.HandleControlCommand(ByteVector{0x08}, t);
+        session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, t + 10);
+        const auto actions = session.HandleAudioData(ByteVector(480, 0x11), t + 20);
+        const auto frames = CollectAtvvFrames(actions);
+        assert(frames.size() == 1 && frames[0].IsStart());
+        return frames[0].payload;
+    };
+    XiaomiAtvvSession::Options click_options;
+    click_options.interaction_mode = InteractionMode::kClickToTalk;
+    XiaomiAtvvSession click_fresh(click_options);
+    AtvvHandshakeReady(click_fresh, 0);
+    const auto click_fresh_first = kClickFirstFramePayload(click_fresh, 1000);
+
+    XiaomiAtvvSession click_reused(click_options);
+    AtvvHandshakeReady(click_reused, 0);
+    const auto click_reused_first = kClickFirstFramePayload(click_reused, 1000);
+    assert(click_reused_first == click_fresh_first);
+    click_reused.HandleControlCommand(ByteVector{0x00}, 2000);  // 按压 1000ms（长按路径）
+    click_reused.Tick(2000 + XiaomiAtvvSession::kAudioTailGraceMs);
+    assert(click_reused.state() == XiaomiAtvvSessionState::kReady);
+    const auto click_reused_second = kClickFirstFramePayload(click_reused, 10000);
+    assert(click_reused_second == click_fresh_first);
+}
+
+void TestXiaomiAtvvServiceUuidAd() {
+    // ATVV service UUID 线上小端字节：AB5E0001-5A21-4F05-BC7D-AF01F617B664。
+    const ByteVector atvv_ad = {
+        0x02, 0x01, 0x06,  // flags
+        0x11, 0x06,        // incomplete 128-bit service UUID list，16 字节
+        0x64, 0xb6, 0x17, 0xf6, 0x01, 0xaf, 0x7d, 0xbc,
+        0x05, 0x4f, 0x21, 0x5a, 0x01, 0x00, 0x5e, 0xab,
+    };
+    assert(BleProtocol::HasXiaomiAtvvServiceUuid(atvv_ad));
+    assert(!BleProtocol::HasVoiceStickServiceUuid(atvv_ad));
+
+    // complete list（0x07）同样识别。
+    ByteVector complete_ad = atvv_ad;
+    complete_ad[4] = 0x07;
+    assert(BleProtocol::HasXiaomiAtvvServiceUuid(complete_ad));
+
+    // VoiceStick 广播不含 ATVV UUID；空/截断数据不误报。
+    const ByteVector vs_ad = {
+        0x02, 0x01, 0x06,
+        0x11, 0x07,
+        0x00, 0x51, 0xfc, 0xea, 0x3c, 0x3a, 0xf7, 0x88,
+        0x23, 0x4b, 0x6f, 0x6e, 0x84, 0x0b, 0x2f, 0x8f,
+    };
+    assert(BleProtocol::HasVoiceStickServiceUuid(vs_ad));
+    assert(!BleProtocol::HasXiaomiAtvvServiceUuid(vs_ad));
+    assert(!BleProtocol::HasXiaomiAtvvServiceUuid(ByteVector{}));
+    assert(!BleProtocol::HasXiaomiAtvvServiceUuid(ByteVector{0x11, 0x06, 0x64}));
+}
+
+// ---- 协调器 × 小米事件流（规格 §7.1）----
+// 事件由 XiaomiAtvvSession 真实产出后直接注入 FakeBleCentral 回调（不需真 BLE）；
+// 协调器对设备类别无感知，RC-XXXX 与 VS-XXXX 走同一状态机。
+
+// 把 session 产出的动作注入协调器（WriteTx 是回遥控器字节、Error 无协调器语义，均忽略）。
+void InjectAtvvActions(FakeBleCentral& ble, const std::string& device_id,
+                       const std::vector<XiaomiAtvvAction>& actions) {
+    for (const auto& action : actions) {
+        if (const auto* event = std::get_if<XiaomiAtvvStateEvent>(&action)) {
+            ble.on_state_event(device_id, event->event);
+        } else if (const auto* frame = std::get_if<XiaomiAtvvAudioFrame>(&action)) {
+            ble.on_audio_frame(device_id, frame->frame);
+        }
+    }
+}
+
+// 完成 ATVV 握手（Start + v1.0 CAPS：16kHz、ADPCM 帧长 120 字节）。
+void AtvvCoordinatorHandshake(XiaomiAtvvSession& session, std::int64_t& t) {
+    session.Start(t);
+    session.HandleControlCommand(ByteVector{0x0B, 0x01, 0x00, 0x02, 0x03, 0x00, 0x78}, t + 10);
+    t += 10;
+}
+
+// hold_to_talk 按下段：MIC_OPEN → STREAM_START → 音频暂存 → 跨 300ms 阈值确认长按
+// （button_down + 暂存帧注入协调器）。返回后协调器应处于 recording。
+void AtvvBeginHoldRecording(FakeBleCentral& ble, const std::string& device_id,
+                            XiaomiAtvvSession& session, std::int64_t& t) {
+    InjectAtvvActions(ble, device_id, session.HandleControlCommand(ByteVector{0x08}, t));
+    InjectAtvvActions(ble, device_id,
+                      session.HandleControlCommand(ByteVector{0x04, 0x03, 0x02, 0x01}, t + 10));
+    InjectAtvvActions(ble, device_id, session.HandleAudioData(ByteVector(480, 0x11), t + 20));
+    InjectAtvvActions(ble, device_id, session.Tick(t + XiaomiAtvvSession::kHoldThresholdMs));
+    t += XiaomiAtvvSession::kHoldThresholdMs;
+}
+
+// 松开段：STOP（button_up 注入）→ 150ms 尾包宽限到期 FinalizeStream（end 帧注入）。
+void AtvvEndRecording(FakeBleCentral& ble, const std::string& device_id,
+                      XiaomiAtvvSession& session, std::int64_t& t) {
+    t += 600;
+    InjectAtvvActions(ble, device_id, session.HandleControlCommand(ByteVector{0x00}, t));
+    InjectAtvvActions(ble, device_id, session.Tick(t + XiaomiAtvvSession::kAudioTailGraceMs));
+    t += XiaomiAtvvSession::kAudioTailGraceMs;
+}
+
+// ①hold_to_talk 正常录音 → ASR 送出 Ogg，final 后粘贴。
+void TestCoordinatorXiaomiHoldToTalkStreamsOggToAsr() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;  // 关闭异步精修，验证同步粘贴流程
+    VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+    coordinator.Start();
+
+    const std::string kDev = "RC-1A2B";
+    XiaomiAtvvSession session;  // 默认 hold_to_talk
+    std::int64_t t = 1000;
+    AtvvCoordinatorHandshake(session, t);
+
+    AtvvBeginHoldRecording(*ble_ptr, kDev, session, t);
+    assert(HasUiState(*ble_ptr, "recording", kDev));
+
+    // 跨过协调器 0.5s 最小录音时长（墙钟），期间持续出音频帧。
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+    InjectAtvvActions(*ble_ptr, kDev, session.HandleAudioData(ByteVector(480, 0x11), t + 100));
+    AtvvEndRecording(*ble_ptr, kDev, session, t);
+
+    // end 帧到达后协调器启动 ASR 并把整段 Ogg 送出，末包 is_last。
+    assert(asr_ptr->started);
+    assert(asr_ptr->sent_chunks > 0);
+    assert(asr_ptr->last_chunk_was_final);
+
+    asr_ptr->on_final("hello xiaomi");
+    assert(input.pasted_text == "hello xiaomi");
+    assert(HasUiState(*ble_ptr, "ready", kDev));
+}
+
+// ②识别中侧键取消 / 录音中主键双击取消语义对 RC 设备 id 不变。
+void TestCoordinatorXiaomiCancelSemantics() {
+    const std::string kDev = "RC-3C4D";
+
+    // 场景 A：识别中（finalizing）secondary 单击取消，不粘贴。
+    {
+        auto ble = std::make_unique<FakeBleCentral>();
+        auto* ble_ptr = ble.get();
+        auto asr = std::make_unique<FakeAsrClient>();
+        auto* asr_ptr = asr.get();
+        FakeUi ui;
+        FakeInputInjector input;
+        AppConfig config = AppConfig::Defaults();
+        config.refine_enabled = false;
+        VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+        coordinator.Start();
+
+        XiaomiAtvvSession session;
+        std::int64_t t = 1000;
+        AtvvCoordinatorHandshake(session, t);
+        AtvvBeginHoldRecording(*ble_ptr, kDev, session, t);
+        std::this_thread::sleep_for(std::chrono::milliseconds(520));
+        AtvvEndRecording(*ble_ptr, kDev, session, t);
+        assert(asr_ptr->started);  // finalizing：ASR 已启动等 final
+
+        ble_ptr->on_state_event(kDev, ButtonEvent("button_up", "secondary"));
+        assert(asr_ptr->cancelled);
+        assert(input.pasted_text.empty());
+        assert(HasUiState(*ble_ptr, "ready", kDev));
+    }
+
+    // 场景 B：录音中主键双击 → 取消录音并注入 Enter，ASR 未启动。
+    {
+        auto ble = std::make_unique<FakeBleCentral>();
+        auto* ble_ptr = ble.get();
+        auto asr = std::make_unique<FakeAsrClient>();
+        auto* asr_ptr = asr.get();
+        FakeUi ui;
+        FakeInputInjector input;
+        AppConfig config = AppConfig::Defaults();
+        config.refine_enabled = false;
+        VoiceStickCoordinator coordinator(config, std::move(ble), std::move(asr), &ui, &input);
+        coordinator.Start();
+
+        XiaomiAtvvSession session;
+        std::int64_t t = 1000;
+        AtvvCoordinatorHandshake(session, t);
+        AtvvBeginHoldRecording(*ble_ptr, kDev, session, t);
+        assert(HasUiState(*ble_ptr, "recording", kDev));
+
+        ble_ptr->on_state_event(kDev, DoubleClickEvent("primary"));
+        assert(input.send_enter_called);
+        assert(!asr_ptr->started);
+        assert(input.pasted_text.empty());
+        assert(HasUiState(*ble_ptr, "ready", kDev));
+    }
+}
+
+// ③wechat_input_method 路径：音频经 Opus 解码写入虚拟麦 PCM ring buffer。
+void TestCoordinatorXiaomiWechatInputMethodDecodesToVirtualMic() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto asr = std::make_unique<FakeAsrClient>();
+    auto* asr_ptr = asr.get();
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kWechatInputMethod;
+
+    FakeVirtualMicRenderer* fake_renderer = nullptr;
+    VoiceStickCoordinator coordinator(
+        config, std::move(ble), std::move(asr), &ui, &input, {},
+        [&fake_renderer](const IVirtualMicRenderer::Options&) {
+            auto p = std::make_unique<FakeVirtualMicRenderer>(true);
+            fake_renderer = p.get();
+            return p;
+        },
+        [](const std::string&) {
+            return std::make_unique<FakeWechatInputMethodHotkey>();
+        });
+    coordinator.Start();
+
+    const std::string kDev = "RC-5E6F";
+    ble_ptr->connected_device_ids.insert(kDev);
+    ble_ptr->on_connection_change({ConnectedDevice{kDev, "RC-5E6F"}});
+
+    XiaomiAtvvSession session;
+    std::int64_t t = 1000;
+    AtvvCoordinatorHandshake(session, t);
+
+    AtvvBeginHoldRecording(*ble_ptr, kDev, session, t);
+    assert(fake_renderer != nullptr);
+    assert(fake_renderer->start_count == 1);
+    PcmRingBuffer* ring = fake_renderer->last_ring;
+    assert(ring != nullptr);
+
+    // button_down 时暂存帧已放出（≥1 个 640 采样 Opus 帧）；继续喂一帧。
+    InjectAtvvActions(*ble_ptr, kDev, session.HandleAudioData(ByteVector(480, 0x11), t + 100));
+
+    // 协调器把 Opus 解码为 PCM 写入 ring：至少有 640 采样且非全零（ADPCM 0x11
+    // 解码为缓升信号，Opus 有损但能量保留）。轮询兜底异步解码。
+    std::vector<std::int16_t> pcm(AudioOpusEncoder::kFrameSamples, 0);
+    std::size_t readable = 0;
+    for (int i = 0; i < 50 && readable < pcm.size(); ++i) {
+        readable = ring->Available();
+        if (readable < pcm.size()) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    assert(readable >= pcm.size());
+    const auto read_count = ring->Read(pcm.data(), pcm.size());
+    assert(read_count == pcm.size());
+    const bool all_zero = std::all_of(pcm.begin(), pcm.end(),
+                                      [](std::int16_t s) { return s == 0; });
+    assert(!all_zero);
+
+    // 松开后 wechat 会话完整停止。
+    AtvvEndRecording(*ble_ptr, kDev, session, t);
+    assert(fake_renderer->stop_count >= 1);
+    assert(asr_ptr->sent_chunks == 0);  // wechat 路径不经 ASR
+}
+
+// ④字幕路径：subtitle ASR 整句识别，字幕显示、不粘贴。
+void TestCoordinatorXiaomiSubtitlePath() {
+    auto ble = std::make_unique<FakeBleCentral>();
+    auto* ble_ptr = ble.get();
+    auto primary_asr = std::make_unique<FakeAsrClient>();
+    FakeAsrClient* subtitle_asr_ptr = nullptr;
+    FakeUi ui;
+    FakeInputInjector input;
+    AppConfig config = AppConfig::Defaults();
+    config.default_output_profile.target = OutputTarget::kSubtitle;
+    config.refine_enabled = false;  // 字幕用例验证同步显示流程，关闭异步精修
+    VoiceStickCoordinator coordinator(
+        config,
+        std::move(ble),
+        std::move(primary_asr),
+        &ui,
+        &input,
+        [&](const AppConfig&) {
+            auto asr = std::make_unique<FakeAsrClient>();
+            subtitle_asr_ptr = asr.get();
+            return asr;
+        });
+    coordinator.Start();
+
+    const std::string kDev = "RC-7A8B";
+    XiaomiAtvvSession session;
+    std::int64_t t = 1000;
+    AtvvCoordinatorHandshake(session, t);
+
+    AtvvBeginHoldRecording(*ble_ptr, kDev, session, t);
+    assert(HasUiState(*ble_ptr, "recording", kDev));
+    // 帧在录音时长不足 0.5s 时注入（can_start_asr=false，保持缓冲）；
+    // 随后 sleep 跨过最小录音时长，模拟真实长录音。
+    InjectAtvvActions(*ble_ptr, kDev, session.HandleAudioData(ByteVector(480, 0x11), t + 100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(520));
+
+    // STOP（button_up）：字幕 cycle 已建但 ASR 未启动（等整段音频）。
+    const auto stop_actions_t = t + 600;
+    InjectAtvvActions(*ble_ptr, kDev,
+                      session.HandleControlCommand(ByteVector{0x00}, stop_actions_t));
+    assert(subtitle_asr_ptr != nullptr);
+    assert(!subtitle_asr_ptr->started);
+
+    // end 帧：字幕 ASR 启动并收到整段 Ogg。
+    InjectAtvvActions(*ble_ptr, kDev,
+                      session.Tick(stop_actions_t + XiaomiAtvvSession::kAudioTailGraceMs));
+    assert(subtitle_asr_ptr->started);
+    assert(subtitle_asr_ptr->sent_chunks > 0);
+
+    subtitle_asr_ptr->on_partial("interim xiaomi");
+    assert(!ui.partials.empty());
+    assert(ui.partials.back() == "interim xiaomi");
+    subtitle_asr_ptr->on_final("hello xiaomi subtitle");
+
+    // 字幕显示且不粘贴；设备回 ready。
+    assert(input.pasted_text.empty());
+    assert(!ui.subtitles.empty());
+    assert(ui.subtitles.back().find("hello xiaomi subtitle") != std::string::npos);
+    assert(ui.subtitles.back().find(kDev) != std::string::npos);
+    assert(HasUiState(*ble_ptr, "ready", kDev));
+}
+
+void TestDeviceIdRcPrefix() {
+    // RC- 前缀归一化：大小写不敏感、去前缀后 4 位大写 hex，与 VS- 并存。
+    assert(BleProtocol::NormalizeDeviceId("RC-3A7F") == "3A7F");
+    assert(BleProtocol::NormalizeDeviceId("rc-3a7f") == "3A7F");
+    assert(BleProtocol::NormalizeDeviceId(" vs-c3d8 ") == "C3D8");
+    assert(BleProtocol::NormalizeDeviceId("3a7f") == "3A7F");
+    assert(BleProtocol::NormalizeDeviceId("RC-12").empty());
+    assert(BleProtocol::NormalizeDeviceId("RC-XYZW").empty());
+
+    assert(BleProtocol::DeviceIdFromName("RC-3A7F").value() == "3A7F");
+    assert(BleProtocol::DeviceIdFromName("VS-C3D8").value() == "C3D8");
+    assert(!BleProtocol::DeviceIdFromName("RC-123").has_value());
+    assert(!BleProtocol::DeviceIdFromName("Other").has_value());
+
+    // 小米名称白名单（trim+小写，中文名按 UTF-8 字节比较）。
+    assert(BleProtocol::IsXiaomiRemoteName("MI RC"));
+    assert(BleProtocol::IsXiaomiRemoteName(" mi rc "));
+    assert(BleProtocol::IsXiaomiRemoteName("Xiaomi Bluetooth Remote 2 Pro"));
+    assert(BleProtocol::IsXiaomiRemoteName("小米蓝牙语音遥控器"));
+    assert(BleProtocol::IsXiaomiRemoteName("RC001"));
+    assert(BleProtocol::IsXiaomiRemoteName("rc003"));
+    assert(!BleProtocol::IsXiaomiRemoteName("VS-C3D8"));
+    assert(!BleProtocol::IsXiaomiRemoteName(""));
+    assert(!BleProtocol::IsXiaomiRemoteName("MI RC2"));
+
+    // DeviceClassFromName：白名单 → 小米；VS- 前缀 → StickS3；其余 nullopt。
+    assert(BleProtocol::DeviceClassFromName("MI RC") == DeviceClass::kXiaomiRemote2Pro);
+    assert(BleProtocol::DeviceClassFromName("RC-3A7F") == DeviceClass::kXiaomiRemote2Pro);
+    assert(BleProtocol::DeviceClassFromName("VS-C3D8") == DeviceClass::kStickS3);
+    assert(!BleProtocol::DeviceClassFromName("Random Speaker").has_value());
+}
+
+void TestAppConfigXiaomiTable() {
+    // 默认值。
+    const AppConfig defaults = AppConfig::Defaults();
+    assert(defaults.xiaomi_suppress_f5);
+    assert(defaults.XiaomiSettingsForDevice(std::nullopt).gain_db == 12.0);
+    assert(defaults.XiaomiSettingsForDevice(std::nullopt).double_click_ms == 350);
+    // 未覆盖设备回落全局默认。
+    assert(defaults.XiaomiSettingsForDevice("RC-3A7F").gain_db == 12.0);
+
+    // TOML 文本加载：[device.RC-3A7F.xiaomi] + 全局开关。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_xiaomi_test.toml";
+    std::filesystem::remove(temp);
+    {
+        std::ofstream out(temp);
+        out << "paired_device_ids = \"RC-3A7F\"\n";
+        out << "xiaomi_suppress_f5 = false\n";
+        out << "[device.RC-3A7F.xiaomi]\n";
+        out << "gain_db = 20.5\n";
+        out << "double_click_ms = 450\n";
+    }
+    AppConfig loaded = AppConfig::Load(temp);
+    assert(!loaded.xiaomi_suppress_f5);
+    assert(loaded.XiaomiSettingsForDevice("3A7F").gain_db == 20.5);
+    assert(loaded.XiaomiSettingsForDevice("3A7F").double_click_ms == 450);
+    // 访问器内部归一化：带前缀与不带前缀等价。
+    assert(loaded.XiaomiSettingsForDevice("RC-3A7F").gain_db == 20.5);
+    assert(loaded.XiaomiSettingsForDevice("FFFF").gain_db == 12.0);
+    std::filesystem::remove(temp);
+
+    // 保存/加载往返。
+    AppConfig config = AppConfig::Defaults();
+    config.paired_device_ids = {"3A7F"};
+    config.xiaomi_suppress_f5 = false;
+    config.device_xiaomi_settings["3A7F"] = XiaomiSettings{.gain_db = 18.0, .double_click_ms = 400};
+    config.Save(temp);
+    loaded = AppConfig::Load(temp);
+    assert(!loaded.xiaomi_suppress_f5);
+    assert(loaded.XiaomiSettingsForDevice("3A7F").gain_db == 18.0);
+    assert(loaded.XiaomiSettingsForDevice("3A7F").double_click_ms == 400);
+
+    // 与默认相同不落盘。
+    config.device_xiaomi_settings["3A7F"] = XiaomiSettings{};
+    config.Save(temp);
+    {
+        std::ifstream in(temp);
+        std::stringstream buffer;
+        buffer << in.rdbuf();
+        assert(buffer.str().find(".xiaomi") == std::string::npos);
+    }
+    std::filesystem::remove(temp);
+}
+
+void TestAppConfigXiaomiKeyMap() {
+    // 默认可映射按键集：12 键；mic（语音键专用）与未知键不在列。
+    assert(kXiaomiMappableButtons.size() == 12);
+    for (std::string_view id : kXiaomiMappableButtons) {
+        assert(IsXiaomiMappableButton(id));
+    }
+    assert(!IsXiaomiMappableButton("mic"));
+    assert(!IsXiaomiMappableButton("bogus"));
+    assert(!IsXiaomiMappableButton(""));
+
+    // 默认 key_map 为空。
+    const AppConfig defaults = AppConfig::Defaults();
+    assert(defaults.default_xiaomi_settings.key_map.empty());
+    assert(defaults.XiaomiSettingsForDevice("RC-3A7F").key_map.empty());
+
+    // TOML 文本加载：全局 [xiaomi.keys] + [device.RC-3A7F.xiaomi.keys] 覆盖。
+    auto temp = std::filesystem::temp_directory_path() / "voicestick_xiaomi_keymap_test.toml";
+    std::filesystem::remove(temp);
+    {
+        std::ofstream out(temp);
+        out << "paired_device_ids = \"RC-3A7F\"\n";
+        out << "[xiaomi.keys]\n";
+        out << "back = \"esc\"\n";
+        out << "home = \"ctrl+h\"\n";
+        out << "[device.RC-3A7F.xiaomi.keys]\n";
+        out << "home = \"\"\n";              // 空串显式取消全局映射
+        out << "menu = \"ctrl+shift+m\"\n";   // 设备新增
+        out << "back = \"esc\"\n";            // 与全局相同
+        out << "mic = \"f5\"\n";              // 非法键名忽略
+        out << "tv = \"not a key\"\n";        // 非法 key_spec 忽略
+        out << "power = 123\n";               // 非字符串值忽略
+    }
+    AppConfig loaded = AppConfig::Load(temp);
+    // 全局默认。
+    assert(loaded.default_xiaomi_settings.key_map.size() == 2);
+    assert(loaded.default_xiaomi_settings.key_map.at("back") == "esc");
+    assert(loaded.default_xiaomi_settings.key_map.at("home") == "ctrl+h");
+    // 设备填平：未覆盖的键取全局默认，覆盖的键取设备值，空串优先于全局值。
+    const auto& dev = loaded.XiaomiSettingsForDevice("RC-3A7F");
+    assert(dev.key_map.size() == 3);
+    assert(dev.key_map.at("back") == "esc");
+    assert(dev.key_map.at("home").empty());
+    assert(dev.key_map.at("menu") == "ctrl+shift+m");
+    assert(dev.key_map.count("mic") == 0);
+    assert(dev.key_map.count("tv") == 0);
+    assert(dev.key_map.count("power") == 0);
+    // 未覆盖设备回落全局默认。
+    assert(loaded.XiaomiSettingsForDevice("FFFF").key_map ==
+           loaded.default_xiaomi_settings.key_map);
+    std::filesystem::remove(temp);
+
+    // 保存/加载往返：全局默认 + 设备覆盖。
+    AppConfig config = AppConfig::Defaults();
+    config.paired_device_ids = {"3A7F"};
+    config.default_xiaomi_settings.key_map = {{"back", "esc"}, {"home", "ctrl+h"}};
+    XiaomiSettings dev_settings;  // 标量与全局默认相同，仅 key_map 不同
+    dev_settings.key_map = {{"back", "esc"}, {"home", ""}, {"menu", "ctrl+shift+m"}};
+    config.device_xiaomi_settings["3A7F"] = dev_settings;
+    config.Save(temp);
+    {
+        std::ifstream in(temp);
+        std::stringstream buffer;
+        buffer << in.rdbuf();
+        const std::string text = buffer.str();
+        assert(text.find("[xiaomi.keys]") != std::string::npos);
+        const auto dev_pos = text.find("[device.3A7F.xiaomi.keys]");
+        assert(dev_pos != std::string::npos);
+        // 与全局默认相同的条目（back=esc）不落盘；空串取消（home=""）要落盘。
+        const std::string dev_section = text.substr(dev_pos);
+        assert(dev_section.find("home = \"\"") != std::string::npos);
+        assert(dev_section.find("menu = \"ctrl+shift+m\"") != std::string::npos);
+        assert(dev_section.find("back") == std::string::npos);
+    }
+    loaded = AppConfig::Load(temp);
+    assert(loaded.default_xiaomi_settings.key_map == config.default_xiaomi_settings.key_map);
+    assert(loaded.XiaomiSettingsForDevice("RC-3A7F") == dev_settings);
+    std::filesystem::remove(temp);
+}
+
+// F5 抑制谓词：enabled 且 last>0 且 0<=age<=80ms 时吞，其余一律放行。
+void TestXiaomiF5SuppressPredicate() {
+    constexpr std::int64_t kLast = 100000;
+    // 窗内（含 0/80ms 边界）吞。
+    assert(ShouldSuppressF5(kLast, kLast, true));
+    assert(ShouldSuppressF5(kLast + 79, kLast, true));
+    assert(ShouldSuppressF5(kLast + kF5SuppressWindowMs, kLast, true));
+    // 窗外（81ms）放行。
+    assert(!ShouldSuppressF5(kLast + kF5SuppressWindowMs + 1, kLast, true));
+    // 开关关闭放行。
+    assert(!ShouldSuppressF5(kLast, kLast, false));
+    // 从未开麦（last=0）放行。
+    assert(!ShouldSuppressF5(kLast, 0, true));
+    // 未来时间戳（时钟回拨/乱序，age<0）放行。
+    assert(!ShouldSuppressF5(kLast - 1, kLast, true));
+}
+
+// 协调器 × 小米能力门控（规格 §4.4/§5.2）：RC 设备不下发交互/编码器设置、不走
+// VoiceStick 固件更新；对照组 StickS3 设备行为不变。小米身份走 config 种子兜底路径
+//（paired_devices 条目带 hardware，IsXiaomiRemoteDevice 直接命中），不注入
+// device_info 事件，因此完全不触达 SavePairedDeviceInfo 落盘真实 config.toml。
+void TestCoordinatorXiaomiCapabilityGating() {
+    const std::string kRc = "RC-3A7F";
+    const std::string kVs = "VS-5A74";
+    auto make_seeded_config = [&]() {
+        AppConfig config = AppConfig::Defaults();
+        config.paired_device_ids.clear(); // 避免 CheckFirmwareUpdatesIfNeeded 起网络线程
+        PairedDeviceEntry rc_entry;
+        rc_entry.device_id = kRc;
+        rc_entry.hardware = std::string(kHardwareXiaomiRemote2Pro);
+        config.paired_devices.push_back(rc_entry);
+        return config;
+    };
+    {
+        auto ble = std::make_unique<FakeBleCentral>();
+        auto* ble_ptr = ble.get();
+        auto asr = std::make_unique<FakeAsrClient>();
+        FakeUi ui;
+        FakeInputInjector input;
+        VoiceStickCoordinator coordinator(make_seeded_config(), std::move(ble), std::move(asr),
+                                          &ui, &input);
+        coordinator.Start();
+
+        auto targets_device = [](const std::optional<std::string>& id, const std::string& dev) {
+            return id.has_value() && *id == dev;
+        };
+        auto assert_no_sends_to = [&](const std::string& dev) {
+            for (const auto& [_, id] : ble_ptr->sent_tap_enabled) {
+                assert(!targets_device(id, dev));
+            }
+            for (const auto& item : ble_ptr->sent_tap_sensitivities) {
+                assert(!targets_device(item.device_id, dev));
+            }
+            for (const auto& item : ble_ptr->sent_imu_wake_sensitivities) {
+                assert(!targets_device(item.device_id, dev));
+            }
+            for (const auto& [_, id] : ble_ptr->sent_encoder_led_colors) {
+                assert(!targets_device(id, dev));
+            }
+            for (const auto& [_, id] : ble_ptr->sent_encoder_recording_gates) {
+                assert(!targets_device(id, dev));
+            }
+        };
+
+        // 小米遥控器连接事件（hardware 由 BLE 层按类填充，镜像真实路径）。
+        ble_ptr->connected_device_ids.insert(kRc);
+        ble_ptr->on_connection_change(
+            {ConnectedDevice{kRc, "RC-3A7F", std::string(kHardwareXiaomiRemote2Pro)}});
+
+        // 连接同步循环：RC 设备不应收到任何交互/编码器单播（广播不在此断言）。
+        assert_no_sends_to(kRc);
+
+        // UpdateConfig 热更循环同样跳过 RC 设备（此时仅 RC 连接，应零新增）。
+        const auto tap_count = ble_ptr->sent_tap_enabled.size();
+        const auto tap_sens_count = ble_ptr->sent_tap_sensitivities.size();
+        const auto imu_wake_count = ble_ptr->sent_imu_wake_sensitivities.size();
+        const auto led_count = ble_ptr->sent_encoder_led_colors.size();
+        const auto gate_count = ble_ptr->sent_encoder_recording_gates.size();
+        coordinator.UpdateConfig(make_seeded_config());
+        assert(ble_ptr->sent_tap_enabled.size() == tap_count);
+        assert(ble_ptr->sent_tap_sensitivities.size() == tap_sens_count);
+        assert(ble_ptr->sent_imu_wake_sensitivities.size() == imu_wake_count);
+        assert(ble_ptr->sent_encoder_led_colors.size() == led_count);
+        assert(ble_ptr->sent_encoder_recording_gates.size() == gate_count);
+
+        // 固件更新门控：本地文件 OTA 直接拒绝，不触达底层 BLE。
+        const auto fw_path =
+            std::filesystem::temp_directory_path() / "voicestick_xiaomi_gating_test.bin";
+        {
+            std::ofstream f(fw_path, std::ios::binary);
+            f << "ota-image";
+        }
+        bool rc_completion_called = false;
+        bool rc_completion_ok = true;
+        coordinator.UpdateFirmwareFromFile(
+            fw_path.string(), kRc, nullptr,
+            [&](bool ok, std::string message) {
+                rc_completion_called = true;
+                rc_completion_ok = ok;
+                assert(message.find("does not support") != std::string::npos);
+            });
+        assert(rc_completion_called);
+        assert(!rc_completion_ok);
+        assert(ble_ptr->captured_firmware_device_id.empty());
+
+        // 对照组：StickS3 设备正常下发、正常触达固件更新底层。
+        ble_ptr->connected_device_ids.insert(kVs);
+        ble_ptr->on_connection_change(
+            {ConnectedDevice{kRc, "RC-3A7F", std::string(kHardwareXiaomiRemote2Pro)},
+             ConnectedDevice{kVs, "VS-5A74"}});
+        bool vs_got_sends = false;
+        for (const auto& [_, id] : ble_ptr->sent_tap_enabled) {
+            if (targets_device(id, kVs)) vs_got_sends = true;
+        }
+        for (const auto& [_, id] : ble_ptr->sent_encoder_led_colors) {
+            if (targets_device(id, kVs)) vs_got_sends = true;
+        }
+        assert(vs_got_sends);
+        assert_no_sends_to(kRc); // RC 依旧零下发
+
+        bool vs_completion_called = false;
+        coordinator.UpdateFirmwareFromFile(fw_path.string(), kVs, nullptr,
+                                           [&](bool ok, std::string) {
+                                               vs_completion_called = true;
+                                               assert(ok);
+                                           });
+        assert(vs_completion_called);
+        assert(ble_ptr->captured_firmware_device_id == kVs);
+
+        std::filesystem::remove(fw_path);
+        coordinator.Shutdown();
+    }
+}
+
+void TestPcmRingBufferWriteRead() {
+    PcmRingBuffer buffer(1024);
+    std::vector<int16_t> in(100);
+    for (std::size_t i = 0; i < in.size(); ++i) in[i] = static_cast<int16_t>(i);
+
+    assert(buffer.Write(in.data(), in.size()) == in.size());
+    assert(buffer.Available() == in.size());
+
+    std::vector<int16_t> out(100, 0);
+    assert(buffer.Read(out.data(), out.size()) == in.size());
+    assert(in == out);
+    assert(buffer.Available() == 0);
+}
+
+void TestPcmRingBufferOverwrite() {
+    PcmRingBuffer buffer(16);
+    std::vector<int16_t> first(16, 1);
+    std::vector<int16_t> second(16, 2);
+
+    assert(buffer.Write(first.data(), first.size()) == first.size());
+    assert(buffer.Write(second.data(), second.size()) == second.size());
+    assert(buffer.Available() == 16);
+
+    std::vector<int16_t> out(16, 0);
+    assert(buffer.Read(out.data(), out.size()) == 16);
+    assert(std::all_of(out.begin(), out.end(), [](int16_t v) { return v == 2; }));
+}
+
+void TestPcmRingBufferUnderrunSilence() {
+    PcmRingBuffer buffer(16);
+    std::vector<int16_t> in(4, 42);
+    buffer.Write(in.data(), in.size());
+
+    std::vector<int16_t> out(8, 0);
+    assert(buffer.Read(out.data(), out.size(), /*silence_value=*/-1) == 4);
+    assert(std::equal(out.begin(), out.begin() + 4, in.begin()));
+    assert(std::all_of(out.begin() + 4, out.end(), [](int16_t v) { return v == -1; }));
+}
+
+void TestPcmRingBufferClear() {
+    PcmRingBuffer buffer(16);
+    std::vector<int16_t> in(8, 7);
+    buffer.Write(in.data(), in.size());
+    buffer.Clear();
+    assert(buffer.Available() == 0);
+
+    std::vector<int16_t> out(8, 0);
+    assert(buffer.Read(out.data(), out.size(), /*silence_value=*/0) == 0);
+    assert(std::all_of(out.begin(), out.end(), [](int16_t v) { return v == 0; }));
+}
+
+void TestPcmRingBufferWrapAround() {
+    PcmRingBuffer buffer(16);
+    std::vector<int16_t> in(12);
+    for (std::size_t i = 0; i < in.size(); ++i) in[i] = static_cast<int16_t>(i);
+
+    // 先写 12 个再读 12 个，把 read_pos_ 推到 12。
+    buffer.Write(in.data(), in.size());
+    std::vector<int16_t> tmp(12, 0);
+    buffer.Read(tmp.data(), tmp.size());
+
+    // 再写 12 个，跨越尾部与头部。
+    std::vector<int16_t> in2(12);
+    for (std::size_t i = 0; i < in2.size(); ++i) in2[i] = static_cast<int16_t>(100 + i);
+    buffer.Write(in2.data(), in2.size());
+
+    std::vector<int16_t> out(12, 0);
+    assert(buffer.Read(out.data(), out.size()) == 12);
+    assert(in2 == out);
+}
+
+void TestWasapiRendererFailsOnMissingDevice() {
+    WasapiVirtualMicRenderer::Options options;
+    options.device_name_substring = L"DefinitelyNotARealDeviceNameXYZ123";
+    WasapiVirtualMicRenderer renderer(options);
+    PcmRingBuffer buffer(1024);
+
+    assert(!renderer.IsRunning());
+    assert(renderer.ActiveDeviceName().empty());
+    assert(!renderer.Start(&buffer));
+    assert(!renderer.IsRunning());
+    assert(renderer.ActiveDeviceName().empty());
+}
+
+void TestRenderPumpSubmitsFullAvailableNoCap() {
+    // padding=0 → available=buffer_frame_count。事件驱动渲染去掉 frames_per_period 上限，
+    // 应一次性提交全部可用空间（旧实现被 10ms=160 帧上限锁死，提交速率 < 消费速率致
+    // WASAPI 稳态 underrun，输出被静音切断 → 第三方输入法识别卡顿）。
+    FakeWasapiRenderSink sink(/*buffer_frames=*/800, /*channels=*/1);
+    PcmRingBuffer ring(2048);
+    std::vector<int16_t> samples(800);
+    for (std::size_t i = 0; i < samples.size(); ++i) {
+        samples[i] = static_cast<int16_t>(100 + i);
+    }
+    ring.Write(samples.data(), samples.size());
+
+    RenderPump pump(&sink, &ring, /*channels=*/1);
+    const UINT32 submitted = pump.PumpOnce();
+
+    assert(submitted == 800);
+    assert(sink.submitted_frame_counts.size() == 1);
+    assert(sink.submitted_frame_counts[0] == 800);
+    assert(sink.submitted_samples[0] == samples);
+}
+
+void TestRenderPumpFillsSilenceWhenRingEmpty() {
+    // ring buffer 数据不足时用静音填满提交量，避免 WASAPI 播放残留旧数据或 pop 噪声。
+    FakeWasapiRenderSink sink(800, 1);
+    PcmRingBuffer ring(2048);  // 默认空。
+    RenderPump pump(&sink, &ring, 1);
+
+    const UINT32 submitted = pump.PumpOnce();
+
+    assert(submitted == 800);
+    assert(sink.submitted_samples.size() == 1);
+    assert(sink.submitted_samples[0].size() == 800);
+    for (int16_t s : sink.submitted_samples[0]) {
+        assert(s == 0);
+    }
+}
+
+void TestRenderPumpZeroWhenBufferFull() {
+    // buffer 已满（padding == buffer_frame_count）→ 无可提交空间 → 返回 0 且不调 GetBuffer。
+    FakeWasapiRenderSink sink(800, 1);
+    sink.padding_ = 800;
+    PcmRingBuffer ring(2048);
+    std::vector<int16_t> samples(800, 1234);
+    ring.Write(samples.data(), samples.size());
+    RenderPump pump(&sink, &ring, 1);
+
+    const UINT32 submitted = pump.PumpOnce();
+
+    assert(submitted == 0);
+    assert(sink.submitted_frame_counts.empty());
+}
+
+void TestWasapiRendererStopsCleanlyWakingBlockedThread() {
+    // 事件驱动渲染线程阻塞于 WaitForSingleObject(NotifyEvent, INFINITE)。Stop 必须
+    // SetEvent 唤醒并 join，否则死等。注入 FakeWasapiRenderSink（事件真实但不会自动
+    // 触发），渲染线程将一直阻塞，验证 Stop 能唤醒线程退出（若未唤醒则 ctest
+    // --timeout 会杀掉本测试判失败）。
+    auto sink_owner = std::make_unique<FakeWasapiRenderSink>(800, 1);
+    PcmRingBuffer ring(2048);
+    WasapiVirtualMicRenderer renderer({}, std::move(sink_owner));
+
+    assert(renderer.Start(&ring));
+    assert(renderer.IsRunning());
+    // 让渲染线程进入 WaitForSingleObject 阻塞。
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    renderer.Stop();
+    assert(!renderer.IsRunning());
+}
+
+void TestWasapiRendererRestartsAfterStop() {
+    // coordinator 的 wechat_renderer_ 在 session 间复用：Start→Stop→Start 必须可用。
+    // 旧实现 Stop 里 sink_.reset() 销毁 sink，第二次 Start 调 sink_->OpenAndInitialize
+    // 解引用 nullptr → 0xc0000005 访问违例（真机 session 2 崩溃，WER 02:02:55）。
+    auto sink_owner = std::make_unique<FakeWasapiRenderSink>(800, 1);
+    auto* sink = sink_owner.get();
+    PcmRingBuffer ring(2048);
+    WasapiVirtualMicRenderer renderer({}, std::move(sink_owner));
+
+    assert(renderer.Start(&ring));
+    assert(sink->open_call_count == 1);
+    renderer.Stop();
+
+    // 第二次 Start：sink 必须仍可用（Stop 不应销毁 sink）。
+    assert(renderer.Start(&ring));
+    assert(renderer.IsRunning());
+    assert(sink->open_call_count == 2);
+    renderer.Stop();
+}
+
+void TestOggOpusDemuxerParsesOpusHead() {
+    // muxer 产出单帧流，demuxer 解析后验证 OpusHead 字段与 packet 完整性。
+    OggOpusMuxer muxer(16000, 1);
+    const ByteVector opus_frame = {0xAB, 0xCD, 0x12, 0x34, 0x56};
+    const ByteVector ogg = muxer.Append(opus_frame, /*is_last=*/true);
+
+    OggOpusStream stream;
+    assert(ParseOggOpus(ogg, stream));
+    assert(stream.sample_rate == 16000);
+    assert(stream.channels == 1);
+    assert(stream.preskip == 312);
+    assert(stream.packets.size() == 1);
+    assert(stream.packets[0] == opus_frame);
+}
+
+void TestOggOpusDemuxerMultiplePackets() {
+    // 多帧按写入顺序解析，packet 逐字节一致。
+    OggOpusMuxer muxer(16000, 1);
+    const ByteVector a = {0x11, 0x11}, b = {0x22, 0x22, 0x22}, c = {0x33};
+    ByteVector ogg;
+    auto add = [&](const ByteVector& p, bool last) {
+        const ByteVector chunk = muxer.Append(p, last);
+        ogg.insert(ogg.end(), chunk.begin(), chunk.end());
+    };
+    add(a, false);
+    add(b, false);
+    add(c, true);
+
+    OggOpusStream stream;
+    assert(ParseOggOpus(ogg, stream));
+    assert(stream.packets.size() == 3);
+    assert(stream.packets[0] == a);
+    assert(stream.packets[1] == b);
+    assert(stream.packets[2] == c);
+}
+
+void TestOggOpusDemuxerRoundTripWithFinish() {
+    // muxer.Finish 产生的 EOS 空页不影响已收 packet 的解析。
+    OggOpusMuxer muxer(16000, 1);
+    const ByteVector a = {0x77, 0x88};
+    ByteVector ogg = muxer.Append(a, false);
+    const ByteVector eos = muxer.Finish();
+    ogg.insert(ogg.end(), eos.begin(), eos.end());
+
+    OggOpusStream stream;
+    assert(ParseOggOpus(ogg, stream));
+    assert(stream.packets.size() == 1);
+    assert(stream.packets[0] == a);
+}
+
+void TestOggOpusDemuxerRejectsBadMagic() {
+    const ByteVector bad(100, 0);  // 无 OggS magic。
+    OggOpusStream stream;
+    assert(!ParseOggOpus(bad, stream));
+}
+
+void TestOggOpusDemuxerRejectsTruncatedStream() {
+    OggOpusMuxer muxer(16000, 1);
+    const ByteVector payload = {0xAB, 0xCD};
+    const ByteVector ogg_full = muxer.Append(payload, true);
+    ByteVector ogg(ogg_full.begin(), ogg_full.begin() + 10);  // 页头都未完整。
+    OggOpusStream stream;
+    assert(!ParseOggOpus(ogg, stream));
+    assert(stream.packets.empty());
+}
+
+void TestWechatPipelineSteadyStateLatency() {
+    // 稳态：每 20ms 写一帧 PCM（320 样本 @16kHz），设备消费 20ms，PumpOnce 填 buffer。
+    // 管道滞留（ring+padding）稳态 ≈ buffer_frames，端到端延迟 ≈ buffer_duration_ms。
+    // 量化 WASAPI buffer 对首字延迟的贡献（真机 buffer_duration_ms=50 -> 约 50ms）。
+    const int sr = 16000;
+    const int frame_ms = 20;
+    const int frame_samples = sr * frame_ms / 1000;  // 320
+    const int buffer_ms = 50;
+    TimedFakeSink sink(sr, buffer_ms);
+    PcmRingBuffer ring(8192);
+    RenderPump pump(&sink, &ring, 1);
+
+    std::vector<int16_t> pcm(frame_samples, 1);
+    int ring_underrun = 0;
+    UINT32 max_backlog = 0;
+    for (int i = 0; i < 100; ++i) {
+        ring.Write(pcm.data(), static_cast<std::size_t>(frame_samples));
+        const UINT32 before = static_cast<UINT32>(ring.Available());
+        const UINT32 submitted = pump.PumpOnce();
+        const UINT32 after = static_cast<UINT32>(ring.Available());
+        if (before - after < submitted) ++ring_underrun;  // ring 不足补静音
+        const UINT32 backlog = static_cast<UINT32>(ring.Available()) + sink.padding_;
+        if (backlog > max_backlog) max_backlog = backlog;
+        sink.AdvanceTimeUs(frame_ms * 1000);  // 设备消费在填之后，匹配事件驱动
+    }
+    const double max_latency_ms = static_cast<double>(max_backlog) / sr * 1000.0;
+    // buffer 50ms 在 20ms 帧节奏下余量充足，device 不应饿。
+    assert(sink.device_underrun_count_ == 0);
+    // 首帧 ring 仅 320 < buffer 800，必有一次 ring underrun（补静音填满 buffer）。
+    assert(ring_underrun >= 1);
+    // 稳态滞留 ≈ buffer（WASAPI buffer 是管道延迟主因），允许首帧 + 一帧波动。
+    assert(max_backlog >= sink.buffer_frames_);
+    assert(max_backlog <= sink.buffer_frames_ + static_cast<UINT32>(frame_samples));
+    assert(max_latency_ms >= buffer_ms - 1.0);
+    assert(max_latency_ms <= buffer_ms + frame_ms + 1.0);
+}
+
+void TestWechatPipelineBufferDurationPareto() {
+    // 帕累托：buffer_duration_ms 越小管道延迟越低，但 < 帧节奏时 device underrun。
+    // 量化各档延迟与 underrun，为阶段6 调优 50->20ms 提供数据支撑。
+    const int sr = 16000;
+    const int frame_ms = 20;
+    const int frame_samples = sr * frame_ms / 1000;
+    std::vector<int16_t> pcm(frame_samples, 1);
+    double prev_latency = -1.0;
+    for (const int buffer_ms : {20, 50, 100}) {
+        TimedFakeSink sink(sr, buffer_ms);
+        PcmRingBuffer ring(8192);
+        RenderPump pump(&sink, &ring, 1);
+        UINT32 max_backlog = 0;
+        for (int i = 0; i < 200; ++i) {
+            ring.Write(pcm.data(), static_cast<std::size_t>(frame_samples));
+            pump.PumpOnce();
+            const UINT32 backlog = static_cast<UINT32>(ring.Available()) + sink.padding_;
+            if (backlog > max_backlog) max_backlog = backlog;
+            sink.AdvanceTimeUs(frame_ms * 1000);
+        }
+        const double latency_ms = static_cast<double>(max_backlog) / sr * 1000.0;
+        std::printf("[wechat-pareto] buffer_ms=%-3d max_latency=%6.1fms device_underrun=%d\n",
+                    buffer_ms, latency_ms, sink.device_underrun_count_);
+        // buffer >= 帧节奏(20ms) 时 device 不饿，延迟随 buffer_ms 递增。
+        assert(sink.device_underrun_count_ == 0);
+        assert(latency_ms >= prev_latency - 1.0);
+        prev_latency = latency_ms;
+    }
+}
+
+void TestWechatPipelineSmallBufferDeviceUnderrun() {
+    // buffer_duration_ms < 帧节奏（20ms）时，设备单周期消费 > buffer 容量，device underrun。
+    // 佐证 buffer_duration_ms 不可小于帧间隔，阶段6 调优下限为 20ms。
+    const int sr = 16000;
+    TimedFakeSink sink(sr, /*buffer_duration_ms=*/5);
+    PcmRingBuffer ring(8192);
+    RenderPump pump(&sink, &ring, 1);
+    std::vector<int16_t> pcm(sr * 20 / 1000, 1);
+    for (int i = 0; i < 50; ++i) {
+        ring.Write(pcm.data(), pcm.size());
+        pump.PumpOnce();
+        sink.AdvanceTimeUs(20 * 1000);
+    }
+    assert(sink.device_underrun_count_ > 0);
+}
+
+void TestRingBurstBacklogAmplifiesLatency() {
+    // 固件冷启动后可能突发发送 init_codec 期间缓冲的音频，一次到达多帧。
+    // ring 接住积压，稳态消费 1:1 不 drain（生产=消费），积压持续，音频延迟
+    // N ms 到达微信，放大首字与全程延迟。
+    const int sr = 16000;
+    const int frame_ms = 20;
+    const int frame_samples = sr * frame_ms / 1000;  // 320
+    TimedFakeSink sink(sr, 50);
+    PcmRingBuffer ring(8192);
+    RenderPump pump(&sink, &ring, 1);
+    std::vector<int16_t> pcm(frame_samples, 1);
+
+    // 突发 25 帧（500ms）。
+    for (int i = 0; i < 25; ++i) {
+        ring.Write(pcm.data(), static_cast<std::size_t>(frame_samples));
+    }
+    pump.PumpOnce();  // 填 buffer 800，ring 减 800
+    // 积压 7200 samples = 450ms，稳态不 drain（生产=消费）。
+    const double backlog_ms = static_cast<double>(ring.Available()) / sr * 1000.0;
+    assert(backlog_ms >= 440.0 && backlog_ms <= 460.0);
+
+    // 稳态 20 周期：每周期写 320 消费 320，积压不变。
+    for (int i = 0; i < 20; ++i) {
+        ring.Write(pcm.data(), static_cast<std::size_t>(frame_samples));
+        pump.PumpOnce();
+        sink.AdvanceTimeUs(frame_ms * 1000);
+    }
+    const double backlog_after = static_cast<double>(ring.Available()) / sr * 1000.0;
+    // 稳态生产=消费，积压不 drain，延迟持续放大 N ms。
+    assert(backlog_after > 400.0);
+    // 结论：真机日志首帧后稳态无积压，故 ring 积压非真机观测主因；
+    // 但冷启动突发是理论风险，ring capacity 是延迟放大上限。
+}
+
+void TestRingBacklogUpperBoundByCapacity() {
+    // ring capacity 8192 samples = 512ms @16kHz。突发超过 capacity 时 drop-oldest，
+    // 积压上限 512ms。结合 WASAPI buffer 50ms，管道最大滞留约 562ms，
+    // 仍不足 1-2 秒，佐证 1-2 秒主因在下游（VB-CABLE/微信 ASR）。
+    const int sr = 16000;
+    PcmRingBuffer ring(8192);
+    std::vector<int16_t> pcm(20000, 1);  // 远超 capacity
+    ring.Write(pcm.data(), pcm.size());
+    assert(ring.Available() == 8192);
+    const double max_backlog_ms = static_cast<double>(ring.Available()) / sr * 1000.0;
+    assert(max_backlog_ms >= 511.0 && max_backlog_ms <= 513.0);
+}
+
 } // namespace
 
 int main() {
@@ -144,6 +7633,188 @@ int main() {
     // 全程异常围栏：未捕获 C++ 异常（0xE06D7363 → terminate → 静默 abort）打出 what()，
     // 否则只剩 SEH 探针的错误码，定位不到抛出点。
     try {
+    TestDeviceIds();
+    TestPairDeviceHelpers();
+    TestPairingAdvertisementClassify();
+    TestAudioFrameParsing();
+    TestBleControlPayloads();
+    TestStateParsing();
+    TestEncoderRotateStateParsing();
+    TestStateEventSourceParsing();
+    TestEncoderStatusParsing();
+    TestMotionFrameParsing();
+    TestOggMuxer();
+    TestAsrProtocol();
+    TestAsrHotwordCorpusBudget();
+    TestHotwordCategories();
+    TestHotwordContextClassifier();
+    TestContentDepthAndDomainHint();
+    TestHotwordContextAnnotationSet();
+    TestHotwordActivityAndEviction();
+    TestBuildHotwordTray();
+    TestEvictedPoolJson();
+    TestSmartHotwordConfig();
+    TestHotwordSelector();
+    TestHotwordCorrections();
+    TestTencentHotwordCharFilter();
+    TestVolcengineTableIdConfigRoundTrip();
+    TestAppConfig();
+    TestAppConfigTapSensitivityRoundTrip();
+    TestLlmRefinePromptAndPayload();
+    TestHotwordProcessConfig();
+    TestHotwordExtractorPromptAndParse();
+    TestHotwordCandidateMiner();
+    TestHotwordExtractionPromptAndParse();
+    TestFirmwareManifestParsingAndVersionCompare();
+    TestCoordinatorSyncsImuWakeSensitivityOnConnectionAndConfigUpdate();
+    TestCoordinatorSyncsTapSensitivityOnConnectionAndConfigUpdate();
+    TestBleEncoderPayloads();
+    TestCoordinatorSyncsEncoderSettingsOnConnectionAndConfigUpdate();
+    TestCoordinatorSyncsInteractionSettingsPerDeviceOverride();
+    TestCoordinatorUpdateFirmwareFromFile();
+    TestParseOtaCliArgs();
+    TestParseRenameVirtualMicArgs();
+    TestVirtualMicRenamerHelpers();
+    TestCoordinatorHotkeyWithoutConnectionShowsWakeHint();
+    TestCoordinatorHotkeyWithConnectionSendsRemoteButton();
+    TestCoordinatorCancelsShortPrimaryPress();
+    TestCoordinatorPrimaryDuringFinalizingRefreshesThinking();
+    TestCoordinatorSecondaryCancelsFinalizing();
+    TestCoordinatorAcceptsAudioFramesAfterButtonUpUntilEnd();
+    TestCoordinatorDisconnectAwaitingAsrFinalKeepsSession();
+    TestCoordinatorDisconnectDuringRecordingCancelsSession();
+    TestCoordinatorMainFinalPastesWithoutConfirmation();
+    TestCoordinatorRefineShowsOriginalTextImmediately();
+    TestCoordinatorOtherDeviceDuringRecordingGetsReady();
+    TestCoordinatorSubtitleOutputSkipsPaste();
+    TestCoordinatorSubtitleFinalDoesNotBlockNextSession();
+    TestCoordinatorShortSubtitleEndReturnsReady();
+    TestCoordinatorClickToTalkPrimaryClickTogglesRecording();
+    TestCoordinatorClickToTalkIgnoresStrayStopClick();
+    TestCoordinatorClickToTalkStaleStopClickAfterFinalizingIgnored();
+    TestCoordinatorClickToTalkStopClickSessionMismatchIgnored();
+    TestCoordinatorClickToTalkStartClickDuringRecordingStartsNew();
+    TestCoordinatorMainPartialSentToDeviceOnlyAfterFinalAudio();
+    TestCoordinatorShowsDetailedAsrStartError();
+    TestCoordinatorInvalidateAsrConnectionForwardsToClient();
+    TestTapEventInjectsArrowDown();
+    TestTapDisabledWhenConfigOff();
+    TestTapIgnoredDuringRecording();
+    TestTapThrottledWithin500ms();
+    TestTapThrottleRecoversAfter500ms();
+    TestInputInjectorArrowUpFakeWiring();
+    TestInputInjectorKeyComboFakeWiring();
+    TestKeySpecParse();
+    TestKeySpecMakeFromVk();
+    TestAppConfigEncoderRoundTrip();
+    TestAppConfigEncoderSettingsRoundTrip();
+    TestAppConfigEncoderSettingsInvalidFallback();
+    TestEncoderRotateMapsDirectionToArrows();
+    TestEncoderRotateInvertFlipsDirection();
+    TestEncoderRotateDisabledWhenConfigOff();
+    TestEncoderRotateIgnoredDuringRecording();
+    TestEncoderRotateUnknownDirectionTreatedAsCw();
+    TestEncoderRotateStepsClamped();
+    TestEncoderPressRecordingStartsSession();
+    TestEncoderPressKeyInjectsComboWithoutRecording();
+    TestEncoderPressKeyInvalidIgnored();
+    TestEncoderDoubleClickDefaultEnterCancelsSession();
+    TestEncoderDoubleClickCustomKey();
+    TestEncoderDoubleClickRecordingTogglesRemoteButton();
+    TestEncoderRotateCustomKeys();
+    TestEncoderRotateCustomKeysPendingPath();
+    TestEncoderRotateCustomKeysPendingPathDeviceOverride();
+    TestEncoderRotateCustomKeysAfterUpdateConfig();
+    TestEncoderRotateInvalidKeyFallsBackToArrows();
+    TestEncoderRotateSpeedThreshold();
+    TestEncoderRotateSpeedEstimatorEwma();
+    TestEncoderRotateSpeedEstimatorGestureGapResets();
+    TestEncoderRotateFastBurstUsesFastKey();
+    TestEncoderRotateDirectionChangeAfterStopStartsNewGesture();
+    TestEncoderRotateFastBurstInjectsOncePerGesture();
+    TestEncoderRotateFastBurstNewGestureAfterGap();
+    TestEncoderRotateLockoutSuppressesDeceleration();
+    TestEncoderRotateSlowResumesAfterStop();
+    TestEncoderRotateSlowStillUsesNormalKey();
+    TestEncoderRotateAccelerationDiscardedByFast();
+    TestEncoderRotateIsolatedTwoStepNudgeStaysSlow();
+    TestEncoderRotateSustainedTwoStepRotationGoesFast();
+    TestEncoderRotateSlowFlushesAfterDecisionWindow();
+    TestEncoderRotateSlowContinuousBatches();
+    TestEncoderRotatePendingDirectionChangeFlushesOld();
+    TestEncoderRotateFastInvalidKeyFallsBackToNormalKey();
+    TestAppConfigEncoderFastSettingsRoundTrip();
+    TestAppConfigEncoderFastSettingsInvalidFallback();
+    TestPhysicalPrimaryUnaffectedByEncoderConfig();
+    TestEncoderPressRecordingButtonUpStopsSession();
+    TestEncoderSourceSecondaryFallsBackToPhysicalPath();
+    TestEncoderConfigUpdateTakesEffectImmediately();
+    TestCoordinatorAirMouseToggleViaSecondary();
+    TestCoordinatorAirMousePrimaryClickIsLeftButton();
+    TestCoordinatorMotionMovesCursorOnlyWhenActive();
+    TestCoordinatorAirMouseTickMovesCursor();
+    TestCoordinatorAirMouseStateResetOnToggle();
+    TestCoordinatorAirMouseActiveChangedCallback();
+    TestCoordinatorAirMouseGatesRecordingAndTap();
+    TestCoordinatorAirMouseResetOnDisconnect();
+    TestCoordinatorAirMouseResetOnForget();
+    TestCoordinatorAirMouseHighSensitivityRealisticSpeed();
+    TestCoordinatorAirMouseSustainedRunBounded();
+    TestCoordinatorAirMouseSustainedRotationConstantSpeed();
+    TestCoordinatorAirMouseStopsWhenOmegaZero();
+    TestCoordinatorAngleMovesOnlyWhileRotating();
+    TestCoordinatorSecondaryDoubleClickRestoresLastInput();
+    TestCoordinatorSecondaryDoubleClickIgnoredInAirMouse();
+    TestCoordinatorCloudUpgradeRecoversDeviceAfterAsrError();
+    TestSseParser();
+    TestStreamPayload();
+    TestDeepSeekThinkingDisabled();
+    TestAudioOpusDecoderRoundTrip();
+    TestAudioOpusDecoderNullData();
+    TestAudioOpusDecoderInvalidData();
+    TestAudioOpusDecoderSmallBuffer();
+    TestXiaomiAtvvCapsParsing();
+    TestImaAdpcmDecoderGolden();
+    TestImaAdpcmDecoderGoldenFixtures();
+    TestFrameAccumulator();
+    TestAudioOpusEncoderRoundTrip();
+    TestXiaomiAtvvSessionFlow();
+    TestXiaomiAtvvSessionKeyMapping();
+    TestXiaomiAtvvSessionClickTapTimeoutSilent();
+    TestXiaomiAtvvSessionReopenRejectWindow();
+    TestXiaomiAtvvStreamStartOpensSession();
+    TestXiaomiAtvvSessionEncoderResetPerSession();
+    TestXiaomiAtvvServiceUuidAd();
+    TestCoordinatorXiaomiHoldToTalkStreamsOggToAsr();
+    TestCoordinatorXiaomiCancelSemantics();
+    TestCoordinatorXiaomiWechatInputMethodDecodesToVirtualMic();
+    TestCoordinatorXiaomiSubtitlePath();
+    TestDeviceIdRcPrefix();
+    TestAppConfigXiaomiTable();
+    TestAppConfigXiaomiKeyMap();
+    TestXiaomiF5SuppressPredicate();
+    TestCoordinatorXiaomiCapabilityGating();
+    TestPcmRingBufferWriteRead();
+    TestPcmRingBufferOverwrite();
+    TestPcmRingBufferUnderrunSilence();
+    TestPcmRingBufferClear();
+    TestPcmRingBufferWrapAround();
+    TestWasapiRendererFailsOnMissingDevice();
+    TestRenderPumpSubmitsFullAvailableNoCap();
+    TestRenderPumpFillsSilenceWhenRingEmpty();
+    TestRenderPumpZeroWhenBufferFull();
+    TestWasapiRendererStopsCleanlyWakingBlockedThread();
+    TestWasapiRendererRestartsAfterStop();
+    TestOggOpusDemuxerParsesOpusHead();
+    TestOggOpusDemuxerMultiplePackets();
+    TestOggOpusDemuxerRoundTripWithFinish();
+    TestOggOpusDemuxerRejectsBadMagic();
+    TestOggOpusDemuxerRejectsTruncatedStream();
+    TestWechatPipelineSteadyStateLatency();
+    TestWechatPipelineBufferDurationPareto();
+    TestWechatPipelineSmallBufferDeviceUnderrun();
+    TestRingBurstBacklogAmplifiesLatency();
+    TestRingBacklogUpperBoundByCapacity();
     RunDevicePlanMiscBatchTests();  // N8 cut15 (final): suite in core_tests_device_plan.cc
     RunCorrectionPairsBatchTests();  // 用户数据飞轮 P0-1: suite in core_tests_corrections.cc
     RunSpokenPunctuationBatchTests();  // 标点独词输入: suite in core_tests_spoken_punctuation.cc

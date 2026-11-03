@@ -47,3 +47,8 @@ CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y
 
 # CPU 240MHz: BLE audio streaming and UI rendering need higher clock
 CONFIG_ESP32S3_DEFAULT_CPU_FREQ_240=y
+
+# S2 息屏 light sleep 依赖 GPIO 唤醒（主键 GPIO11 / 侧键 GPIO12 均在 RTC GPIO 范围内）。
+# 该选项默认 y 会在 light sleep 期间禁用 GPIO 唤醒源导致息屏按键失效；置 n 放行
+# （代价仅是 light sleep 期间 RTC IO 域保持供电，µA 级）。
+CONFIG_PM_SLP_DISABLE_GPIO=n

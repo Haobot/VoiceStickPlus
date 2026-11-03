@@ -74,6 +74,8 @@ static char s_hint_text[UI_HINT_TEXT_MAX] = "Starting up";
 static char s_idle_hint_text[UI_HINT_TEXT_MAX] = "Hold to Talk";
 static char s_device_name[16] = "BLE";
 static bool s_dimmed;
+static esp_timer_handle_t s_lvgl_tick_timer;
+static int s_lvgl_tick_period_ms = LVGL_TICK_PERIOD_MS;
 
 static bool notify_lvgl_flush_ready(esp_lcd_panel_io_handle_t panel_io,
                                     esp_lcd_panel_io_event_data_t *edata,
@@ -98,7 +100,7 @@ static void lvgl_flush_cb(lv_display_t *display, const lv_area_t *area, uint8_t 
 
 static void lvgl_tick_cb(void *arg)
 {
-    lv_tick_inc(LVGL_TICK_PERIOD_MS);
+    lv_tick_inc(s_lvgl_tick_period_ms);
 }
 
 static void lvgl_task(void *arg)
@@ -381,9 +383,8 @@ esp_err_t ui_status_init(void)
         .name = "lvgl_tick",
         .skip_unhandled_events = true,
     };
-    esp_timer_handle_t tick_timer = NULL;
-    ESP_RETURN_ON_ERROR(esp_timer_create(&tick_timer_args, &tick_timer), TAG, "create lvgl tick");
-    ESP_RETURN_ON_ERROR(esp_timer_start_periodic(tick_timer, LVGL_TICK_PERIOD_MS * 1000),
+    ESP_RETURN_ON_ERROR(esp_timer_create(&tick_timer_args, &s_lvgl_tick_timer), TAG, "create lvgl tick");
+    ESP_RETURN_ON_ERROR(esp_timer_start_periodic(s_lvgl_tick_timer, LVGL_TICK_PERIOD_MS * 1000),
                         TAG, "start lvgl tick");
 
     _lock_acquire(&s_lvgl_lock);
@@ -397,6 +398,21 @@ esp_err_t ui_status_init(void)
     ESP_RETURN_ON_ERROR(ui_status_set_brightness(LCD_BACKLIGHT_DEFAULT), TAG, "set backlight");
     ESP_LOGI(TAG, "display ready");
     return ESP_OK;
+}
+
+// 动态调整 LVGL tick 周期（ms）：S2 息屏降频（50ms）减少周期唤醒、让 light sleep 进得去；
+// 退出 S2 恢复 10ms。仅在 S2 进出时调用，非高频路径。
+esp_err_t ui_status_set_lvgl_tick_period_ms(int period_ms)
+{
+    if (!s_lvgl_tick_timer || period_ms <= 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_lvgl_tick_period_ms == period_ms) {
+        return ESP_OK;
+    }
+    s_lvgl_tick_period_ms = period_ms;
+    (void)esp_timer_stop(s_lvgl_tick_timer);
+    return esp_timer_start_periodic(s_lvgl_tick_timer, (uint64_t)period_ms * 1000);
 }
 
 esp_err_t ui_status_set_brightness(uint8_t brightness)

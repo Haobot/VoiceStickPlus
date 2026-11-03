@@ -16,6 +16,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 #include "power_log.h"
 
@@ -84,7 +85,58 @@ typedef enum {
 static conn_itvl_target_t s_itvl_target;
 static bool s_itvl_update_pending;
 // 快档被拒后的自愈重申预算（每连接重置，见 CONN_UPDATE 处理）。
+// 移植自 2.4.10 fb09bec（语音延迟五连修 #3）。
 static uint8_t s_fast_reassert_count;
+// 最近一次生效的连接参数缓存（conn initial / CONN_UPDATE 时刷新），
+// 断连时随 reason 一起写入 NVS 供桌面端诊断（见 ble_diag_save/report）。
+static uint16_t s_last_conn_itvl;
+static uint16_t s_last_conn_latency;
+static uint16_t s_last_conn_timeout;
+
+// 断连诊断持久化（移植 whisper_pen 手法，根记忆 esp32-usb-jtag-runtime-log-trap：
+// USB 日志抓不到运行时事件，关键数据走 NVS 持久化 + 重连后 state_tx 上报）。
+// 断连即写 ble_diag/dc，state_tx 订阅成功后上报并擦除——桌面端日志无需串口
+// 即可读到每次断连的 reason 与当时连接参数。
+static esp_err_t send_state_json(const char *json);
+
+static void ble_diag_save_disconnect(int reason, uint32_t conn_dur_ms)
+{
+    nvs_handle_t h;
+    if (nvs_open("ble_diag", NVS_READWRITE, &h) != ESP_OK) {
+        return;
+    }
+    char buf[112];
+    snprintf(buf, sizeof(buf),
+             "{\"event\":\"last_disconnect\",\"reason\":%d,\"conn_ms\":%lu,"
+             "\"itvl\":%u,\"latency\":%u,\"timeout\":%u}",
+             reason, (unsigned long)conn_dur_ms,
+             s_last_conn_itvl, s_last_conn_latency, s_last_conn_timeout);
+    nvs_set_str(h, "dc", buf);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+static void ble_diag_report_pending(void)
+{
+    nvs_handle_t h;
+    char buf[112];
+    size_t len = sizeof(buf);
+    if (nvs_open("ble_diag", NVS_READONLY, &h) != ESP_OK) {
+        return;
+    }
+    esp_err_t rc = nvs_get_str(h, "dc", buf, &len);
+    nvs_close(h);
+    if (rc != ESP_OK) {
+        return;
+    }
+    esp_err_t send_rc = send_state_json(buf);
+    ESP_LOGI(TAG, "last_disconnect reported rc=%d: %s", send_rc, buf);
+    if (nvs_open("ble_diag", NVS_READWRITE, &h) == ESP_OK) {
+        nvs_erase_key(h, "dc");
+        nvs_commit(h);
+        nvs_close(h);
+    }
+}
 
 typedef struct {
     bool active;
@@ -889,6 +941,9 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                 if (desc_rc == 0) {
                     ESP_LOGI(TAG, "conn initial: interval=%u latency=%u timeout=%u",
                              desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
+                    s_last_conn_itvl = desc.conn_itvl;
+                    s_last_conn_latency = desc.conn_latency;
+                    s_last_conn_timeout = desc.supervision_timeout;
                     // 对端身份上报（网关目标表用）：identity address 在 bond 生命周期内稳定，
                     // 即便 Windows 用 RPA 轮换地址也能命中同一目标。
                     if (s_peer_cb) {
@@ -964,6 +1019,12 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                      conn, event->disconnect.reason,
                      esp_log_timestamp() - removed.connected_ms,
                      conn_was_app ? 1 : 0, voice_ble_conn_table_count(&s_conns));
+            if (conn_was_app) {
+                // 断连诊断（本地）：应用链路断开即持久化 reason 与当时连接参数，
+                // state_tx 订阅成功后上报并擦除，桌面端免串口可读。
+                ble_diag_save_disconnect(event->disconnect.reason,
+                                         esp_log_timestamp() - removed.connected_ms);
+            }
         }
         s_connected = voice_ble_conn_table_count(&s_conns) > 0;
         if (was_app) {
@@ -1046,6 +1107,8 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                 } else {
                     send_state_burst();
                 }
+                // 上报上次断连诊断（NVS 持久化，见 ble_diag_save_disconnect）
+                ble_diag_report_pending();
             }
         }
         return 0;
@@ -1057,6 +1120,9 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
             ESP_LOGI(TAG, "conn updated: status=%d interval=%u latency=%u timeout=%u",
                      event->conn_update.status,
                      desc.conn_itvl, desc.conn_latency, desc.supervision_timeout);
+            s_last_conn_itvl = desc.conn_itvl;
+            s_last_conn_latency = desc.conn_latency;
+            s_last_conn_timeout = desc.supervision_timeout;
         } else {
             ESP_LOGI(TAG, "conn updated: status=%d (desc unavailable)",
                      event->conn_update.status);
@@ -1071,10 +1137,11 @@ static int gap_event_cb(struct ble_gap_event *event, void *arg)
                 voice_ble_request_slow_interval();
             }
         }
-        // 快档目标下被授予慢参数即自愈重申（2026-10-11 实证：录音全程落回
-        // interval=320/latency=4 或 latency=22 时音频通知 ~2.4fps（正常 25fps），
-        // 3.4s 语音拖成 28s 才送完——音频吞吐塌陷的直接来源）。上限 5 次防止
-        // 与顽固 central 来回拉锯；录音中另有 1.5s 周期重申兜底（见 main.c）。
+        // 快档目标下被授予慢参数即自愈重申（移植自 2.4.10 fb09bec，2026-10-11
+        // 实证：录音全程落回 interval=320/latency=4 或 latency=22 时音频通知
+        // ~2.4fps（正常 25fps），3.4s 语音拖成 28s 才送完——音频吞吐塌陷的直接
+        // 来源）。上限 5 次防止与顽固 central 来回拉锯；录音中另有 1.5s 周期
+        // 重申兜底（见 main.c fast_interval_reassert_timer）。
         if (event->conn_update.conn_handle == s_conn_handle &&
             s_itvl_target == CONN_ITVL_FAST &&
             find_rc == 0 && (desc.conn_itvl > 24 || desc.conn_latency > 0) &&
@@ -1569,9 +1636,9 @@ esp_err_t voice_ble_request_fast_interval(void)
         return ESP_ERR_INVALID_STATE;
     }
     s_itvl_target = CONN_ITVL_FAST;
-    // 幂等化（2026-10-11）：已是目标快档就不再发起协商。录音期间周期性重申
-    // （防请求丢失/central 静默忽略）因此可以安全高频调用；同时避免
-    // update→EALREADY→CONN_UPDATE→重请求 的无谓往返循环。
+    // 幂等化（移植自 2.4.10 fb09bec，2026-10-11）：已是目标快档就不再发起协商。
+    // 录音期间周期性重申（防请求丢失/central 静默忽略）因此可以安全高频调用；
+    // 同时避免 update→EALREADY→CONN_UPDATE→重请求 的无谓往返循环。
     {
         struct ble_gap_conn_desc cur;
         if (ble_gap_conn_find(s_conn_handle, &cur) == 0 &&
@@ -1580,9 +1647,9 @@ esp_err_t voice_ble_request_fast_interval(void)
         }
     }
     struct ble_gap_upd_params params = {
-        // 范围请求而非固定值（2026-10-02 定案）：macOS central 对「固定 7.5ms」
-        // 的参数请求直接拒绝并单方面落回省电档（实测 interval=320 即 400ms，
-        // OTA/音频吞吐被钉死在 ~1KB/s）。
+        // 范围请求而非固定值（移植自 2.4.10 c5aa2e8 + fb09bec 修订）：macOS
+        // central 对「固定 7.5ms」的参数请求直接拒绝并单方面落回省电档（实测
+        // interval=320 即 400ms，OTA/音频吞吐被钉死在 ~1KB/s）。
         // 2026-10-11 修订：下限 6→12（7.5ms→15ms）。实证（rc=530 = HCI 0x12
         // Unsupported Remote Feature）：macOS 27 的 Apple 栈把含 <15ms 间隔的请求
         // **整体拒绝**，录音全程锁死在 400ms 慢档，音频通知塌到 ~2.4fps（3.4s 语音

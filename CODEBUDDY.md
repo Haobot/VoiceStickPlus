@@ -80,6 +80,7 @@ macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `deskto
 ## 给 Agent 的提示（高频坑）
 
 - Windows 桌面端修改构建通过后，自动重启 VoiceStick.exe 让改动生效（先结束运行中进程，启动后查 `%LOCALAPPDATA%\VoiceStick\VoiceStickApp.log`），无需用户另行指示。
+- 跑 Windows 单测前先结束运行中的 VoiceStick.exe：时序断言与真实应用并发时偶发失败且失败点漂移，易误判为代码回归（详见 Doc/Expe/smart-hotword-pool-reclaim-2026-09-26.md）。
 - `.gitignore` 整体忽略 `desktop/windows/`：提交 Windows 源码必须 `git add -f`，并用 `git ls-files <path>` 逐个验证新文件已被跟踪（教训：f75af4f5 曾因漏提交导致全新克隆无法构建）。
 - Windows 构建目录统一用 `desktop/windows/build-x64`；旧 `desktop/windows/build` 可能混入错误 VS/SDK 缓存。
 - 搜索仓库时排除 `website/node_modules/` 和 `firmware/build/`。
@@ -104,7 +105,7 @@ macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `deskto
 - **BLE OTA `stalled` 且 `sent` 恒等于窗口值** ⇒ app 在途窗口与固件进度回传间隔互等死锁（v2.4.0 app 的 24KB 窗口对 v2.3.8 固件的 32KB 间隔曾必死锁），不是无线问题；随机值才是链路抖动。app×固件流控参数是跨版本契约，改任一侧要在最旧服役固件上真机过一遍 OTA。详见 `Doc/Expe/ble-ota-flow-control-cross-version-deadlock-2026-09-26.md`。
 - **E2E 别指望第三方 BLE central 驱动设备**：app 退出后 Windows 会用系统级 HOGP 配对自动连走设备并停止广播，`bleak`/`nRF Connect` 既扫不到也连不上；自动化一律走 app（如 `VoiceStick.exe --gateway-target self|clear`）。**测试也绝不能解除系统配对**（会弄死 HOGP 按键直通）。
 - VoiceStickFlash 改动除构建/CTest 外，用 `scripts\prepare_flash_payload.ps1` 冒烟 payload；真机验收清单见 `Doc/Plan/windows-com-flash-tool.md` §7.2。
-- `scripts/` 下辅助脚本：`probe_asr_websocket_ping.py`（ASR 连通性）、`probe_hotword_extraction.py`（热词提炼链路探测）、`update-appcast.py`（生成 appcast）、`idf_cli.py`（包装 idf.py）、`png_to_lvgl_argb_bin.py` 等 LVGL 资源工具、`scripts/e2e_test/`（E2E 真机验证）。
+- `scripts/` 下辅助脚本：`probe_asr_websocket_ping.py`（ASR 连通性）、`probe_hotword_extraction.py`（热词提炼链路探测）、`update-appcast.py`（生成 appcast）、`idf_cli.py`（包装 idf.py）、`png_to_lvgl_argb_bin.py` 等 LVGL 资源工具、`scripts/e2e_test/`（E2E 真机验证，含音频回归 `run_audio_regression.py`：语料合成回归闭环，支持 `--watch` 监听与 `--install-hook` commit 触发）。
 - macOS CoreBluetooth：`retrieveConnectedPeripherals`/`retrievePeripherals` 取回的外设可能是 disconnected 态，必须先判 `peripheral.state`——对断开外设空发 discoverServices 无任何回调（静默卡死），详见 `Doc/Expe/xiaomi-remote-macos-port-p5-2026-09-02.md`。
 - **遥控器（网关模式）音频"变快/发闷"= 三个独立缺陷叠加**（2026-10-16 修完）：① I2S DMA 环（30ms）小于一次读请求（40ms）⇒ 零余量，Stick 麦克风链路丢样 13%~50%（修：环 80ms + audio_task 优先级 7）；② 遥控器自身采集均匀压缩 ~9%（基频 108.1 vs Stick 98.8Hz、帧数比 0.909 两条互证）⇒ 在 Stick 侧做时间基修正（自适应伸缩比）；③ 修正的插值**必须用三次（Catmull-Rom）**，线性插值 4kHz 就 -3dB（听感发闷）。判据：设备串口 `source=`（0=Stick 麦/1=遥控器中继，**app 日志与文件名都区分不了**）、`frame=`（应 =40000us）、`stretch=`。详见 `Doc/Plan/xiaomi-gateway-audio-timebase-and-dma.md` 与 `Doc/Expe/remote-gateway-audio-speed-timbre-2026-10-16.md`。
 - 语音功能反馈「准确率不好/没效果」先分层再改代码：用 DebugAudio 同字节回放腾讯实时 ASR 逐轮还原识别文本（与日志 text_len 对账校准）；`Audio stream summary` 帧比例恒 0.5~0.8＝设备端尾帧丢弃（音频传输层问题，勿改解析器/匹配）。本地小模型兜底一律候选约束式（模型只在候选枚举内选+代码复验+失败回退旧行为），且换任务形态必须重跑 `scripts/local_align_bench` 选型（模型结论不可跨任务搬用）。详见 `Doc/Expe/targeted-edit-accuracy-layered-triage-2026-10-28.md` 与 `Doc/Expe/local-llm-alignment-task-shape-lessons-2026-10-28.md`。

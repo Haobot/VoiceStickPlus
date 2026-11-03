@@ -2,7 +2,7 @@
 
 // 聚焦输入框尾部文本 + 光标/选区读取（Windows UIA TextPattern）。
 // 仅用于语音编辑 L1 校验（Doc/Plan/voice-edit-commands.md §6.3）：
-//   GetFocusedElement → UIA_TextPatternId → GetDocumentRange 读尾部约 512 个
+//   GetFocusedElement → UIA_TextPatternId → get_DocumentRange 读尾部约 512 个
 //   UTF-16 码元；GetSelection 要求恰 1 个折叠选区且末端 == 文档末端；
 //   IsPassword 检查。
 //

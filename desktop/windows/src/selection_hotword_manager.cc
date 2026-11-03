@@ -266,9 +266,6 @@ LRESULT CALLBACK SelectionHotwordManager::PopupWndProc(HWND hwnd, UINT msg,
                 HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
                 HGDIOBJ old_font = SelectObject(ps.hdc, font);
                 SetBkMode(ps.hdc, TRANSPARENT);
-                RECT left_rc = rc;
-                left_rc.left = 0;
-                left_rc.right = mid;
                 SetTextColor(ps.hdc, RGB(40, 45, 55));
                 const auto draw_button_text = [&](RECT area, const wchar_t* label) {
                     area.left += self->Dp(6);

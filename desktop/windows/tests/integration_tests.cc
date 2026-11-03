@@ -707,6 +707,8 @@ bool RunOneXiaomiGolden(const AtvvGoldenInfo& info, const AppConfig& base_config
 }  // namespace
 
 int main() {
+    // 无缓冲 stdout：真实网络链路测试崩溃时进度输出可留存。
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     const std::filesystem::path corpus_dir = "scripts/e2e_test/corpus";
 
     // 加载 config.toml（火山 key），关闭精修/翻译测纯 ASR。

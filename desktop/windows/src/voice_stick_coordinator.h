@@ -15,7 +15,9 @@
 #include "encoder_speed.h"
 #include "firmware_manifest.h"
 #include "focus_text_reader.h"
+#include "hotword_activity.h"
 #include "hotword_candidate_miner.h"
+#include "hotword_context.h"
 #include "hotword_selector.h"
 #include "key_spec.h"
 #include "llm_translation_client.h"
@@ -275,6 +277,8 @@ public:
     virtual std::string ForegroundProcessName() { return {}; }
 };
 
+// 热词活跃度快照 HotwordActivitySnapshot 定义在 hotword_activity.h。
+
 class VoiceStickCoordinator {
 public:
     VoiceStickCoordinator(AppConfig config,
@@ -447,9 +451,26 @@ public:
     std::function<void(std::string, PowerLogFragment)> on_power_log_fragment;
     // 供电态（USB）自动关机开关状态透传（ble 回调 → 电池监测窗口勾选框）。
     std::function<void(std::string, bool)> on_power_mgmt_state;
+    // 智能热词管理在后台线程修改了 config_ 的热词字段（自动切换分类/逐出/回收）
+    // 并已落盘后回调，参数为最新配置拷贝。外壳用它同步自己的 config_ 副本；
+    // 严禁在回调里调 UpdateConfig/ApplyUpdatedConfig（会取消活跃会话）。
+    std::function<void(AppConfig)> on_config_mutated;
     // 是否有活跃会话（录音/识别/确认中等）。会话期间浮窗被状态机占用，
     // 热词处理等旁路反馈应改走托盘气泡，避免踩掉确认倒计时。
     bool HasActiveSession() const { return session_state_ != SessionState::kReady; }
+
+    // ===== 智能热词管理（smart_hotword_enabled） =====
+    // 智能加词：活跃分类已满 25 时先按活跃度逐出最冷词（移入回收池）再添加；
+    // 成功返回更新后的配置拷贝（协调器已落盘并同步 asr_hotwords 投影，调用方
+    // 只需用返回值覆盖自己的 config_ 副本，不要再走 UpdateConfig）；
+    // 重复/空词/仍无法腾位返回 nullopt。
+    std::optional<AppConfig> AddHotwordWithEviction(const std::string& word);
+    // 活跃度快照（设置-热词活跃度对话框展示用）。
+    HotwordActivitySnapshot TakeHotwordActivitySnapshot();
+    // 热词碟快照（设置页只读面板展示）：锁内重建并拷贝，调用方可安全离线使用。
+    std::vector<HotwordTrayEntry> TakeHotwordTraySnapshot();
+    // 从回收池删除指定词（活跃度对话框勾选删除/清空入口；words 空则不动）。
+    void RemoveEvictedWords(const std::vector<std::string>& words);
 
 private:
     enum class PendingPasteKind {
@@ -601,6 +622,8 @@ private:
     // 打开/迁移失败降级停用；raw 在 TransformText 建立、final 在 wrapped 落库。
     void BeginSessionHistory(const std::string& raw_text);
     void CompleteSessionHistory(const std::string& final_text);
+    // 会话历史 provider 字符串（session_history.db provider 列；远程 tail.cc 定义）。
+    std::string SessionHistoryProviderName() const;
     // 前台应用分桶（App 场景分域，doubao §3.4）：前台窗口进程 exe 名（UTF-8）；
     // 取不到为空=全局桶。只取进程名，不读窗口内容。
     std::string ForegroundAppBucket();
@@ -617,9 +640,27 @@ private:
     // 按频率×新近度×手动加权排序后装入 kHotwordCorpusTokenBudget；超裁时首次提示。
     std::vector<std::string> RankedHotwordsForAsr();
     // 精修/翻译 prompt 热词段（评分 top-kHotwordPromptMaxWords，防大库稀释 LLM）。
+    // 碟开启时碟词在前（跨分类高分），活跃分类词补足后截断。
     std::vector<std::string> HotwordsForLlmPrompts();
     // 记录最终文本中出现的热词使用统计（计数+刷新最近使用时间），落盘 best-effort。
     void RecordHotwordUsageFromText(const std::string& text);
+    // ===== 智能热词管理 =====
+    // 会话收尾统一挂点（TransformText wrapped 内，统计刷新后调用）：上下文识别
+    // 自动切换活跃分类 + 回收池词回归 + 活跃分类超上限防御性逐出 + 软限监控日志。
+    // 全程持 smart_hotword_mutex_；UI 反馈与 on_config_mutated 在锁外发出。
+    void MaybeSmartHotwordUpdate(const std::string& text);
+    // 把 word 从 category.words 移入回收池（记录逐出时间与当时的使用统计）。
+    // 调用方需已持 smart_hotword_mutex_ 且持有 category 有效引用。
+    void EvictWordToPool(HotwordCategory& category, const std::string& word, std::int64_t now_s);
+    // 回收池路径（%APPDATA%\VoiceStick\hotword_evicted.json）。
+    std::filesystem::path EvictedPoolPath() const;
+    // 懒加载回收池（调用方需已持 smart_hotword_mutex_）。
+    void EnsureEvictedPoolLoadedLocked();
+    // 懒加载使用统计（调用方需已持 hotword_usage_mutex_）。
+    void EnsureHotwordUsageLoadedLocked();
+    // 重建热词碟缓存（调用方需已持 smart_hotword_mutex_；重建按 smart→usage 锁序
+    // 取统计）。碟是 <1ms 级投影视图，取用前即时重建，无脏标记（重构成本 > 缓存收益）。
+    void EnsureHotwordTrayLocked();
     void BeginWaitingForAudioEnd(std::string_view reason);
     void ScheduleAudioEndTimeout(std::optional<std::uint32_t> session_id,
                                  std::optional<std::string> device_id);
@@ -1020,6 +1061,25 @@ private:
     std::mutex hotword_usage_mutex_;
     // 热词超预算裁剪提示：每次运行只提示一次，避免每次会话刷屏。
     std::atomic_bool hotword_trim_notified_{false};
+    // ===== 智能热词管理状态 =====
+    // 上下文识别状态机（连续计数 + 冷却时间戳）。读取/推进均在
+    // smart_hotword_mutex_ 内（DecideCategory 自带状态）。
+    HotwordContextClassifier ctx_classifier_{HotwordContextClassifier::DefaultRules()};
+    // 回收池（懒加载，见 EnsureEvictedPoolLoadedLocked）。
+    EvictedPool evicted_pool_;
+    bool evicted_pool_loaded_ = false;
+    // 热词碟缓存（投影视图，动态计算不落盘）：EnsureHotwordTrayLocked 重建，
+    // 守卫 smart_hotword_mutex_。
+    std::vector<HotwordTrayEntry> hotword_tray_;
+    // 智能热词管理状态锁：保护 config_ 的热词字段（hotword_categories/
+    // active_hotword_category/asr_hotwords）、分类器状态与回收池。
+    // 锁序：smart_hotword_mutex_ → hotword_usage_mutex_（不得反序嵌套）。
+    std::mutex smart_hotword_mutex_;
+    // 逐出托盘通知节流时间戳（steady ms）：两次通知最短间隔 5 分钟。
+    std::atomic_int64_t last_evict_notify_ms_{0};
+    // 软限监控日志去重：记录上次的监控态（词数 > kHotwordCtxSoftLimit），
+    // 状态翻转时打一条日志。
+    bool hotword_monitoring_active_ = false;
     std::thread firmware_manifest_thread_;
     bool is_showing_asr_error_ = false;
     bool is_shutdown_ = false;

@@ -46,6 +46,19 @@ ui_language = "system"
 resource_id = "volc.seedasr.sauc.duration"
 # 热词列表（逗号分隔）
 asr_hotwords = ""
+# 智能热词管理：按上下文自动切换热词分类 + 冷词自动清理（活跃度回收池）。
+# 关闭后恢复纯手动分区管理。
+smart_hotword_enabled = true
+# 热词碟：跨分类高活跃词聚合视图（设置页可视化 + 识别 corpus 优先偏置）。
+hotword_tray_enabled = true
+# 碟容量（实际生效钳位到 6~24）
+hotword_tray_size = 12
+# 入碟活跃度门槛（HotwordScore 低于该值的词不入碟）
+hotword_tray_min_score = 0.5
+# 领域映射：内置领域名 -> 用户分类名（自动切换落到自定义分类）。
+# [hotword_domain_map]
+# "数学" = "高数"
+# "程序" = "编程"
 # 已配对设备 ID 列表（逗号分隔，如 5A74,3F21）
 paired_device_ids = ""
 

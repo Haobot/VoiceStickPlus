@@ -473,6 +473,68 @@ enum class StringId {
     kXiaomiButtonVolumeDown,
     kXiaomiButtonMenu,
     kXiaomiButtonTv,
+
+    // 热词分区管理（分类下拉）
+    kSettingsHotwordCategory,
+    kSettingsHotwordCategoryDefault,
+    kSettingsHotwordCategoryAddButton,
+    kSettingsHotwordCategoryDeleteButton,
+    kSettingsHotwordCategoryAddTitle,
+    kSettingsHotwordCategoryNamePrompt,
+    kSettingsHotwordCategoryEmptyName,
+    kSettingsHotwordCategoryDuplicate,
+    kSettingsHotwordCategoryNameTooLong,
+    kSettingsHotwordCategoryDeleteConfirm,
+    kSettingsHotwordCategoryLastOne,
+    kSettingsHotwordCategoryTrimmed,
+    kSelectionHotwordCategoryFullTitle,
+    kSelectionHotwordCategoryFullBody,
+
+    // 智能热词管理（上下文自动切换 + 容量动态管理 + 活跃度可视化）
+    // 切换提示：前缀 + 分类名 + 后缀（如 已切换热词库：程序）
+    kSmartHotwordSwitchedBodyPrefix,
+    kSmartHotwordSwitchedBodySuffix,
+    // 逐出通知（5 分钟节流）：前缀 + 被逐出词
+    kSmartHotwordEvictedTitle,
+    kSmartHotwordEvictedBodyPrefix,
+    // 设置页开关 + 活跃度对话框入口按钮
+    kSettingsSmartHotwordEnable,
+    kSettingsHotwordActivityButton,
+    // 热词碟（设置页只读面板，Doc/Plan/hotword-tray-and-domain-context.md）
+    kSettingsHotwordTrayTitle,
+    kSettingsHotwordTrayRefresh,
+    // 提示行：prefix + 已入碟数 + infix + 碟容量 + suffix
+    kSettingsHotwordTrayHintPrefix,
+    kSettingsHotwordTrayHintInfix,
+    kSettingsHotwordTrayHintSuffix,
+    kSettingsHotwordTrayEmpty,
+    // 回收池词在碟中的来源显示名
+    kHotwordTraySourceEvicted,
+    // 活跃度对话框
+    kHotwordActivityTitle,
+    kHotwordActivityRefreshButton,
+    kHotwordActivityColWord,
+    kHotwordActivityColCategory,
+    // 回收池第二列：词被逐出时所在的分类
+    kHotwordActivityColOrigCategory,
+    kHotwordActivityColCount,
+    kHotwordActivityColScore,
+    // 距上次使用的天数（闲置天数）
+    kHotwordActivityColDaysSinceUse,
+    // 距逐出的天数
+    kHotwordActivityColEvictedDays,
+    // 状态行前缀："活跃分类："
+    kHotwordActivityActiveCategoryLabel,
+    // 状态行尾部：词数超过软限 5 时显示"监控中"，否则"正常"
+    kHotwordActivityStatusMonitoring,
+    kHotwordActivityStatusNormal,
+    // 回收池分组标签
+    kHotwordActivityEvictedGroup,
+    // 回收池清空按钮 + 确认框（正文 = 前缀 + 词数 + 后缀）
+    kHotwordActivityClearPoolButton,
+    kHotwordActivityClearConfirmTitle,
+    kHotwordActivityClearConfirmBodyPrefix,
+    kHotwordActivityClearConfirmBodySuffix,
     // usage tap 增强按键识别（按键映射对话框开关 + 链路状态行）
     kXiaomiHidTapToggleLabel,
     kXiaomiHidTapHint,

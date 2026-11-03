@@ -46,9 +46,24 @@ if not exist "%GEN_WINRT_DIR%\winrt\base.h" (
 )
 set "INCLUDE=%GEN_WINRT_DIR%;%INCLUDE%"
 
+:: Use local WinSparkle source when available to bypass GitHub download
+:: (same detection as build_win.bat; GitHub is often unreachable).
+set "WINSPARKLE_CMAKE_ARGS="
+for %%P in (
+    "%PROJECT_DIR%\..\winsparkle"
+    "%PROJECT_DIR%\..\WinSparkle-0.9.2"
+    "%PROJECT_DIR%\winsparkle"
+    "%PROJECT_DIR%\..\WinSparkle-0.9.2\winsparkle"
+) do (
+    if not defined WINSPARKLE_CMAKE_ARGS if exist "%%~P\include\winsparkle.h" (
+        echo   - Using local WinSparkle source: %%~P
+        set "WINSPARKLE_CMAKE_ARGS=-DFETCHCONTENT_SOURCE_DIR_WINSPARKLE=%%~P"
+    )
+)
+
 echo.
 echo [1/2] CMake RelWithDebInfo build...
-cmake -S "%WINDOWS_DIR%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake -S "%WINDOWS_DIR%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo %WINSPARKLE_CMAKE_ARGS%
 if errorlevel 1 (
     echo ERROR: CMake configure failed.
     exit /b 1

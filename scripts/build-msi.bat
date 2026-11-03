@@ -54,6 +54,13 @@ if /I "%VOICESTICK_EMBED_BUILTIN_KEYS%"=="1" (
 ) else (
     echo NOTICE: VOICESTICK_EMBED_BUILTIN_KEYS=0 - building WITHOUT built-in credentials.
 )
+:: 离线回退：FETCHCONTENT_SOURCE_DIR_<NAME> 环境变量透传为 cmake -D 参数
+:: （cmake 不读同名环境变量形态的缓存变量）。ghfast.top 镜像 403 / GitHub 直连
+:: 不可达时，指向本地已解压源码目录（与 build-x64 的既有用法一致）。
+set "FETCHCONTENT_ARGS="
+if defined FETCHCONTENT_SOURCE_DIR_LLAMA_CPP set "FETCHCONTENT_ARGS=%FETCHCONTENT_ARGS% -DFETCHCONTENT_SOURCE_DIR_LLAMA_CPP=%FETCHCONTENT_SOURCE_DIR_LLAMA_CPP%"
+if defined FETCHCONTENT_SOURCE_DIR_WINSPARKLE set "FETCHCONTENT_ARGS=%FETCHCONTENT_ARGS% -DFETCHCONTENT_SOURCE_DIR_WINSPARKLE=%FETCHCONTENT_SOURCE_DIR_WINSPARKLE%"
+if defined FETCHCONTENT_SOURCE_DIR_DETOURS set "FETCHCONTENT_ARGS=%FETCHCONTENT_ARGS% -DFETCHCONTENT_SOURCE_DIR_DETOURS=%FETCHCONTENT_SOURCE_DIR_DETOURS%"
 cmake -S "%WINDOWS_DIR%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
     -DVOICESTICK_BUILTIN_API_KEY="%VOICESTICK_BUILTIN_API_KEY%" ^
     -DVOICESTICK_BUILTIN_TENCENT_SECRET_ID="%VOICESTICK_BUILTIN_TENCENT_SECRET_ID%" ^
@@ -61,7 +68,8 @@ cmake -S "%WINDOWS_DIR%" -B "%BUILD_DIR%" -G Ninja -DCMAKE_BUILD_TYPE=RelWithDeb
     -DVOICESTICK_BUILTIN_TENCENT_APPID="%VOICESTICK_BUILTIN_TENCENT_APPID%" ^
     -DVOICESTICK_BUILTIN_LLM_API_KEY="%VOICESTICK_BUILTIN_LLM_API_KEY%" ^
     -DVOICESTICK_BUILTIN_LLM_BASE_URL="%VOICESTICK_BUILTIN_LLM_BASE_URL%" ^
-    -DVOICESTICK_BUILTIN_LLM_MODEL="%VOICESTICK_BUILTIN_LLM_MODEL%"
+    -DVOICESTICK_BUILTIN_LLM_MODEL="%VOICESTICK_BUILTIN_LLM_MODEL%" ^
+    %FETCHCONTENT_ARGS%
 if errorlevel 1 (
     echo ERROR: CMake configure failed.
     exit /b 1
@@ -111,7 +119,11 @@ if not exist "%BUILD_DIR%\VoiceStickTapInject.exe" (
     exit /b 1
 )
 
+:: 签名开关：VOICESTICK_MSI_SIGN=0 跳过全部 signtool 签名（本地自用包，免证书/时间戳）。
+if not defined VOICESTICK_MSI_SIGN set "VOICESTICK_MSI_SIGN=1"
+
 :: Step 2: Sign exe files (signtool from Windows SDK, PATH, or local signing folder)
+if /I not "%VOICESTICK_MSI_SIGN%"=="1" goto SkipBinSign
 :: Certificate thumbprint: set env SIGNING_SHA1, or create scripts\.signing_sha1
 :: with one line containing the certificate thumbprint (SHA1).
 if not defined SIGNING_SHA1 (
@@ -169,6 +181,9 @@ call :SignAndVerify "%BUILD_DIR%\VoiceStickFlash.exe" || exit /b 1
 :: SHA-256 一致性校验）。
 call :SignAndVerify "%BUILD_DIR%\VoiceStickHidTap.dll" || exit /b 1
 call :SignAndVerify "%BUILD_DIR%\VoiceStickTapInject.exe" || exit /b 1
+
+:SkipBinSign
+if /I not "%VOICESTICK_MSI_SIGN%"=="1" echo NOTICE: Skipping binary signing - VOICESTICK_MSI_SIGN=0.
 
 :: Step 3: Build MSI with WiX
 echo.
@@ -265,11 +280,16 @@ for %%C in (zh-CN en-US) do (
 )
 
 :: Step 4: Sign MSI installers
-echo.
-echo [4/4] Signing MSI...
-for %%C in (zh-CN en-US) do (
-    echo Signing VoiceStick_%VERSION%_%%C.msi...
-    call :SignAndVerify "%BUILD_DIR%\VoiceStick_%VERSION%_%%C.msi" || exit /b 1
+if /I not "%VOICESTICK_MSI_SIGN%"=="1" (
+    echo.
+    echo NOTICE: Skipping MSI signing - VOICESTICK_MSI_SIGN=0.
+) else (
+    echo.
+    echo [4/4] Signing MSI...
+    for %%C in (zh-CN en-US) do (
+        echo Signing VoiceStick_%VERSION%_%%C.msi...
+        call :SignAndVerify "%BUILD_DIR%\VoiceStick_%VERSION%_%%C.msi" || exit /b 1
+    )
 )
 
 :: Step 5: Verify MSI contents (post-build gate). The packaging list is hand-maintained;

@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kVoiceEditUnreadable) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kVoiceTargetedUnconfirmed) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -33,7 +33,9 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kSettingsApiKey)] = "API Key";
     table[Index(StringId::kSettingsResourceId)] = "Resource ID";
     table[Index(StringId::kSettingsHotwords)] = "Hotwords";
-    table[Index(StringId::kSettingsHotwordsHint)] = "Separate hotwords with commas or new lines.";
+    table[Index(StringId::kSettingsHotwordsHint)] =
+        "Separate hotwords with commas or new lines. Up to 25 per category; "
+        "only the selected category is used for recognition.";
     table[Index(StringId::kSettingsLlmBaseUrl)] = "Base URL";
     table[Index(StringId::kSettingsLlmApiKey)] = "API Key";
     table[Index(StringId::kSettingsLlmModel)] = "Model";
@@ -497,6 +499,62 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kXiaomiButtonVolumeDown)] = "Volume Down";
     table[Index(StringId::kXiaomiButtonMenu)] = "Menu";
     table[Index(StringId::kXiaomiButtonTv)] = "TV";
+    // 热词分区管理（分类下拉）
+    table[Index(StringId::kSettingsHotwordCategory)] = "Category";
+    table[Index(StringId::kSettingsHotwordCategoryDefault)] = "Default";
+    table[Index(StringId::kSettingsHotwordCategoryAddButton)] = "Add";
+    table[Index(StringId::kSettingsHotwordCategoryDeleteButton)] = "Delete";
+    table[Index(StringId::kSettingsHotwordCategoryAddTitle)] = "Add Hotword Category";
+    table[Index(StringId::kSettingsHotwordCategoryNamePrompt)] = "Category name:";
+    table[Index(StringId::kSettingsHotwordCategoryEmptyName)] = "Category name cannot be empty.";
+    table[Index(StringId::kSettingsHotwordCategoryDuplicate)] = "This category already exists.";
+    table[Index(StringId::kSettingsHotwordCategoryNameTooLong)] = "Category name is too long.";
+    // {0}=分类名
+    table[Index(StringId::kSettingsHotwordCategoryDeleteConfirm)] =
+        "Delete category \"{0}\" and all its hotwords?";
+    table[Index(StringId::kSettingsHotwordCategoryLastOne)] =
+        "At least one category must be kept.";
+    // {0}=保留数量 {1}=分类名
+    table[Index(StringId::kSettingsHotwordCategoryTrimmed)] =
+        "Category \"{1}\" reached the 25-hotword limit; only the first {0} were kept.";
+    table[Index(StringId::kSelectionHotwordCategoryFullTitle)] = "Category Full";
+    table[Index(StringId::kSelectionHotwordCategoryFullBody)] =
+        "The active hotword category is full (25). Remove some hotwords or switch category first.";
+    table[Index(StringId::kSmartHotwordSwitchedBodyPrefix)] = "Hotwords switched to \"";
+    table[Index(StringId::kSmartHotwordSwitchedBodySuffix)] = "\"";
+    table[Index(StringId::kSmartHotwordEvictedTitle)] = "Hotword auto-cleanup";
+    table[Index(StringId::kSmartHotwordEvictedBodyPrefix)] = "Evicted cold hotword: ";
+    table[Index(StringId::kSettingsSmartHotwordEnable)] =
+        "Smart hotword management (auto-switch by context, evict cold words)";
+    table[Index(StringId::kSettingsHotwordActivityButton)] = "Activity...";
+    table[Index(StringId::kSettingsHotwordTrayTitle)] = "Hotword Tray";
+    table[Index(StringId::kSettingsHotwordTrayRefresh)] = "Refresh";
+    table[Index(StringId::kSettingsHotwordTrayHintPrefix)] =
+        "Auto-aggregates active hotwords across categories (";
+    table[Index(StringId::kSettingsHotwordTrayHintInfix)] = "/";
+    table[Index(StringId::kSettingsHotwordTrayHintSuffix)] =
+        "), matched with priority during recognition; updates with usage.";
+    table[Index(StringId::kSettingsHotwordTrayEmpty)] = "No hot words in the tray yet.";
+    table[Index(StringId::kHotwordTraySourceEvicted)] = "Evicted";
+    table[Index(StringId::kHotwordActivityTitle)] = "Hotword Activity";
+    table[Index(StringId::kHotwordActivityRefreshButton)] = "Refresh";
+    table[Index(StringId::kHotwordActivityColWord)] = "Hotword";
+    table[Index(StringId::kHotwordActivityColCategory)] = "Category";
+    table[Index(StringId::kHotwordActivityColOrigCategory)] = "Original category";
+    table[Index(StringId::kHotwordActivityColCount)] = "Uses";
+    table[Index(StringId::kHotwordActivityColScore)] = "Activity";
+    table[Index(StringId::kHotwordActivityColDaysSinceUse)] = "Idle days";
+    table[Index(StringId::kHotwordActivityColEvictedDays)] = "Evicted days";
+    table[Index(StringId::kHotwordActivityClearPoolButton)] = "Clear pool";
+    table[Index(StringId::kHotwordActivityClearConfirmTitle)] = "Clear pool";
+    table[Index(StringId::kHotwordActivityClearConfirmBodyPrefix)] = "Delete all ";
+    table[Index(StringId::kHotwordActivityClearConfirmBodySuffix)] =
+        " word(s) from the pool?";
+    table[Index(StringId::kHotwordActivityActiveCategoryLabel)] = "Active category: ";
+    table[Index(StringId::kHotwordActivityStatusMonitoring)] = "monitoring";
+    table[Index(StringId::kHotwordActivityStatusNormal)] = "normal";
+    table[Index(StringId::kHotwordActivityEvictedGroup)] =
+        "Evicted pool (auto-reclaims on reuse)";
     table[Index(StringId::kXiaomiHidTapToggleLabel)] =
         "Enhanced keys (Back / Volume) — requires admin approval";
     table[Index(StringId::kXiaomiHidTapHint)] =
@@ -639,7 +697,8 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kSettingsApiKey)] = "API Key";
     table[Index(StringId::kSettingsResourceId)] = "资源 ID";
     table[Index(StringId::kSettingsHotwords)] = "热词";
-    table[Index(StringId::kSettingsHotwordsHint)] = "使用逗号或换行分隔热词。";
+    table[Index(StringId::kSettingsHotwordsHint)] =
+        "使用逗号或换行分隔热词。每个分类最多 25 个，仅当前选中分类参与识别。";
     table[Index(StringId::kSettingsLlmBaseUrl)] = "Base URL";
     table[Index(StringId::kSettingsLlmApiKey)] = "API Key";
     table[Index(StringId::kSettingsLlmModel)] = "模型";
@@ -1082,6 +1141,60 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kXiaomiButtonVolumeDown)] = "音量-";
     table[Index(StringId::kXiaomiButtonMenu)] = "菜单键";
     table[Index(StringId::kXiaomiButtonTv)] = "TV 键";
+    // 热词分区管理（分类下拉）
+    table[Index(StringId::kSettingsHotwordCategory)] = "分类";
+    table[Index(StringId::kSettingsHotwordCategoryDefault)] = "默认";
+    table[Index(StringId::kSettingsHotwordCategoryAddButton)] = "新增分类";
+    table[Index(StringId::kSettingsHotwordCategoryDeleteButton)] = "删除分类";
+    table[Index(StringId::kSettingsHotwordCategoryAddTitle)] = "新增热词分类";
+    table[Index(StringId::kSettingsHotwordCategoryNamePrompt)] = "分类名称：";
+    table[Index(StringId::kSettingsHotwordCategoryEmptyName)] = "分类名称不能为空。";
+    table[Index(StringId::kSettingsHotwordCategoryDuplicate)] = "该分类已存在。";
+    table[Index(StringId::kSettingsHotwordCategoryNameTooLong)] = "分类名称过长。";
+    // {0}=分类名
+    table[Index(StringId::kSettingsHotwordCategoryDeleteConfirm)] =
+        "确定删除分类“{0}”及其全部热词？";
+    table[Index(StringId::kSettingsHotwordCategoryLastOne)] = "至少需要保留一个分类。";
+    // {0}=保留数量 {1}=分类名
+    table[Index(StringId::kSettingsHotwordCategoryTrimmed)] =
+        "分类“{1}”超出 25 个热词上限，仅保留前 {0} 个。";
+    table[Index(StringId::kSelectionHotwordCategoryFullTitle)] = "分类已满";
+    table[Index(StringId::kSelectionHotwordCategoryFullBody)] =
+        "当前热词分类已满（25 个），请先删除部分热词或切换分类。";
+    table[Index(StringId::kSmartHotwordSwitchedBodyPrefix)] = "已切换热词库：";
+    table[Index(StringId::kSmartHotwordSwitchedBodySuffix)] = "。";
+    table[Index(StringId::kSmartHotwordEvictedTitle)] = "热词自动清理";
+    table[Index(StringId::kSmartHotwordEvictedBodyPrefix)] = "已移除低活跃度热词：";
+    table[Index(StringId::kSettingsSmartHotwordEnable)] =
+        "智能热词管理（按上下文自动切换，冷词自动清理）";
+    table[Index(StringId::kSettingsHotwordActivityButton)] = "活跃度…";
+    table[Index(StringId::kSettingsHotwordTrayTitle)] = "热词碟";
+    table[Index(StringId::kSettingsHotwordTrayRefresh)] = "刷新";
+    table[Index(StringId::kSettingsHotwordTrayHintPrefix)] =
+        "按活跃度自动聚合各分类热词（";
+    table[Index(StringId::kSettingsHotwordTrayHintInfix)] = "/";
+    table[Index(StringId::kSettingsHotwordTrayHintSuffix)] =
+        "），识别时优先匹配，随使用频率动态更新";
+    table[Index(StringId::kSettingsHotwordTrayEmpty)] = "暂无入碟热词";
+    table[Index(StringId::kHotwordTraySourceEvicted)] = "回收池";
+    table[Index(StringId::kHotwordActivityTitle)] = "热词活跃度";
+    table[Index(StringId::kHotwordActivityRefreshButton)] = "刷新";
+    table[Index(StringId::kHotwordActivityColWord)] = "热词";
+    table[Index(StringId::kHotwordActivityColCategory)] = "分类";
+    table[Index(StringId::kHotwordActivityColOrigCategory)] = "原分类";
+    table[Index(StringId::kHotwordActivityColCount)] = "使用次数";
+    table[Index(StringId::kHotwordActivityColScore)] = "活跃度";
+    table[Index(StringId::kHotwordActivityColDaysSinceUse)] = "闲置天数";
+    table[Index(StringId::kHotwordActivityColEvictedDays)] = "逐出天数";
+    table[Index(StringId::kHotwordActivityClearPoolButton)] = "清空回收池";
+    table[Index(StringId::kHotwordActivityClearConfirmTitle)] = "清空回收池";
+    table[Index(StringId::kHotwordActivityClearConfirmBodyPrefix)] = "回收池中的 ";
+    table[Index(StringId::kHotwordActivityClearConfirmBodySuffix)] =
+        " 个词将被全部删除，确定吗？";
+    table[Index(StringId::kHotwordActivityActiveCategoryLabel)] = "活跃分类：";
+    table[Index(StringId::kHotwordActivityStatusMonitoring)] = "监控中";
+    table[Index(StringId::kHotwordActivityStatusNormal)] = "正常";
+    table[Index(StringId::kHotwordActivityEvictedGroup)] = "回收池（活跃度回升自动回归）";
     table[Index(StringId::kXiaomiHidTapToggleLabel)] =
         "增强按键识别（返回 / 音量键）——需要管理员授权";
     table[Index(StringId::kXiaomiHidTapHint)] =

@@ -53,6 +53,13 @@ protected:
     void ChatAsync(std::string system_prompt,
                    std::string user_text,
                    std::function<void(bool, std::string)> completion) const;
+    // ChatAsync 的静态形态：回调链只依赖 config 快照，不触碰 this——子类的异步
+    // 完成回调可能晚于对象析构（refiner_ 是协调器值成员，UpdateConfig/Shutdown
+    // 会销毁重建），重入必须走静态链，否则 UAF（integration golden 崩溃实证）。
+    static void ChatAsyncWithConfig(AppConfig config,
+                                    std::string system_prompt,
+                                    std::string user_text,
+                                    std::function<void(bool, std::string)> completion);
     // SSE 流式异步调用：detached thread 中通过 WinHTTP 增量读取 SSE 事件流，
     // 逐 token 回调 on_token，流结束回调 on_done，出错回调 on_error。
     // cancel 为可选的取消令牌，设为 true 可中断流式读取。

@@ -40,6 +40,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import gen_corpus  # noqa: E402
+import hotword_score_chart  # noqa: E402  热词活跃度评分柱状图（惰性导入 matplotlib）
 from asr_bench import hotword_select, tencent, tencent_vocab, volcengine  # noqa: E402
 from asr_bench.metrics import cer, hotword_hit, hotword_report, summarize  # noqa: E402
 from asr_bench.result import ClipResult  # noqa: E402
@@ -88,7 +89,9 @@ def load_clips(manifest: list[dict], base: Path) -> list[dict]:
     """
     items: list[dict] = []
     for item in manifest:
-        ogg = Path(item.get("audio", base / f"{item['id']}.ogg"))
+        ogg = Path(item["audio"]) if "audio" in item else base / f"{item['id']}.ogg"
+        if not ogg.is_absolute():  # 相对路径以清单所在目录为基准（清单可整体拷走复用）
+            ogg = base / ogg
         if not ogg.exists():
             print(f"WARN 跳过 {item['id']}: 音频不存在 {ogg}", file=sys.stderr)
             continue
@@ -236,7 +239,30 @@ def build_diagnosis(report: dict, providers: list[str], hotwords: list[str],
     return diagnosis
 
 
-def write_report(report: dict, out_dir: Path, stamp: str) -> tuple[Path, Path]:
+def render_score_chart(stats_file: str, stamp: str, out_dir: Path) -> str:
+    """热词活跃度评分柱状图：返回 PNG 相对文件名（失败返回空串，不阻断主流程）。
+    stats_file 为空时自动探测桌面端 hotword_usage.json。"""
+    stats_path = (Path(stats_file) if stats_file
+                  else hotword_score_chart.default_usage_path())
+    if stats_path is None:
+        print("WARN: 未找到 hotword_usage.json，跳过评分图"
+              "（--stats-file 显式指定，或先运行桌面端产生统计）", file=sys.stderr)
+        return ""
+    if not stats_path.exists():
+        print(f"WARN: --stats-file 不存在 {stats_path}，跳过评分图", file=sys.stderr)
+        return ""
+    try:
+        chart_path = out_dir / f"hotword_score_{stamp}.png"
+        hotword_score_chart.render_chart_from_file(stats_path, chart_path)
+        print(f"评分图: {chart_path}")
+        return chart_path.name
+    except Exception as e:  # noqa: BLE001 - 图表失败不阻断验收结果
+        print(f"WARN: 评分图生成失败：{e}", file=sys.stderr)
+        return ""
+
+
+def write_report(report: dict, out_dir: Path, stamp: str,
+                 chart_rel: str = "") -> tuple[Path, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / f"acceptance_{stamp}.json"
     md_path = out_dir / f"acceptance_{stamp}.md"
@@ -278,6 +304,9 @@ def write_report(report: dict, out_dir: Path, stamp: str) -> tuple[Path, Path]:
         if not examples:
             lines.append("- 无未命中")
         lines.append("")
+    if chart_rel:
+        lines += ["## 热词活跃度评分", "",
+                  f"![热词活跃度评分]({chart_rel})"]
     md_path.write_text("\n".join(lines), encoding="utf-8")
     return json_path, md_path
 
@@ -329,7 +358,10 @@ def main() -> int:
                                  for item in manifest}
         report["diagnosis"] = build_diagnosis(report, providers, hotwords,
                                               clip_hotwords, unsendable)
-        json_path, md_path = write_report(report, Path(args.out), report["stamp"])
+        chart_rel = render_score_chart(args.stats_file, report["stamp"],
+                                       Path(args.out))
+        json_path, md_path = write_report(report, Path(args.out), report["stamp"],
+                                          chart_rel=chart_rel)
         print(f"JSON: {json_path}")
         print(f"MD:   {md_path}")
         return 0
@@ -463,7 +495,9 @@ def main() -> int:
     report["diagnosis"] = build_diagnosis(report, providers, hotwords,
                                           clip_hotwords, unsendable_all)
 
-    json_path, md_path = write_report(report, Path(args.out), args.stamp)
+    chart_rel = render_score_chart(args.stats_file, args.stamp, Path(args.out))
+    json_path, md_path = write_report(report, Path(args.out), args.stamp,
+                                      chart_rel=chart_rel)
     print(f"\nJSON: {json_path}")
     print(f"MD:   {md_path}")
     print("\n逐词结论：")

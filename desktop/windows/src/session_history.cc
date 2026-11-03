@@ -139,7 +139,13 @@ bool SessionHistoryStore::Migrate() {
 namespace {
 
 // SQLITE_TRANSIENT(-1)：SQLite 自拷贝文本（跨语句生命周期安全，与 macOS 一致）。
+// 空串 → NULL：对齐 macOS bindText(String?) 的 nil → sqlite3_bind_null 语义
+// （refined_text 等可选列靠 IS NOT NULL 过滤「未填」记录）。
 void BindText(sqlite3_stmt* statement, const int index, const std::string& value) {
+    if (value.empty()) {
+        sqlite3_bind_null(statement, index);
+        return;
+    }
     // SQLITE_TRANSIENT(-1)：SQLite 自拷贝文本（跨语句生命周期安全，与 macOS 一致）。
     sqlite3_bind_text(statement, index, value.c_str(), static_cast<int>(value.size()),
                       reinterpret_cast<sqlite3_destructor_type>(-1));

@@ -108,7 +108,7 @@ public:
         }
 
         ComPtr<IUIAutomationTextRange> document;
-        hr = text_pattern->GetDocumentRange(document.Put());
+        hr = text_pattern->get_DocumentRange(document.Put());
         if (FAILED(hr) || !document) {
             LogApp("voice edit: GetDocumentRange failed hr=" +
                    std::to_string(static_cast<long long>(hr)));
@@ -120,8 +120,8 @@ public:
         hr = document->Clone(tail.Put());
         if (FAILED(hr) || !tail) return false;
         int moved = 0;
-        hr = tail->MoveEndpointByUnit(UIA_TextPatternRangeEndpoint_Start,
-                                      UIA_TextUnit_Character, -kTailUtf16Limit, &moved);
+        hr = tail->MoveEndpointByUnit(TextPatternRangeEndpoint_Start,
+                                      TextUnit_Character, -kTailUtf16Limit, &moved);
         if (FAILED(hr)) {
             LogApp("voice edit: MoveEndpointByUnit failed hr=" +
                    std::to_string(static_cast<long long>(hr)));
@@ -139,9 +139,9 @@ public:
         // 尾部被截断（字段比 tail 长）：仅用于日志/排障，planner 只做尾部后缀匹配。
         {
             int compare_start = 0;
-            if (SUCCEEDED(tail->CompareEndpoints(UIA_TextPatternRangeEndpoint_Start,
+            if (SUCCEEDED(tail->CompareEndpoints(TextPatternRangeEndpoint_Start,
                                                  document.Get(),
-                                                 UIA_TextPatternRangeEndpoint_Start,
+                                                 TextPatternRangeEndpoint_Start,
                                                  &compare_start))) {
                 out->truncated = compare_start != 0;
             }
@@ -172,18 +172,18 @@ public:
         hr = selections->GetElement(0, selection.Put());
         if (FAILED(hr) || !selection) return false;
         int collapsed = 0;
-        hr = selection->CompareEndpoints(UIA_TextPatternRangeEndpoint_Start,
+        hr = selection->CompareEndpoints(TextPatternRangeEndpoint_Start,
                                          selection.Get(),
-                                         UIA_TextPatternRangeEndpoint_End, &collapsed);
+                                         TextPatternRangeEndpoint_End, &collapsed);
         if (FAILED(hr)) return false;
         out->readable = true;
         out->selection_collapsed = collapsed == 0;
         if (out->selection_collapsed) {
             // 光标是否在文档末尾：用 CompareEndpoints 比较（不依赖字符偏移）。
             int at_end = 0;
-            hr = selection->CompareEndpoints(UIA_TextPatternRangeEndpoint_End,
+            hr = selection->CompareEndpoints(TextPatternRangeEndpoint_End,
                                              document.Get(),
-                                             UIA_TextPatternRangeEndpoint_End, &at_end);
+                                             TextPatternRangeEndpoint_End, &at_end);
             if (FAILED(hr)) return false;
             out->caret_at_end = at_end == 0;
             // 批次 1（字段内定位）：光标的绝对偏移 = doc_len - (光标→文档末尾字符数)；
@@ -395,7 +395,7 @@ public:
                                           reinterpret_cast<void**>(text_pattern.Put()));
         if (FAILED(hr) || !text_pattern) return false;
         ComPtr<IUIAutomationTextRange> document;
-        hr = text_pattern->GetDocumentRange(document.Put());
+        hr = text_pattern->get_DocumentRange(document.Put());
         if (FAILED(hr) || !document) return false;
 
         // 文档长度：Start 端点前进 INT_MAX，实际移动数即字符数。
@@ -403,8 +403,8 @@ public:
         hr = document->Clone(measure.Put());
         if (FAILED(hr) || !measure) return false;
         int doc_length = 0;
-        hr = measure->MoveEndpointByUnit(UIA_TextPatternRangeEndpoint_Start,
-                                         UIA_TextUnit_Character, INT_MAX, &doc_length);
+        hr = measure->MoveEndpointByUnit(TextPatternRangeEndpoint_Start,
+                                         TextUnit_Character, INT_MAX, &doc_length);
         if (FAILED(hr)) return false;
 
         // 尾部窗口长度（与 FocusTextReaderWin 同一窗口定义：Start 回退 512 码元）。
@@ -412,8 +412,8 @@ public:
         hr = document->Clone(tail.Put());
         if (FAILED(hr) || !tail) return false;
         int tail_back = 0;
-        hr = tail->MoveEndpointByUnit(UIA_TextPatternRangeEndpoint_Start,
-                                      UIA_TextUnit_Character, -kTailUtf16Limit, &tail_back);
+        hr = tail->MoveEndpointByUnit(TextPatternRangeEndpoint_Start,
+                                      TextUnit_Character, -kTailUtf16Limit, &tail_back);
         if (FAILED(hr)) return false;
         BSTR tail_bstr = nullptr;
         hr = tail->GetText(-1, &tail_bstr);
@@ -434,13 +434,13 @@ public:
         hr = document->Clone(selection.Put());
         if (FAILED(hr) || !selection) return false;
         int moved = 0;
-        hr = selection->MoveEndpointByUnit(UIA_TextPatternRangeEndpoint_Start,
-                                           UIA_TextUnit_Character,
+        hr = selection->MoveEndpointByUnit(TextPatternRangeEndpoint_Start,
+                                           TextUnit_Character,
                                            static_cast<int>(abs_start), &moved);
         if (FAILED(hr) || static_cast<std::size_t>(moved) != abs_start) return false;
         const std::size_t abs_end = abs_start + length_utf16;
         hr = selection->MoveEndpointByUnit(
-            UIA_TextPatternRangeEndpoint_End, UIA_TextUnit_Character,
+            TextPatternRangeEndpoint_End, TextUnit_Character,
             -(static_cast<int>(doc_len - abs_end)), &moved);
         if (FAILED(hr)) return false;
         hr = selection->Select();
@@ -653,15 +653,15 @@ public:
                                           reinterpret_cast<void**>(text_pattern.Put()));
         if (FAILED(hr) || !text_pattern) return false;
         ComPtr<IUIAutomationTextRange> document;
-        hr = text_pattern->GetDocumentRange(document.Put());
+        hr = text_pattern->get_DocumentRange(document.Put());
         if (FAILED(hr) || !document) return false;
         // 折叠到文档末尾：Start 前进 INT_MAX（钳制到 End）。
         ComPtr<IUIAutomationTextRange> caret;
         hr = document->Clone(caret.Put());
         if (FAILED(hr) || !caret) return false;
         int moved = 0;
-        hr = caret->MoveEndpointByUnit(UIA_TextPatternRangeEndpoint_Start,
-                                       UIA_TextUnit_Character, INT_MAX, &moved);
+        hr = caret->MoveEndpointByUnit(TextPatternRangeEndpoint_Start,
+                                       TextUnit_Character, INT_MAX, &moved);
         if (FAILED(hr)) return false;
         return SUCCEEDED(caret->Select());
     }

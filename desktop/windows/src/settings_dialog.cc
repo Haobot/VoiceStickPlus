@@ -21,6 +21,7 @@
 #include <Shellapi.h>
 
 #include <algorithm>
+#include <cwctype>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
@@ -180,6 +181,120 @@ HWND CreateSectionTitle(HWND parent, const wchar_t* text, int x, int y, int w, i
 HWND CreateSeparator(HWND parent, int x, int y, int w, int h, HINSTANCE inst) {
     return CreateWindowExW(0, L"STATIC", L"", WS_CHILD | WS_VISIBLE | SS_ETCHEDHORZ,
                            x, y, w, h, parent, nullptr, inst, nullptr);
+}
+
+// 文案占位符替换："{0}"/"{1}"... 依序替换为 values。
+std::wstring FormatText(std::wstring text, std::initializer_list<std::wstring> values) {
+    int index = 0;
+    for (const auto& value : values) {
+        const std::wstring placeholder = L"{" + std::to_wstring(index++) + L"}";
+        std::size_t pos = 0;
+        while ((pos = text.find(placeholder, pos)) != std::wstring::npos) {
+            text.replace(pos, placeholder.size(), value);
+            pos += value.size();
+        }
+    }
+    return text;
+}
+
+// ===== 模态文本输入框（内存 DLGTEMPLATE，无资源依赖）=====
+// 用于热词分类名输入：确定返回输入文本（宽字符，未 Trim），取消返回空。
+constexpr WORD kPromptForTextEditId = 2100;
+
+struct PromptForTextState {
+    std::wstring result;
+};
+
+INT_PTR CALLBACK PromptForTextProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param) {
+    if (message == WM_INITDIALOG) {
+        SetWindowLongPtrW(hwnd, DWLP_USER, l_param);
+        HWND parent = GetParent(hwnd);
+        if (parent) {
+            RECT parent_rect{}, dialog_rect{};
+            GetWindowRect(parent, &parent_rect);
+            GetWindowRect(hwnd, &dialog_rect);
+            SetWindowPos(hwnd, nullptr,
+                         parent_rect.left + ((parent_rect.right - parent_rect.left) -
+                                             (dialog_rect.right - dialog_rect.left)) / 2,
+                         parent_rect.top + ((parent_rect.bottom - parent_rect.top) -
+                                            (dialog_rect.bottom - dialog_rect.top)) / 3,
+                         0, 0, SWP_NOSIZE | SWP_NOZORDER);
+        }
+        return TRUE;
+    }
+    if (message == WM_COMMAND) {
+        const int id = LOWORD(w_param);
+        if (id == IDOK) {
+            auto* state = reinterpret_cast<PromptForTextState*>(
+                GetWindowLongPtrW(hwnd, DWLP_USER));
+            if (state) {
+                HWND edit = GetDlgItem(hwnd, kPromptForTextEditId);
+                const int len = GetWindowTextLengthW(edit);
+                state->result.resize(static_cast<std::size_t>(len));
+                GetWindowTextW(edit, state->result.data(), len + 1);
+            }
+            EndDialog(hwnd, 1);
+            return TRUE;
+        }
+        if (id == IDCANCEL) {
+            EndDialog(hwnd, 0);
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+// 弹出文本输入模态框；确定返回输入内容，取消/关闭返回空串。
+std::wstring PromptForText(HWND parent, const std::wstring& title, const std::wstring& prompt,
+                           const std::wstring& ok_text, const std::wstring& cancel_text) {
+    std::vector<BYTE> buffer;
+    AlignDialogData(&buffer, 4);
+    DLGTEMPLATE dialog{};
+    dialog.style = WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_MODALFRAME | DS_SETFONT;
+    dialog.cdit = 4;
+    dialog.cx = 182;
+    dialog.cy = 64;
+    AppendDialogData(&buffer, &dialog, sizeof(dialog));
+    AppendDialogWord(&buffer, 0);  // menu
+    AppendDialogWord(&buffer, 0);  // class
+    AppendDialogWideString(&buffer, title.c_str());
+    AppendDialogWord(&buffer, 9);  // font size
+    AppendDialogWideString(&buffer, L"Segoe UI");
+
+    auto append_item = [&buffer](DWORD style, short x, short y, short cx, short cy,
+                                 WORD id, WORD class_atom, const wchar_t* title_text) {
+        AlignDialogData(&buffer, 4);
+        DLGITEMTEMPLATE item{};
+        item.style = style;
+        item.x = x;
+        item.y = y;
+        item.cx = cx;
+        item.cy = cy;
+        item.id = id;
+        AppendDialogData(&buffer, &item, sizeof(item));
+        AppendDialogWord(&buffer, 0xFFFF);  // 预定义类
+        AppendDialogWord(&buffer, class_atom);
+        AppendDialogWideString(&buffer, title_text);
+        AppendDialogWord(&buffer, 0);  // creation data
+    };
+    constexpr WORD kStaticAtom = 0x0082;
+    constexpr WORD kEditAtom = 0x0081;
+    constexpr WORD kButtonAtom = 0x0080;
+    append_item(WS_CHILD | WS_VISIBLE, 10, 10, 162, 8, static_cast<WORD>(-1),
+                kStaticAtom, prompt.c_str());
+    append_item(WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL | WS_BORDER,
+                10, 22, 162, 14, kPromptForTextEditId, kEditAtom, L"");
+    append_item(WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+                64, 42, 45, 14, IDOK, kButtonAtom, ok_text.c_str());
+    append_item(WS_CHILD | WS_VISIBLE | WS_TABSTOP,
+                118, 42, 45, 14, IDCANCEL, kButtonAtom, cancel_text.c_str());
+
+    PromptForTextState state;
+    INT_PTR ok = DialogBoxIndirectParamW(GetModuleHandleW(nullptr),
+                                         reinterpret_cast<LPCDLGTEMPLATE>(buffer.data()),
+                                         parent, PromptForTextProc,
+                                         reinterpret_cast<LPARAM>(&state));
+    return ok ? state.result : std::wstring();
 }
 
 // days（自 2026-01-01）→ "YYYY-MM-DD"（Howard Hinnant civil_from_days 逆变换，
@@ -418,6 +533,23 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         case kIdHotwordCandidateDismiss:
             OnHotwordCandidateDismiss();
             return TRUE;
+        case kIdHotwordCategoryCombo:
+            if (HIWORD(w_param) == CBN_SELCHANGE) OnHotwordCategoryChanged();
+            return TRUE;
+        case kIdHotwordCategoryAdd:
+            if (HIWORD(w_param) == BN_CLICKED) OnHotwordCategoryAdd();
+            return TRUE;
+        case kIdHotwordCategoryDelete:
+            if (HIWORD(w_param) == BN_CLICKED) OnHotwordCategoryDelete();
+            return TRUE;
+        case kIdHotwordActivity:
+            if (HIWORD(w_param) == BN_CLICKED && on_open_hotword_activity) {
+                on_open_hotword_activity();
+            }
+            return TRUE;
+        case kIdHotwordTrayRefresh:
+            if (HIWORD(w_param) == BN_CLICKED) RefreshHotwordTray();
+            return TRUE;
         case kIdDeveloperMode:
             if (HIWORD(w_param) == BN_CLICKED) OnDeveloperModeToggled();
             return TRUE;
@@ -511,6 +643,13 @@ INT_PTR SettingsDialog::HandleMessage(UINT message, WPARAM w_param, LPARAM l_par
         apply_trial_button_ = nullptr;
         resource_combo_ = nullptr;
         hotwords_edit_ = nullptr;
+        hotword_category_combo_ = nullptr;
+        hotword_category_add_button_ = nullptr;
+        hotword_category_delete_button_ = nullptr;
+        tray_label_ = nullptr;
+        tray_refresh_button_ = nullptr;
+        tray_edit_ = nullptr;
+        tray_hint_ = nullptr;
         candidates_label_ = nullptr;
         candidates_list_ = nullptr;
         candidate_add_button_ = nullptr;
@@ -592,6 +731,7 @@ void SettingsDialog::RebuildUi() {
     BuildControls();
     LoadConfigIntoControls();
     RefreshHotwordCandidates();
+    RefreshHotwordTray();
 }
 
 void SettingsDialog::DestroyControls() {
@@ -608,6 +748,13 @@ void SettingsDialog::DestroyControls() {
     apply_trial_button_ = nullptr;
     resource_combo_ = nullptr;
     hotwords_edit_ = nullptr;
+    hotword_category_combo_ = nullptr;
+    hotword_category_add_button_ = nullptr;
+    hotword_category_delete_button_ = nullptr;
+    tray_label_ = nullptr;
+    tray_refresh_button_ = nullptr;
+    tray_edit_ = nullptr;
+    tray_hint_ = nullptr;
     candidates_label_ = nullptr;
     candidates_list_ = nullptr;
     candidate_add_button_ = nullptr;
@@ -948,17 +1095,46 @@ void SettingsDialog::BuildControls() {
         }, [this]() { return ProviderComboLocalSelected() && IsLocalRefineChecked(); });
     }
     {
-        // 热词块：label + 多行 edit + 提示行，作为一个整体推进。
+        // 热词块：分类行 + label + 多行 edit + 提示行，作为一个整体推进。
+        // 分类行：下拉选择当前分区（仅内存切换，随"保存"落盘），新增/删除分类按钮。
+        HWND cat_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsHotwordCategory).c_str(),
+                                                    0, 0, label_w, Dp(20), instance_));
+        const int cat_btn_w = Dp(78);
+        hotword_category_combo_ = remember(CreateCombo(hwnd_, 0, 0,
+                                                       ctrl_w - 2 * (cat_btn_w + Dp(8)),
+                                                       Dp(200), kIdHotwordCategoryCombo, instance_));
+        hotword_category_add_button_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsHotwordCategoryAddButton, language).c_str(),
+            0, 0, cat_btn_w, Dp(24), kIdHotwordCategoryAdd, instance_));
+        hotword_category_delete_button_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsHotwordCategoryDeleteButton, language).c_str(),
+            0, 0, cat_btn_w, Dp(24), kIdHotwordCategoryDelete, instance_));
         HWND hot_label = remember_label(CreateLabel(hwnd_, label_text(StringId::kSettingsHotwords).c_str(),
                                                     0, 0, label_w, Dp(20), instance_));
         hotwords_edit_ = remember(CreateMultilineEdit(hwnd_, 0, 0, ctrl_w, Dp(74),
                                                       kIdHotwordsEdit, instance_));
+        // 智能热词管理行：开关（上下文自动切换 + 冷词自动清理）+ 活跃度对话框入口。
+        const int activity_btn_w = Dp(78);
+        smart_hotword_check_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsSmartHotwordEnable, language).c_str(),
+            0, 0, ctrl_w - activity_btn_w - Dp(8), Dp(22), kIdSmartHotwordEnable,
+            instance_, BS_AUTOCHECKBOX));
+        hotword_activity_button_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsHotwordActivityButton, language).c_str(),
+            0, 0, activity_btn_w, Dp(24), kIdHotwordActivity, instance_));
         HWND hot_hint = remember_label(CreateLeftLabel(hwnd_, TrW(StringId::kSettingsHotwordsHint, language).c_str(),
                                                        0, 0, ctrl_w, Dp(16), instance_));
-        add(Dp(80) + Dp(26), {
-            {hot_label, Dp(10), Dp(3), label_w, Dp(20)},
-            {hotwords_edit_, ctrl_x, 0, ctrl_w, Dp(74)},
-            {hot_hint, ctrl_x, Dp(80), ctrl_w, Dp(16)},
+        const int cat_combo_w = ctrl_w - 2 * (cat_btn_w + Dp(8));
+        add(Dp(80) + Dp(26) + Dp(64) + Dp(34), {
+            {cat_label, Dp(10), Dp(3), label_w, Dp(20)},
+            {hotword_category_combo_, ctrl_x, 0, cat_combo_w, Dp(200)},
+            {hotword_category_add_button_, ctrl_x + cat_combo_w + Dp(8), 0, cat_btn_w, Dp(24)},
+            {hotword_category_delete_button_, ctrl_x + cat_combo_w + cat_btn_w + Dp(16), 0, cat_btn_w, Dp(24)},
+            {hot_label, Dp(10), Dp(34), label_w, Dp(20)},
+            {hotwords_edit_, ctrl_x, Dp(34), ctrl_w, Dp(74)},
+            {smart_hotword_check_, ctrl_x, Dp(114), ctrl_w - activity_btn_w - Dp(8), Dp(22)},
+            {hotword_activity_button_, ctrl_x + ctrl_w - activity_btn_w, Dp(113), activity_btn_w, Dp(24)},
+            {hot_hint, ctrl_x, Dp(144), ctrl_w, Dp(16)},
         });
     }
     {
@@ -983,6 +1159,28 @@ void SettingsDialog::BuildControls() {
         }, [this]() {
             return !candidate_words_.empty();
         });
+    }
+    {
+        // 热词碟块（Doc/Plan/hotword-tray-and-domain-context.md）：标题 + 刷新按钮 +
+        // 只读 chips 面板 + 提示行（n/容量）。仅 hotword_tray_enabled 开启时显示，
+        // 隐藏不占位（同候选块模式）。面板只读，初版无点击交互（方案 §8 决议 2）。
+        const int tray_btn_w = Dp(78);
+        tray_label_ = remember_label(CreateLeftLabel(hwnd_,
+            TrW(StringId::kSettingsHotwordTrayTitle, language).c_str(),
+            0, 0, ctrl_w - tray_btn_w - Dp(8), Dp(16), instance_));
+        tray_refresh_button_ = remember(CreateButton(hwnd_,
+            TrW(StringId::kSettingsHotwordTrayRefresh, language).c_str(),
+            0, 0, tray_btn_w, Dp(24), kIdHotwordTrayRefresh, instance_));
+        tray_edit_ = remember(CreateMultilineEdit(hwnd_, 0, 0, ctrl_w, Dp(40),
+                                                  kIdHotwordTrayEdit, instance_));
+        SendMessageW(tray_edit_, EM_SETREADONLY, TRUE, 0);
+        tray_hint_ = remember_label(CreateLeftLabel(hwnd_, L"", 0, 0, ctrl_w, Dp(16), instance_));
+        add(Dp(88), {
+            {tray_label_, ctrl_x, Dp(4), ctrl_w - tray_btn_w - Dp(8), Dp(16)},
+            {tray_refresh_button_, ctrl_x + ctrl_w - tray_btn_w, 0, tray_btn_w, Dp(24)},
+            {tray_edit_, ctrl_x, Dp(24), ctrl_w, Dp(40)},
+            {tray_hint_, ctrl_x, Dp(68), ctrl_w, Dp(16)},
+        }, [this]() { return config_.hotword_tray_enabled; });
     }
     separator();
 
@@ -1441,7 +1639,15 @@ void SettingsDialog::LoadConfigIntoControls() {
                                             reinterpret_cast<LPARAM>(resource_wide.c_str())));
     SendMessageW(resource_combo_, CB_SETCURSEL, idx >= 0 ? idx : 0, 0);
 
-    SetWindowTextW(hotwords_edit_, Utf16(JoinHotwords(config_.asr_hotwords)).c_str());
+    // 热词分区：确保分类数据已归一化（Load 已做，这里兜底对话框持有的旧副本），
+    // 初始化下拉与编辑框为活跃分类视图。
+    NormalizeHotwordCategories(config_);
+    loaded_hotword_category_ = config_.active_hotword_category;
+    RefreshHotwordCategoryCombo();
+    SetWindowTextW(hotwords_edit_,
+                   Utf16(JoinHotwords(config_.asr_hotwords)).c_str());
+    SendMessageW(smart_hotword_check_, BM_SETCHECK,
+                 config_.smart_hotword_enabled ? BST_CHECKED : BST_UNCHECKED, 0);
     SetWindowTextW(llm_base_url_edit_, Utf16(config_.llm_base_url).c_str());
     SetWindowTextW(llm_api_key_edit_, Utf16(config_.llm_api_key).c_str());
     SetWindowTextW(llm_model_edit_, Utf16(config_.llm_model).c_str());
@@ -1568,6 +1774,8 @@ void SettingsDialog::SaveSettings() {
     }
     config_.hotword_process_enabled =
         SendMessageW(hotword_process_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    config_.smart_hotword_enabled =
+        SendMessageW(smart_hotword_check_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     {
         auto prompt = Utf8(GetWindowText(hotword_process_prompt_edit_));
         // 归一化 \r\n → \n（编辑控件返回 CRLF，LLM 用 LF）。
@@ -1586,7 +1794,12 @@ void SettingsDialog::SaveSettings() {
         auto default_prompt = HotwordExtractor::BuildExtractPrompt("");
         config_.hotword_process_prompt = (normalized == default_prompt) ? std::string() : normalized;
     }
-    config_.asr_hotwords = ParseHotwordList(Utf8(GetWindowText(hotwords_edit_)));
+    // 热词分区：编辑框内容写回当前分类（含 25 上限截断提示），活跃分类与投影同步。
+    StoreCurrentCategoryWords();
+    config_.active_hotword_category = loaded_hotword_category_;
+    if (const auto* active = FindHotwordCategory(config_, loaded_hotword_category_)) {
+        config_.asr_hotwords = active->words;
+    }
 
     wchar_t resource_buf[256]{};
     int res_idx = static_cast<int>(SendMessageW(resource_combo_, CB_GETCURSEL, 0, 0));
@@ -2194,6 +2407,216 @@ void SettingsDialog::OnHotwordCandidateDismiss() {
     const auto path = HotwordCandidatesPath(AppConfig::ConfigPath());
     DismissHotwordCandidateOnDisk(path, word);  // B13：唯一写入口（互斥 + 重读后改写）
     RefreshHotwordCandidates();
+}
+
+// ===== 热词分区管理 =====
+
+void SettingsDialog::RefreshHotwordCategoryCombo() {
+    if (!hotword_category_combo_) return;
+    const auto language = EffectiveUiLanguage(config_.ui_language);
+    SendMessageW(hotword_category_combo_, CB_RESETCONTENT, 0, 0);
+    int select = -1;
+    for (std::size_t i = 0; i < config_.hotword_categories.size(); ++i) {
+        const auto& category = config_.hotword_categories[i];
+        std::string display = category.name.empty()
+                                  ? Tr(StringId::kSettingsHotwordCategoryDefault, language)
+                                  : category.name;
+        display += " (" + std::to_string(category.words.size()) + "/" +
+                   std::to_string(HotwordCategory::kMaxWords) + ")";
+        SendMessageW(hotword_category_combo_, CB_ADDSTRING, 0,
+                     reinterpret_cast<LPARAM>(Utf16(display).c_str()));
+        if (category.name == loaded_hotword_category_) select = static_cast<int>(i);
+    }
+    if (select >= 0) SendMessageW(hotword_category_combo_, CB_SETCURSEL, select, 0);
+}
+
+void SettingsDialog::RefreshHotwordTray() {
+    if (!tray_edit_) return;
+    const auto language = EffectiveUiLanguage(config_.ui_language);
+    const auto entries =
+        on_get_hotword_tray ? on_get_hotword_tray() : std::vector<HotwordTrayEntry>{};
+    if (entries.empty()) {
+        SetWindowTextW(tray_edit_,
+                       Utf16(Tr(StringId::kSettingsHotwordTrayEmpty, language)).c_str());
+    } else {
+        // chips 文本：[词 ★档位·来源分类]，活跃度三档（≥3 高活跃 / ≥1 活跃 / 其余观察）。
+        std::string text;
+        for (const auto& entry : entries) {
+            if (!text.empty()) text += "  ";
+            text += "[";
+            text += entry.word;
+            text += " ";
+            text += entry.score >= 3.0 ? "★★★" : (entry.score >= 1.0 ? "★★☆" : "★☆☆");
+            text += "·";
+            if (entry.category == kHotwordTrayEvictedSource) {
+                text += Tr(StringId::kHotwordTraySourceEvicted, language);
+            } else if (entry.category.empty()) {
+                text += Tr(StringId::kSettingsHotwordCategoryDefault, language);
+            } else {
+                text += entry.category;
+            }
+            text += "]";
+        }
+        SetWindowTextW(tray_edit_, Utf16(text).c_str());
+    }
+    // 提示行：已入碟数 / 碟容量（钳位后）。
+    std::string hint = Tr(StringId::kSettingsHotwordTrayHintPrefix, language);
+    hint += std::to_string(entries.size());
+    hint += Tr(StringId::kSettingsHotwordTrayHintInfix, language);
+    hint += std::to_string(HotwordTraySizeClamp(config_.hotword_tray_size));
+    hint += Tr(StringId::kSettingsHotwordTrayHintSuffix, language);
+    SetWindowTextW(tray_hint_, Utf16(hint).c_str());
+}
+
+void SettingsDialog::SyncExternalHotwordConfig(const AppConfig& cfg) {
+    if (!hwnd_ || !IsWindow(hwnd_) || !hotword_category_combo_) return;
+    // 用户可能有未保存的热词编辑：先暂存（截断不弹窗，与 StoreCurrentCategoryWords
+    // 的截断语义一致，但同步路径不打扰用户），覆盖分类结构后回写同名分类。
+    const std::string editing_category = loaded_hotword_category_;
+    std::vector<std::string> editing_words;
+    bool has_editing = false;
+    if (hotwords_edit_) {
+        editing_words = ParseHotwordList(Utf8(GetWindowText(hotwords_edit_)));
+        if (editing_words.size() > HotwordCategory::kMaxWords) {
+            editing_words.resize(HotwordCategory::kMaxWords);
+        }
+        if (const auto* category = FindHotwordCategory(config_, editing_category)) {
+            has_editing = editing_words != category->words;
+        }
+    }
+    // 以协调器落盘为权威更新热词相关字段（自动切换/逐出/回收/碟配置的结果）。
+    config_.hotword_categories = cfg.hotword_categories;
+    config_.active_hotword_category = cfg.active_hotword_category;
+    config_.asr_hotwords = cfg.asr_hotwords;
+    config_.hotword_tray_enabled = cfg.hotword_tray_enabled;
+    config_.hotword_tray_size = cfg.hotword_tray_size;
+    config_.hotword_tray_min_score = cfg.hotword_tray_min_score;
+    config_.hotword_domain_map = cfg.hotword_domain_map;
+    // 回写用户未保存的编辑到新结构同名分类（编辑不属于外部变更目标时保留）。
+    if (has_editing) {
+        if (auto* category = FindHotwordCategory(config_, editing_category)) {
+            category->words = editing_words;
+        }
+    }
+    // 切到新活跃分类：刷新下拉选中项并重载编辑框词表；碟随统计变化一并刷新。
+    loaded_hotword_category_ = config_.active_hotword_category;
+    RefreshHotwordCategoryCombo();
+    if (hotwords_edit_) {
+        const auto* category = FindHotwordCategory(config_, loaded_hotword_category_);
+        SetWindowTextW(hotwords_edit_,
+                       Utf16(JoinHotwords(category ? category->words
+                                                   : std::vector<std::string>{}))
+                           .c_str());
+    }
+    RefreshHotwordTray();
+}
+
+void SettingsDialog::StoreCurrentCategoryWords() {
+    if (!hotwords_edit_) return;
+    auto* category = FindHotwordCategory(config_, loaded_hotword_category_);
+    if (!category) return;
+    auto words = ParseHotwordList(Utf8(GetWindowText(hotwords_edit_)));
+    if (words.size() > HotwordCategory::kMaxWords) {
+        words.resize(HotwordCategory::kMaxWords);
+        const auto language = EffectiveUiLanguage(config_.ui_language);
+        std::string display = category->name.empty()
+                                  ? Tr(StringId::kSettingsHotwordCategoryDefault, language)
+                                  : category->name;
+        const std::wstring message = FormatText(
+            TrW(StringId::kSettingsHotwordCategoryTrimmed, language),
+            {Utf16(std::to_string(HotwordCategory::kMaxWords)), Utf16(display)});
+        MessageBoxW(hwnd_, message.c_str(),
+                    TrW(StringId::kSettingsTitle, language).c_str(), MB_OK | MB_ICONWARNING);
+    }
+    category->words = std::move(words);
+}
+
+void SettingsDialog::OnHotwordCategoryChanged() {
+    if (!hotword_category_combo_ || !hotwords_edit_) return;
+    const int sel = static_cast<int>(SendMessageW(hotword_category_combo_, CB_GETCURSEL, 0, 0));
+    if (sel < 0 || sel >= static_cast<int>(config_.hotword_categories.size())) return;
+    const std::string new_category = config_.hotword_categories[static_cast<std::size_t>(sel)].name;
+    if (new_category == loaded_hotword_category_) return;
+    // 旧分类内容存回（含 25 上限截断提示），再加载新分类。
+    StoreCurrentCategoryWords();
+    loaded_hotword_category_ = new_category;
+    const auto* category = FindHotwordCategory(config_, loaded_hotword_category_);
+    SetWindowTextW(hotwords_edit_,
+                   Utf16(JoinHotwords(category ? category->words
+                                               : std::vector<std::string>{})).c_str());
+    RefreshHotwordCategoryCombo();
+}
+
+void SettingsDialog::OnHotwordCategoryAdd() {
+    if (!hotword_category_combo_ || !hotwords_edit_) return;
+    const auto language = EffectiveUiLanguage(config_.ui_language);
+    const std::wstring input = PromptForText(
+        hwnd_, TrW(StringId::kSettingsHotwordCategoryAddTitle, language),
+        TrW(StringId::kSettingsHotwordCategoryNamePrompt, language),
+        TrW(StringId::kOk, language), TrW(StringId::kCancel, language));
+    if (input.empty()) return;
+    // 宽字符空白 Trim（分类名两端去空格）。
+    std::size_t begin = 0;
+    std::size_t end = input.size();
+    while (begin < end && iswspace(input[begin])) ++begin;
+    while (end > begin && iswspace(input[end - 1])) --end;
+    const std::string name = Utf8(input.substr(begin, end - begin));
+    if (name.empty()) {
+        MessageBoxW(hwnd_, TrW(StringId::kSettingsHotwordCategoryEmptyName, language).c_str(),
+                    TrW(StringId::kSettingsHotwordCategoryAddTitle, language).c_str(),
+                    MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (name.size() > 30) {
+        MessageBoxW(hwnd_, TrW(StringId::kSettingsHotwordCategoryNameTooLong, language).c_str(),
+                    TrW(StringId::kSettingsHotwordCategoryAddTitle, language).c_str(),
+                    MB_OK | MB_ICONWARNING);
+        return;
+    }
+    if (FindHotwordCategory(config_, name)) {
+        MessageBoxW(hwnd_, TrW(StringId::kSettingsHotwordCategoryDuplicate, language).c_str(),
+                    TrW(StringId::kSettingsHotwordCategoryAddTitle, language).c_str(),
+                    MB_OK | MB_ICONWARNING);
+        return;
+    }
+    // 存回旧分类内容，切换到新分类（空词表）。
+    StoreCurrentCategoryWords();
+    HotwordCategory category;
+    category.name = name;
+    config_.hotword_categories.push_back(std::move(category));
+    loaded_hotword_category_ = name;
+    SetWindowTextW(hotwords_edit_, L"");
+    RefreshHotwordCategoryCombo();
+}
+
+void SettingsDialog::OnHotwordCategoryDelete() {
+    if (!hotword_category_combo_ || !hotwords_edit_) return;
+    const auto language = EffectiveUiLanguage(config_.ui_language);
+    if (config_.hotword_categories.size() <= 1) {
+        MessageBoxW(hwnd_, TrW(StringId::kSettingsHotwordCategoryLastOne, language).c_str(),
+                    TrW(StringId::kSettingsHotwordCategoryAddTitle, language).c_str(),
+                    MB_OK | MB_ICONWARNING);
+        return;
+    }
+    const auto* category = FindHotwordCategory(config_, loaded_hotword_category_);
+    if (!category) return;
+    std::string display = category->name.empty()
+                              ? Tr(StringId::kSettingsHotwordCategoryDefault, language)
+                              : category->name;
+    const std::wstring message = FormatText(
+        TrW(StringId::kSettingsHotwordCategoryDeleteConfirm, language), {Utf16(display)});
+    if (MessageBoxW(hwnd_, message.c_str(),
+                    TrW(StringId::kSettingsHotwordCategoryAddTitle, language).c_str(),
+                    MB_OKCANCEL | MB_ICONWARNING) != IDOK) {
+        return;
+    }
+    std::erase_if(config_.hotword_categories, [&](const HotwordCategory& item) {
+        return item.name == loaded_hotword_category_;
+    });
+    loaded_hotword_category_ = config_.hotword_categories.front().name;
+    SetWindowTextW(hotwords_edit_,
+                   Utf16(JoinHotwords(config_.hotword_categories.front().words)).c_str());
+    RefreshHotwordCategoryCombo();
 }
 
 int SettingsDialog::Dp(int px) const {

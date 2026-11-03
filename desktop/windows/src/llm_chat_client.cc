@@ -135,7 +135,14 @@ std::string LLMChatClient::ChatSync(const std::string& system_prompt,
 void LLMChatClient::ChatAsync(std::string system_prompt,
                               std::string user_text,
                               std::function<void(bool, std::string)> completion) const {
-    auto config = config_;
+    ChatAsyncWithConfig(config_, std::move(system_prompt), std::move(user_text),
+                        std::move(completion));
+}
+
+void LLMChatClient::ChatAsyncWithConfig(AppConfig config,
+                                        std::string system_prompt,
+                                        std::string user_text,
+                                        std::function<void(bool, std::string)> completion) {
     std::thread([config = std::move(config),
                  system_prompt = std::move(system_prompt),
                  user_text = std::move(user_text),

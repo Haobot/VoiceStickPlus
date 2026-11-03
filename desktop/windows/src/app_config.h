@@ -221,6 +221,19 @@ struct WechatInputMethodConfig {
     bool operator==(const WechatInputMethodConfig& other) const = default;
 };
 
+// 热词分类（分区管理）：name 为空字符串表示"默认"分类（UI 本地化显示，
+// 避免界面语言硬编码）；words 为该分类独立存储的热词，上限 25 个。
+struct HotwordCategory {
+    static constexpr std::size_t kMaxWords = 25;
+    std::string name;
+    std::vector<std::string> words;
+};
+
+// 热词碟容量钳位（6..24）。
+inline int HotwordTraySizeClamp(int size) {
+    return size < 6 ? 6 : (size > 24 ? 24 : size);
+}
+
 // 本机麦克风模式配置（[local_asr] 段，Windows 端）：本机麦克风采集 + SenseVoice
 // 本地离线识别 + 按住热键说话，无 BLE 设备也可语音输入（P1 核心闭环并入产品）。
 // 默认关闭：不改变现有设备链路行为。
@@ -335,12 +348,32 @@ struct AppConfig {
     // 热词候选挖掘：每次识别会话完成后异步让 LLM 从最终文本提炼候选热词，
     // 同一词达阈值后经托盘通知+设置-热词区人工确认入表。默认关闭（多一次 LLM 调用）。
     bool hotword_mining_enabled = false;
+    // 智能热词管理：上下文识别自动切换活跃分类 + 热词容量动态管理（软限 5 词监控、
+    // 25 词上限按活跃度逐出/回收）。默认开启；关闭后恢复纯手动分区管理。
+    bool smart_hotword_enabled = true;
+    // 热词碟：跨分类高活跃热词聚合视图，ASR corpus 与精修热词段碟词优先。
+    // 默认开启；关闭恢复"仅活跃分类"现状行为（Doc/Plan/hotword-tray-and-domain-context.md）。
+    bool hotword_tray_enabled = true;
+    // 碟容量（钳位 6..24）。默认 12。
+    int hotword_tray_size = 12;
+    // 入碟活跃度门槛（HotwordScore ≥ 该值）。默认 0.5。
+    double hotword_tray_min_score = 0.5;
+    // 内置领域 → 用户分类映射（TOML [hotword_domain_map] 表：领域名 = 分类名）。
+    // 上下文识别命中内置领域而该领域名不是现有分类时，经此映射解析切换目标；
+    // 未映射或映射的分类不存在则不切换。
+    std::map<std::string, std::string> hotword_domain_map;
     // 热词提炼 system prompt 覆盖；为空时使用内置默认 prompt。
     std::string hotword_process_prompt;
     InteractionMode interaction_mode = InteractionMode::kHoldToTalk;
     UiLanguage ui_language = UiLanguage::kSystem;
     std::string resource_id = "volc.seedasr.sauc.duration";
     std::vector<std::string> asr_hotwords;
+    // 热词分区存储（事实源）：所有分类独立保存于 config.toml 的
+    // hotword_categories（JSON 编码）；asr_hotwords 始终等于活跃分类的 words
+    // （投影，供 ASR/精修/统计等下游零改动消费，并保持老版本兼容）。
+    std::vector<HotwordCategory> hotword_categories;
+    // 当前活跃分类名（空字符串 = 默认分类）：ASR 识别仅使用该分类的热词。
+    std::string active_hotword_category;
     // 热词纠错映射：错误文本 -> 正确文本（TOML [hotword_corrections] 表）。
     // 划词点"纠错"保存；ASR 最终文本输出前自动按此表替换（ApplyHotwordCorrections）。
     std::map<std::string, std::string> hotword_corrections;
@@ -550,6 +583,24 @@ TextTransform TextTransformFromName(std::string_view name);
 std::string TextTransformDisplayName(TextTransform transform);
 std::vector<std::string> ParseDeviceIdList(std::string_view text);
 std::vector<std::string> ParseHotwordList(std::string_view text);
+// ===== 热词分区管理 =====
+// 首次使用（无分区数据）时的预置分类：默认（空名）+ 语文/数学/程序/AI。
+std::vector<HotwordCategory> DefaultHotwordCategories();
+// 分区数据的 JSON 编解码（config.toml 单字段存储）：
+// [{"name":"语文","words":"词1,词2"},...]；words 复用 ParseHotwordList 切分语法。
+std::string EncodeHotwordCategories(const std::vector<HotwordCategory>& categories);
+std::vector<HotwordCategory> ParseHotwordCategories(std::string_view json);
+// 按名查找分类（空名 = 默认分类）；未找到返回 nullptr。
+HotwordCategory* FindHotwordCategory(AppConfig& config, const std::string& name);
+const HotwordCategory* FindHotwordCategory(const AppConfig& config, const std::string& name);
+// 切换活跃分类并同步 asr_hotwords 投影；name 无效时回退第一个分类。
+void SetActiveHotwordCategory(AppConfig& config, const std::string& name);
+// 向活跃分类添加热词：分类内去重 + kMaxWords 上限，成功时同步 asr_hotwords。
+// 返回 false = 重复或已满（调用方需区分时先自行查重）。
+bool AddHotwordToActiveCategory(AppConfig& config, const std::string& word);
+// Load 后对齐：无分区数据则预置（旧 asr_hotwords 迁入默认分类），活跃分类
+// 无效则回退第一个，最后强制 asr_hotwords = 活跃分类 words。
+void NormalizeHotwordCategories(AppConfig& config);
 // 热词纠错自动替换（可单测纯函数）：在 text 中从左到右扫描，凡命中 corrections
 // 键（错误文本）的位置用对应正确文本替换；替换结果不参与二次匹配（防 A->B、
 // B->C 链式循环）。UTF-8 字节流按子串匹配，中文/英文均可。

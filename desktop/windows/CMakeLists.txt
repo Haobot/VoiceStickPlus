@@ -208,6 +208,8 @@ add_library(voicestick_core STATIC
     third_party/sqlite/sqlite3.c
     src/hotword_extractor.cc
     src/hotword_candidate_miner.cc
+    src/hotword_activity.cc
+    src/hotword_context.cc
     src/hotword_selector.cc
     src/hotword_suggest_client.cc
     src/localization.cc
@@ -359,6 +361,7 @@ add_executable(VoiceStickApp WIN32
     src/air_mouse_tuning_window.cc
     src/hotkey_settings_dialog.cc
     src/selection_hotword_manager.cc
+    src/hotword_activity_dialog.cc
     src/selection_correction.cc
     src/selection_correction_dialog.cc
     src/correction_dialog.cc

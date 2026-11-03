@@ -1320,6 +1320,9 @@ public:
             return ui_.timed_messages.size() > toasts_before;
         });
     }
+    // 直通协调器 UpdateConfig（清注入记录 + 代际 +1）：测试里唯一能赶在 200ms
+    // 终验窗口前使在途回调变 stale 的触发源（会话路径受 500ms 最短时长约束）。
+    void UpdateConfig(AppConfig config) { coordinator_->UpdateConfig(std::move(config)); }
 
 private:
     AppConfig config_;
@@ -1502,7 +1505,12 @@ void TestTargetedCoordinatorStaleGeneration() {
     harness.RecordAndStop(182);
     harness.asr().on_final("删除刚才的北京");
     assert(harness.PumpUntil([&] { return harness.input().sent_key_combos.size() == 1; }));
-    // 新注入（覆盖记录、generation +1）。stale 终验未运行（光标未回末尾），
+    // Windows 时序事实：会话最短 500ms（kMinimumRecordingDurationSeconds），下一次
+    // 注入最早 +520ms 落地，必然晚于 +200ms 终验——macOS 测试「注入先于终验触发
+    // stale」的时序在本平台经会话路径不可达。真实可赶在终验前的 stale 触发源是
+    // UpdateConfig（清记录 + 代际 +1，macOS 同款语义），借它使在途终验失效。
+    harness.UpdateConfig(config);
+    // 新注入（覆盖记录、代际再 +1）。stale 终验被丢弃（光标未回末尾），
     // 直接重置 fake 字段为干净的新注入态。
     assert(harness.PasteText("全新输入", 183));
     harness.field().doc = L"全新输入";

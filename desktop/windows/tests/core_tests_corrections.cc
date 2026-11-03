@@ -211,14 +211,14 @@ void TestBuildRefinePromptWithCorrections() {
     pair.after = "语气词";
     pair.count = 2;
     pairs.push_back(pair);
-    const std::string with_corrections = LLMRefinementClient::BuildRefinePrompt("自定义提示词", {"Claude"}, pairs);
+    const std::string with_corrections = LLMRefinementClient::BuildRefinePrompt("自定义提示词", {"Claude"}, {}, pairs);
     // few-shot 段追加在热词段之后（热词段收尾句仍在其中）。
     assert(with_corrections.find("用户常用术语热词表：Claude") != std::string::npos);
     assert(with_corrections.find(std::string(kFewshotHeader)) != std::string::npos);
     assert(with_corrections.find("\n- \"鱼器渍\" → \"语气词\"") != std::string::npos);
     assert(with_corrections.find(kFewshotHeader) > with_corrections.find("用户常用术语热词表"));
     // 无热词时 few-shot 段独立追加。
-    const std::string corrections_only = LLMRefinementClient::BuildRefinePrompt("自定义提示词", {}, pairs);
+    const std::string corrections_only = LLMRefinementClient::BuildRefinePrompt("自定义提示词", {}, {}, pairs);
     assert(corrections_only.find("用户常用术语热词表") == std::string::npos);
     assert(corrections_only.find(std::string(kFewshotHeader)) != std::string::npos);
 }

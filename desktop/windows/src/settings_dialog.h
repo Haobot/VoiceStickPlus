@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app_config.h"
+#include "hotword_activity.h"
 #include "model_download_session.h"
 #include "provider_combo.h"
 
@@ -27,6 +28,16 @@ public:
     void Show();
 
     std::function<void(AppConfig)> on_config_changed;
+    // 「活跃度…」按钮：打开热词活跃度可视化对话框（外壳接线协调器快照）。
+    std::function<void()> on_open_hotword_activity;
+    // 热词碟数据源（外壳接线 VoiceStickCoordinator::TakeHotwordTraySnapshot）：
+    // 面板创建与「刷新」按钮时各取一次快照；未接线时显示空态。
+    std::function<std::vector<HotwordTrayEntry>()> on_get_hotword_tray;
+
+    // 外部配置变更同步（协调器智能热词自动切换/逐出/回收落盘后由外壳转发）：
+    // 设置页打开期间活跃分类在后台被切换时，刷新分类下拉选中项、热词编辑框与热词碟，
+    // 避免界面停留在旧分类（对话框持有 config 快照，不自动感知外部变更）。
+    void SyncExternalHotwordConfig(const AppConfig& cfg);
 
     // 激活输入模态框内控件（独立小对话框，ID 仅在其内有效）。
     static constexpr UINT kIdLicensePromptLabel = 2050;
@@ -52,6 +63,19 @@ private:
     void RefreshHotwordCandidates();
     void OnHotwordCandidateAdd();
     void OnHotwordCandidateDismiss();
+    // 热词碟：取快照重填只读面板（chips 文本 + 提示行 n/容量）。
+    void RefreshHotwordTray();
+    // ===== 热词分区管理 =====
+    // 重填分类下拉（显示 "名称 (n/25)"，默认分类本地化显示）并选中当前分类。
+    void RefreshHotwordCategoryCombo();
+    // 切换分类：编辑框内容存回旧分类，加载新分类热词。
+    void OnHotwordCategoryChanged();
+    // 新增分类（输入框校验后插入空分类并选中）。
+    void OnHotwordCategoryAdd();
+    // 删除当前分类（至少保留一个；删活跃分类则切换到剩余第一个）。
+    void OnHotwordCategoryDelete();
+    // 编辑框内容（ParseHotwordList + 25 上限截断）写回 loaded_hotword_category_ 分类。
+    void StoreCurrentCategoryWords();
     void ApplyTrialApiKey();
     // 授权（离线激活）：刷新状态行（EvaluateLicense 纯函数，不依赖协调器）。
     void RefreshLicenseStatus();
@@ -127,6 +151,20 @@ private:
     HWND apply_trial_button_ = nullptr;
     HWND resource_combo_ = nullptr;
     HWND hotwords_edit_ = nullptr;
+    // 热词分区管理：分类下拉 + 新增/删除按钮；编辑框始终显示 loaded_hotword_category_
+    // 分类的内容。分类增删改仅驻内存，随"保存"落盘，取消丢弃。
+    HWND hotword_category_combo_ = nullptr;
+    HWND hotword_category_add_button_ = nullptr;
+    HWND hotword_category_delete_button_ = nullptr;
+    std::string loaded_hotword_category_;
+    // 智能热词管理：开关（上下文自动切换 + 冷词自动清理）+ 活跃度对话框入口。
+    HWND smart_hotword_check_ = nullptr;
+    HWND hotword_activity_button_ = nullptr;
+    // 热词碟块（只读面板）：标题 + 刷新按钮 + chips 只读编辑框 + 提示行。
+    HWND tray_label_ = nullptr;
+    HWND tray_refresh_button_ = nullptr;
+    HWND tray_edit_ = nullptr;
+    HWND tray_hint_ = nullptr;
     HWND candidates_label_ = nullptr;
     HWND candidates_list_ = nullptr;
     HWND candidate_add_button_ = nullptr;
@@ -239,6 +277,15 @@ private:
     // 语音编辑指令（Doc/Plan/voice-edit-commands.md）：设置区块控件 ID。
     static constexpr UINT kIdVoiceEditEnable = 2052;
     static constexpr UINT kIdVoiceEditDefaultChars = 2053;
+    // 热词分类/智能热词/活跃度/热词碟（本地热词功能）：合并分支时原 2042-2048
+    // 与本地精修/许可控件 ID 冲突，重编号为 2054-2060（引用处均为符号名）。
+    static constexpr UINT kIdHotwordCategoryCombo = 2054;
+    static constexpr UINT kIdHotwordCategoryAdd = 2055;
+    static constexpr UINT kIdHotwordCategoryDelete = 2056;
+    static constexpr UINT kIdSmartHotwordEnable = 2057;
+    static constexpr UINT kIdHotwordActivity = 2058;
+    static constexpr UINT kIdHotwordTrayRefresh = 2059;
+    static constexpr UINT kIdHotwordTrayEdit = 2060;
 };
 
 } // namespace voicestick
