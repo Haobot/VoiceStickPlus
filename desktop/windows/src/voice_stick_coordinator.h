@@ -705,6 +705,20 @@ private:
     // RunOnUiThread 更新记录并提示；不得阻塞 UI 线程。
     void StartVoiceEditBackspaces(int count, std::uint64_t generation, std::string message,
                                   std::string new_remaining_text, bool new_pressed_enter);
+    // 批次 1（字段内定位）：尾删前置光标移动——MoveCaretTo(anchor_end) + 按读回
+    // 节拍轮询确认（UIA 读取须在 UI 线程，经 RunOnUiThread 重入）；到位后转正常
+    // 退格；耗尽 → caret_move_failed（零退格、记录保留）。须在 UI 线程调用。
+    // TODO(win): 待 Windows 机编译+CTest 验证。
+    void MoveCaretForVoiceEditDeletion(const VoiceEditPlan& plan,
+                                       const VoiceEditCommand& command,
+                                       std::uint64_t generation, int attempt);
+    // 语音编辑失败日志（一行，只在失败路径打）：fail_stage 对应读取链失败环节；
+    // bundle 用前台进程名（无 bundle id 概念，nil → unknown）。
+    void LogVoiceEditFailure(std::string_view stage, std::string_view code);
+    // 失败码 → 读取链环节（stage ∈ focused_element/field_text/selected_range/
+    // selected_text/anchor/caret_move）。
+    static std::string_view VoiceEditFailureStage(VoiceEditRejectReason reason);
+    static std::string_view VoiceTargetedFailureStage(VoiceTargetedFailure failure);
     void UpdateDeviceFirmwareInfo(const StateEvent& event, const std::string& device_id);
     void CheckFirmwareUpdatesIfNeeded(bool force, bool show_errors);
     void RefreshFirmwareAvailability();

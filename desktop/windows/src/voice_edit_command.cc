@@ -5,6 +5,7 @@
 #include <span>
 
 #include "utf8_grapheme.h"
+#include "voice_edit_anchor.h"
 
 namespace voicestick {
 
@@ -14,6 +15,7 @@ using utf8::GraphemeSpan;
 using utf8::IsCombiningMark;
 using utf8::IsRegionalIndicator;
 using utf8::SplitGraphemes;
+using utf8::Utf16Length;
 
 // ============================ UTF-8 / grapheme ============================
 
@@ -475,6 +477,8 @@ std::string_view VoiceEditRejectReasonName(VoiceEditRejectReason reason) {
         case VoiceEditRejectReason::kTextMismatch: return "text_mismatch";
         case VoiceEditRejectReason::kUnverifiedNotAllowed: return "unverified_not_allowed";
         case VoiceEditRejectReason::kNothingToDelete: return "nothing_to_delete";
+        case VoiceEditRejectReason::kAnchorAmbiguous: return "anchor_ambiguous";
+        case VoiceEditRejectReason::kCaretMoveFailed: return "caret_move_failed";
     }
     return "unknown";
 }
@@ -595,27 +599,33 @@ VoiceEditPlan PlanVoiceEdit(std::string_view remaining_text, bool pressed_enter,
         plan.verified = false;
         return plan;
     }
-    // ---- 可验证分支：字段尾部 + 光标位置必须通过 ----
+    // ---- 可验证分支：字段内多级锚定（批次 1；旧 caret_at_end 门槛与最长前缀
+    // 容错已移除——零容错，宁拒勿错）----
     if (!field.selection_collapsed) {
         RejectPlan(&plan, VoiceEditRejectReason::kSelectionActive);
         return plan;
     }
-    if (!field.caret_at_end) {
-        RejectPlan(&plan, VoiceEditRejectReason::kCaretNotAtEnd);
+    const std::string field_body = NormalizeVoiceEditLineBreaks(field.tail_text);
+    // anchored = remaining（+ 已记录换行）；P1a/P1b/P1c/P2 判定顺序固定。
+    const std::string anchored = pressed_enter ? remaining + "\n" : remaining;
+    const auto anchor_result =
+        LocateVoiceEditAnchor(field_body, field.caret_tail_utf16,
+                              field.selection_collapsed ? 0 : 1, anchored,
+                              /*anchored_has_recorded_newline=*/pressed_enter);
+    if (!anchor_result.ok) {
+        RejectPlan(&plan,
+                   anchor_result.failure == VoiceEditAnchorFailure::kAnchorAmbiguous
+                       ? VoiceEditRejectReason::kAnchorAmbiguous
+                       : VoiceEditRejectReason::kTextMismatch);
         return plan;
     }
-    std::string field_body = NormalizeVoiceEditLineBreaks(field.tail_text);
-    bool newline_present = false;
-    if (pressed_enter && !field_body.empty() && field_body.back() == '\n') {
-        newline_present = true;
-        field_body.pop_back();
-    }
-    const std::size_t effective_bytes = LongestRemainingPrefixSuffix(field_body, remaining);
-    if (effective_bytes == 0) {
-        RejectPlan(&plan, VoiceEditRejectReason::kTextMismatch);
-        return plan;
-    }
-    const std::string_view effective(remaining.data(), effective_bytes);
+    // 已记录换行以「锚段实际覆盖 remaining+1」判定（P1c 裸回落 = 用户已手删换行）。
+    const std::size_t remaining_utf16 = Utf16Length(remaining);
+    const bool newline_present =
+        pressed_enter && anchor_result.anchor.anchor_end - anchor_result.anchor.anchor_start ==
+                             remaining_utf16 + 1;
+    // 零容错：effective 恒为完整 remaining。
+    const std::string_view effective(remaining);
     const DeleteAmount amount = ComputeDeleteAmount(command, effective);
     // 不越过注入边界：N 永远 clamp 到 effective 的 grapheme 数；无可删内容 → 拒绝
     //（与 macOS plan 的 deleteChars > 0 守卫一致，不单独为换行发退格）。
@@ -635,6 +645,15 @@ VoiceEditPlan PlanVoiceEdit(std::string_view remaining_text, bool pressed_enter,
     // 到 unverified 时重复多发退格（比方案伪码更保守，与 macOS 一致）。
     plan.new_pressed_enter = false;
     plan.verified = true;
+    plan.anchor_end_utf16 = anchor_result.anchor.anchor_end;
+    // 光标是否已在锚点：读得到偏移直接比；读不到（旧 UIA 无偏移）用 caret_at_end
+    // 兜底（caret 在文档末尾 且 锚点也在尾部窗口末尾 ⇒ 二者重合，无需移动——与
+    // 批次 1 之前的「caret==末尾 即放行」语义一致，回归底线）。
+    const bool caret_at_anchor =
+        field.caret_tail_utf16 != kCaretOutsideTail
+            ? field.caret_tail_utf16 == anchor_result.anchor.anchor_end
+            : (field.caret_at_end && anchor_result.anchor.anchor_end == field.tail_utf16_length);
+    plan.needs_caret_move = !caret_at_anchor;
     return plan;
 }
 

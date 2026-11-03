@@ -49,10 +49,12 @@ runRefineBudgetTests()
 runConfigDomainTests()
 runGlobalButtonsConfigTests()
 runVoiceEditCommandTests()
+runVoiceEditAnchorTests()
 runVoiceTargetedEditTests()
 runVoiceEditCoordinatorTests()
 runVoiceTargetedCoordinatorTests()
 runVoiceTargetedAlignCoordinatorTests()
+runVoiceEditAnchorCoordinatorTests()
 
 let passed = totalChecks - failedChecks
 print("PASSED \(passed)/\(totalChecks) (golden fixtures: \(goldenChecked) session(s))")

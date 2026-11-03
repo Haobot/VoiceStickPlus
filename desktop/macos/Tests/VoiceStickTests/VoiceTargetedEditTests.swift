@@ -409,6 +409,58 @@ private func runTargetedPlannerTests() {
         command: deleteCommand("你好"), remainingText: "你好\n", pressedEnter: false,
         fieldText: "你好\n\n", caretUTF16: 4, selectionLength: 0,
         .fieldMismatch, "计划：未记录换行（remaining 带换行场景）fieldMismatch")
+
+    runTargetedAnchorPlannerTests()
+}
+
+// ---- 批次 1：带锚点的新签名计划向量（T1/T2/T4 计划层 + T12 红线）----
+// 旧签名（P1c 等价）向量见上；新签名由协调器先 locate 再传入锚点。
+
+private func runTargetedAnchorPlannerTests() {
+    // T1 句中替换（P1a 光标前缀锚）：字段「我去北京上班」，光标在段尾 4。
+    let anchorT1 = VoiceEditAnchor(kind: .caretPrefix, anchorStart: 2, anchorEnd: 4)
+    guard case .plan(let t1Plan) = VoiceTargetedPlanner.plan(
+        command: replaceCommand("北京", "杭州"), remainingText: "北京", pressedEnter: false,
+        anchor: anchorT1, fieldText: "我去北京上班", caretUTF16: 4, selectionLength: 0
+    ) else {
+        check(false, "锚计划：T1 P1a 句中替换应成功")
+        return
+    }
+    checkEqual(t1Plan.newRemainingText, "杭州", "锚计划：T1 句中替换 newRemaining")
+    checkEqual(t1Plan.occurrence.utf16Start, 0, "锚计划：T1 选区偏移（remaining 内 0）")
+    checkEqual(t1Plan.occurrence.utf16Length, 2, "锚计划：T1 选区长度")
+
+    // T2 段首锚（P1b）：同一字段光标在段首 2，删除仍成功（锚由 locate 给出）。
+    let anchorT2 = VoiceEditAnchor(kind: .caretSuffix, anchorStart: 2, anchorEnd: 4)
+    guard case .plan(let t2Plan) = VoiceTargetedPlanner.plan(
+        command: deleteCommand("北京"), remainingText: "北京", pressedEnter: false,
+        anchor: anchorT2, fieldText: "我去北京上班", caretUTF16: 2, selectionLength: 0
+    ) else {
+        check(false, "锚计划：T2 P1b 段首删除应成功")
+        return
+    }
+    checkEqual(t2Plan.newRemainingText, "", "锚计划：T2 段首删除 newRemaining")
+
+    // T4 唯一出现锚（P2）：光标在别处，段不在末尾，替换成功。
+    let anchorT4 = VoiceEditAnchor(kind: .uniqueOccurrence, anchorStart: 3, anchorEnd: 5)
+    guard case .plan(let t4Plan) = VoiceTargetedPlanner.plan(
+        command: replaceCommand("北京", "上海"), remainingText: "北京", pressedEnter: false,
+        anchor: anchorT4, fieldText: "我在杭州北京出差", caretUTF16: 7, selectionLength: 0
+    ) else {
+        check(false, "锚计划：T4 P2 唯一出现替换应成功")
+        return
+    }
+    checkEqual(t4Plan.newRemainingText, "上海", "锚计划：T4 P2 替换 newRemaining")
+
+    // T12 targeted 恒 verified 红线：锚路径同样要求可读性合法（非法 caret 拒绝）。
+    let badResult = VoiceTargetedPlanner.plan(
+        command: deleteCommand("北京"), remainingText: "北京", pressedEnter: false,
+        anchor: anchorT1, fieldText: "我去北京上班", caretUTF16: -1, selectionLength: 0)
+    guard case .failure(let badCode) = badResult else {
+        check(false, "锚计划：T12 非法 caret 应拒绝")
+        return
+    }
+    checkEqual(badCode, .verifyUnavailable, "锚计划：T12 非法 caret → verify_unavailable")
 }
 
 private func expectTargetedPlanFailure(

@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import VoiceStickCore
 
 // N1 闸9：协调器状态机只读快照——整类迁 Core 后（类型依赖清零）由 runner 直接构造，
@@ -437,6 +438,13 @@ private func makeVoiceEditHarness() -> (coordinator: VoiceStickCoordinator, sink
     coordinator.trText = { $0 }
     let field = FieldStateBox()
     coordinator.readFocusedFieldState = { field.state }
+    // 批次 1（尾删光标移动）：Fake 选区写——把 box 的光标/选区更新为目标值。
+    coordinator.writeTargetedSelection = { [weak field] location, length in
+        guard let field, let state = field.state else { return false }
+        field.state = FocusedFieldState(
+            text: state.text, caretUTF16: location + length, selectionLength: length)
+        return true
+    }
     return (coordinator, sink, fakeBle, fakeInput, asr, field)
 }
 
@@ -516,22 +524,53 @@ func runVoiceEditCoordinatorTests() {
     check(h.sink.timedMessages.last?.contains("voiceEditUnverifiedSuffix") == true,
           "voiceEdit: 盲删标注未校验")
 
-    // 用户追加手打内容（字段尾部不匹配）→ field_mismatch，零注入。
+    // 用户追加手打内容（批次 1：多级锚定命中，不再是 field_mismatch）——注入
+    // 「你好世界」+auto_enter 换行、段后手打「吗」、光标在「吗」后 → P2 唯一出现
+    // 锚命中（anchorEnd=5），needsCaretMove=true → writer 先移光标到 5 再退格 3 次
+    //（2 字 + 换行）。
     h = makeVoiceEditHarness()
     h.asr.onFinal?("你好世界")
     pumpMainRunLoop(0.1)
     h.field.state = FocusedFieldState(text: "你好世界\n吗", caretUTF16: 6, selectionLength: 0)
+    h.input.sentKeyCombos.removeAll()
     h.asr.onFinal?("删除最后两个字")
     pumpMainRunLoop(0.3)
-    checkEqual(h.input.sentKeyCombos.count, 0, "voiceEdit: 字段不匹配零注入")
-    checkEqual(h.sink.timedMessages.last, "voiceEditFieldMismatch",
-               "voiceEdit: 字段不匹配 toast key")
+    checkEqual(h.input.sentKeyCombos, voiceEditBackspaces(3),
+               "voiceEdit: 段后手打 P2 命中先移后删 3 次退格")
+    check(h.sink.timedMessages.contains("voiceEditDeletedChars"),
+          "voiceEdit: 段后手打成功 toast key")
 
-    // 光标在中间 → caret_not_end；选区非空 → selection_present。
-    h.field.state = FocusedFieldState(text: "你好世界", caretUTF16: 2, selectionLength: 0)
+    // 光标在中间（批次 1：P1b/P1c + needsCaretMove，协调器先移光标再退格）。
+    // 全新 harness：注入「你好世界」（无换行），光标移到 0 → P1b 光标后缀锚命中，
+    // anchorEnd=4；harness 的 writer 把 box 光标移到 4 → 退格 1 次删「界」。
+    h = makeVoiceEditHarness()
+    var noEnterConfig = AppConfig.defaults
+    noEnterConfig.autoEnter = false
+    h.coordinator.updateConfig(noEnterConfig)
+    h.asr.onFinal?("你好世界")
+    pumpMainRunLoop(0.1)
+    h.field.state = FocusedFieldState(text: "你好世界", caretUTF16: 0, selectionLength: 0)
+    h.input.sentKeyCombos.removeAll()
     h.asr.onFinal?("删除")
-    pumpMainRunLoop(0.2)
-    checkEqual(h.sink.timedMessages.last, "voiceEditCaretNotEnd", "voiceEdit: 光标不在末尾 toast key")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.input.sentKeyCombos, voiceEditBackspaces(1),
+               "voiceEdit: 光标中间先移后删 1 次退格")
+    checkEqual(h.field.state?.caretUTF16, 4, "voiceEdit: 光标已移到 anchorEnd")
+
+    // 光标移动失败（Fake writer 拒绝）→ caret_move_failed，零退格、记录保留。
+    h.field.state = FocusedFieldState(text: "你好世界", caretUTF16: 0, selectionLength: 0)
+    h.coordinator.writeTargetedSelection = { _, _ in false }
+    h.input.sentKeyCombos.removeAll()
+    h.asr.onFinal?("删除")
+    pumpMainRunLoop(1.2)  // 轮询耗尽（0.03+0.06+0.12+0.2s）
+    checkEqual(h.input.sentKeyCombos.count, 0, "voiceEdit: 光标移动失败零退格")
+    checkEqual(h.sink.timedMessages.last, "voiceEditCaretMoveFailed",
+               "voiceEdit: 光标移动失败 toast key")
+
+    // 选区非空 → selection_present（零容错：选区先拒绝，不进定位器）。
+    h = makeVoiceEditHarness()
+    h.asr.onFinal?("你好世界")
+    pumpMainRunLoop(0.1)
     h.field.state = FocusedFieldState(text: "你好世界", caretUTF16: 0, selectionLength: 4)
     h.asr.onFinal?("删除")
     pumpMainRunLoop(0.2)
@@ -1178,4 +1217,128 @@ func runVoiceTargetedAlignCoordinatorTests() {
     pumpMainRunLoop(0.6)
     checkEqual(h.ops.list, ["paste"], "align: 枚举外答案拒绝接管回退")
     checkEqual(h.field.text, "我要去北京看升旗。把分析改成吃烤鸭。\n", "align: 逃逸时字段=原文+指令（auto_enter）")
+}
+
+// ---- 语音编辑批次 1：字段内定位（锚定）协调器级用例 ----
+// T1 P1a 句中替换全链路 / T13 句号剥离注入点三处一致 / T14 Electron 三级回退 /
+// T15 失败日志 fail_stage/bundle。纯逻辑向量见 VoiceEditAnchorTests。
+
+/// 读取会话历史库最后一行的 injected_text（三处一致断言用；直连 SQLite 只读）。
+private func lastInjectedTextFromHistory(dbURL: URL) -> String? {
+    var handle: OpaquePointer?
+    guard sqlite3_open_v2(dbURL.path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+          let handle else { return nil }
+    defer { sqlite3_close(handle) }
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(
+        handle, "SELECT injected_text FROM history ORDER BY rowid DESC LIMIT 1",
+        -1, &statement, nil
+    ) == SQLITE_OK, let statement else { return nil }
+    defer { sqlite3_finalize(statement) }
+    guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+    return sqlite3_column_text(statement, 0).map { String(cString: $0) }
+}
+
+func runVoiceEditAnchorCoordinatorTests() {
+    // T1（P1a 光标前缀锚）句中替换全链路：字段「我去北京上班」，光标停在段尾 4
+    // → 定位（P1a）→ 选区(2,2) → 读回 → 粘贴 → 恢复段末光标(4,0) → 终验 → 记录更新。
+    var h = makeTargetedHarness()
+    var noEnter = AppConfig.defaults
+    noEnter.autoEnter = false
+    h.coordinator.updateConfig(noEnter)
+    h.asr.onFinal?("北京")
+    pumpMainRunLoop(0.1)
+    // 手工把注入段摆到句中：字段「我去北京上班」、光标在段尾（P1a 语义）。
+    h.field.text = "我去北京上班"
+    h.field.selectionLocation = 4
+    h.field.selectionLength = 0
+    h.ops.clear()
+    h.asr.onFinal?("把刚才的北京改成杭州")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.ops.list,
+               ["state", "select(2,2)", "selected", "paste", "select(4,0)", "state"],
+               "anchor T1: P1a 句中替换完整调用顺序")
+    checkEqual(h.field.text, "我去杭州上班", "anchor T1: 句中替换后字段内容")
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedReplaced", "anchor T1: 成功 toast key")
+
+    // T5 协调器级：段出现两次且 P1 全 miss → anchor_ambiguous toast。
+    // 全新 harness（T1 替换后 remaining=杭州，需注入新段重造双出现场景）。
+    h = makeTargetedHarness()
+    h.coordinator.updateConfig(noEnter)
+    h.asr.onFinal?("北京")
+    pumpMainRunLoop(0.1)
+    h.field.text = "北京很好，我去北京出差"
+    h.field.selectionLocation = 11
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.4)
+    checkEqual(h.sink.timedMessages.last, "voiceEditAnchorAmbiguous",
+               "anchor T5: anchor_ambiguous toast key")
+
+    // （交付 C 句中句号剥离用例随 C 接线 commit 入库）
+
+    // T14 Electron 三级回退：首读 nil → 设置 AXManualAccessibility 后二次读成功 →
+    // 功能恢复；同一 bundle 第二轮不再设置（缓存生效）。
+    var he = makeVoiceEditHarness()
+    var axCfg = noEnter
+    axCfg.voiceEdit.unverifiedSeconds = 0  // 第二轮读不到时不得盲删（auto 窗口关闭）
+    he.coordinator.updateConfig(axCfg)
+    var axEnabled = false
+    let goodState = FocusedFieldState(text: "你好世界", caretUTF16: 4, selectionLength: 0)
+    he.coordinator.readFocusedFieldState = { axEnabled ? goodState : nil }
+    var enableCalls = 0
+    he.coordinator.enableFocusedAppManualAccessibility = {
+        enableCalls += 1
+        axEnabled = true
+        return true
+    }
+    he.asr.onFinal?("你好世界")
+    pumpMainRunLoop(0.1)
+    he.input.sentKeyCombos.removeAll()
+    he.asr.onFinal?("删除")  // 首读 nil → enable → 二次读成功 → P1c 计划 → 退格 1
+    pumpMainRunLoop(0.3)
+    checkEqual(he.input.sentKeyCombos, voiceEditBackspaces(1),
+               "anchor T14: AX 回退后功能恢复（退格 1）")
+    checkEqual(enableCalls, 1, "anchor T14: 设置成功路径 enable 恰一次")
+    // 第二轮（同 bundle，模拟 AX 再次读不到）：缓存生效不重复设置 → 按不可验证拒绝。
+    axEnabled = false
+    he.asr.onFinal?("你好世界")
+    pumpMainRunLoop(0.1)
+    he.input.sentKeyCombos.removeAll()
+    he.asr.onFinal?("删除")
+    pumpMainRunLoop(0.3)
+    checkEqual(enableCalls, 1, "anchor T14: 同 bundle 第二轮不再设置（缓存）")
+    checkEqual(he.input.sentKeyCombos.count, 0, "anchor T14: 缓存后读不到零退格")
+
+    // T15 失败日志行：fail_stage/bundle/code 字段存在（Fake 日志收集）。
+    he = makeVoiceEditHarness()
+    he.coordinator.updateConfig(noEnter)
+    var failLines: [String] = []
+    he.coordinator.voiceEditLog = { failLines.append($0) }
+    he.asr.onFinal?("你好世界")
+    pumpMainRunLoop(0.1)
+    he.field.state = FocusedFieldState(text: "背景世界", caretUTF16: 4, selectionLength: 0)
+    he.input.sentKeyCombos.removeAll()
+    he.asr.onFinal?("删除")  // 整段全 miss → field_mismatch（stage=anchor）
+    pumpMainRunLoop(0.3)
+    check(failLines.contains {
+        $0.contains("fail_stage=anchor") && $0.contains("bundle=com.test.app")
+            && $0.contains("code=field_mismatch")
+    }, "anchor T15: 尾删失败日志含 fail_stage/bundle/code")
+    // targeted 通道同样打日志（anchor_ambiguous 样本）。
+    var ht = makeTargetedHarness()
+    ht.coordinator.updateConfig(noEnter)
+    var targetedLines: [String] = []
+    ht.coordinator.voiceEditLog = { targetedLines.append($0) }
+    ht.asr.onFinal?("北京")
+    pumpMainRunLoop(0.1)
+    ht.field.text = "北京很好，我去北京出差"
+    ht.field.selectionLocation = 11
+    ht.field.selectionLength = 0
+    ht.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.4)
+    check(targetedLines.contains {
+        $0.contains("fail_stage=anchor") && $0.contains("bundle=com.test.app")
+            && $0.contains("code=anchor_ambiguous")
+    }, "anchor T15: targeted anchor_ambiguous 失败日志")
 }

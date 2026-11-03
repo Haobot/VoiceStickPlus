@@ -186,6 +186,38 @@ public:
                                              UIA_TextPatternRangeEndpoint_End, &at_end);
             if (FAILED(hr)) return false;
             out->caret_at_end = at_end == 0;
+            // 批次 1（字段内定位）：光标的绝对偏移 = doc_len - (光标→文档末尾字符数)；
+            // 再换算到尾部窗口内相对偏移（窗口外 = kCaretOutsideTail 哨兵）。
+            // TODO(win): 待 Windows 机编译+CTest 验证（UIA 偏移换算路径）。
+            ComPtr<IUIAutomationTextRange> caret_measure;
+            hr = selection->Clone(caret_measure.Put());
+            if (SUCCEEDED(hr) && caret_measure) {
+                int to_end = 0;
+                hr = caret_measure->MoveEndpointByUnit(
+                    UIA_TextPatternRangeEndpoint_Start, UIA_TextUnit_Character, INT_MAX,
+                    &to_end);
+                if (SUCCEEDED(hr) && to_end >= 0) {
+                    int doc_len = 0;
+                    ComPtr<IUIAutomationTextRange> doc_measure;
+                    hr = document->Clone(doc_measure.Put());
+                    if (SUCCEEDED(hr) && doc_measure) {
+                        hr = doc_measure->MoveEndpointByUnit(
+                            UIA_TextPatternRangeEndpoint_Start, UIA_TextUnit_Character,
+                            INT_MAX, &doc_len);
+                        if (SUCCEEDED(hr)) {
+                            const std::size_t caret_abs =
+                                static_cast<std::size_t>(doc_len) - static_cast<std::size_t>(to_end);
+                            const std::size_t window_start =
+                                static_cast<std::size_t>(doc_len) >= out->tail_utf16_length
+                                    ? static_cast<std::size_t>(doc_len) - out->tail_utf16_length
+                                    : 0;
+                            out->caret_tail_utf16 = caret_abs >= window_start
+                                                        ? caret_abs - window_start
+                                                        : kCaretOutsideTail;
+                        }
+                    }
+                }
+            }
         }
         return true;
     }
@@ -282,6 +314,67 @@ public:
             SysFreeString(selected);
         }
         return true;
+    }
+
+    bool MoveCaretTo(std::size_t tail_relative_utf16) override {
+        // TODO(win): 待 Windows 机编译+CTest 验证（尾删前置光标移动路径）。
+        // 与 SelectAndReadBack 同一套窗口换算：tail 窗口起点 = doc_len - tail_len；
+        // 光标 = clone 文档 range 折叠到绝对偏移 abs 后 Select。
+        ComPtr<IUIAutomation> automation;
+        HRESULT hr = CoCreateInstance(
+            __uuidof(CUIAutomation8), nullptr, CLSCTX_INPROC_SERVER,
+            __uuidof(IUIAutomation), reinterpret_cast<void**>(automation.Put()));
+        if (FAILED(hr) || !automation) return false;
+        ComPtr<IUIAutomationElement> focused;
+        hr = automation->GetFocusedElement(focused.Put());
+        if (FAILED(hr) || !focused) return false;
+        ComPtr<IUIAutomationTextPattern> text_pattern;
+        hr = focused->GetCurrentPatternAs(UIA_TextPatternId,
+                                          __uuidof(IUIAutomationTextPattern),
+                                          reinterpret_cast<void**>(text_pattern.Put()));
+        if (FAILED(hr) || !text_pattern) return false;
+        ComPtr<IUIAutomationTextRange> document;
+        hr = text_pattern->GetDocumentRange(document.Put());
+        if (FAILED(hr) || !document) return false;
+        // 文档长度与尾部窗口长度（与 reader 同一窗口定义）。
+        ComPtr<IUIAutomationTextRange> measure;
+        hr = document->Clone(measure.Put());
+        if (FAILED(hr) || !measure) return false;
+        int doc_length = 0;
+        hr = measure->MoveEndpointByUnit(UIA_TextPatternRangeEndpoint_Start,
+                                         UIA_TextUnit_Character, INT_MAX, &doc_length);
+        if (FAILED(hr)) return false;
+        ComPtr<IUIAutomationTextRange> tail;
+        hr = document->Clone(tail.Put());
+        if (FAILED(hr) || !tail) return false;
+        int tail_back = 0;
+        hr = tail->MoveEndpointByUnit(UIA_TextPatternRangeEndpoint_Start,
+                                      UIA_TextUnit_Character, -kTailUtf16Limit, &tail_back);
+        if (FAILED(hr)) return false;
+        BSTR tail_bstr = nullptr;
+        hr = tail->GetText(-1, &tail_bstr);
+        if (FAILED(hr)) return false;
+        const std::size_t tail_length =
+            tail_bstr != nullptr ? SysStringLen(tail_bstr) : 0;
+        if (tail_bstr != nullptr) SysFreeString(tail_bstr);
+        const std::size_t doc_len = static_cast<std::size_t>(doc_length);
+        if (tail_length > doc_len) return false;
+        if (tail_relative_utf16 > tail_length) return false;
+        const std::size_t abs = (doc_len - tail_length) + tail_relative_utf16;
+        // 折叠选区：Start 前进 abs，End 收回 abs。
+        ComPtr<IUIAutomationTextRange> caret;
+        hr = document->Clone(caret.Put());
+        if (FAILED(hr) || !caret) return false;
+        int moved = 0;
+        hr = caret->MoveEndpointByUnit(UIA_TextPatternRangeEndpoint_Start,
+                                       UIA_TextUnit_Character,
+                                       static_cast<int>(abs), &moved);
+        if (FAILED(hr) || static_cast<std::size_t>(moved) != abs) return false;
+        hr = caret->MoveEndpointByUnit(
+            UIA_TextPatternRangeEndpoint_End, UIA_TextUnit_Character,
+            -(static_cast<int>(doc_len - abs)), &moved);
+        if (FAILED(hr)) return false;
+        return SUCCEEDED(caret->Select());
     }
 
     bool MoveCaretToEnd() override {

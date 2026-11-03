@@ -46,6 +46,11 @@ public:
 
     // 光标折叠定位到文档末尾（修改后的安全光标恢复）。
     virtual bool MoveCaretToEnd() = 0;
+
+    // 批次 1（字段内定位）：光标折叠定位到尾部窗口内偏移 tail_relative_utf16
+    //（MoveCaretToEnd 的泛化；尾删前置光标移动用）。失败返回 false（调用方按
+    // caret_move_failed 拒绝，零退格）。
+    virtual bool MoveCaretTo(std::size_t tail_relative_utf16) = 0;
 };
 
 // 生产实现（UIA TextPattern）。须在 UI 线程调用。

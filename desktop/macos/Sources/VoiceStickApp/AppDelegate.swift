@@ -154,6 +154,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             FocusedFieldAXReader.writeSelectedRange(locationUTF16: location, lengthUTF16: length)
         }
         coordinator.readTargetedSelectedText = { FocusedFieldAXReader.readSelectedText() }
+        // Electron/Chromium 手动无障碍兜底（语音编辑批次 1 交付 D）：两级聚焦都
+        // 失败时由协调器对前台应用重试一次，本闭包负责设 AXManualAccessibility
+        //（Chromium 系应用需手动打开无障碍才暴露 AX 树；per-bundle 缓存在协调器）。
+        coordinator.enableFocusedAppManualAccessibility = {
+            FocusedFieldAXReader.enableManualAccessibilityForFrontApp()
+        }
         // targeted 本地对齐兜底（Doc/Plan/voice-edit-commands.md targeted 章）：
         // 自然简写门控未命中时问本地小模型（默认关）。2026-10-29 起走内嵌
         // llama.cpp 引擎（对齐档 1.5B；原 Ollama HTTP 客户端退役）。
@@ -1088,6 +1094,9 @@ private enum FocusedFieldAXReader {
 
     /// 焦点 UI 元素：先 system-wide（旧系统有效），失败后回落前台应用级 AX 树
     ///（macOS 27 实测 system-wide 返回 -25204 kAXErrorCannotComplete；Lead spike 结论）。
+    /// 第三级（Electron/Chromium 手动无障碍兜底，语音编辑批次 1 交付 D）由协调器
+    /// 编排：两级都失败时调 enableManualAccessibilityForFrontApp() 设
+    /// AXManualAccessibility=true 后重读一次（每 bundle 至多一次，缓存不落盘）。
     private static func focusedElement(_ copyAttr: CopyAttr) -> AXUIElement? {
         let systemWide = AXUIElementCreateSystemWide()
         if let focused = copyAttribute(
@@ -1156,5 +1165,29 @@ private enum FocusedFieldAXReader {
                   copyAttr, element: focused, attribute: kAXSelectedTextAttribute as CFString
               ), CFGetTypeID(value) == CFStringGetTypeID() else { return nil }
         return (value as! CFString) as String
+    }
+
+    /// Electron/Chromium 手动无障碍兜底（语音编辑批次 1 交付 D）：对前台应用元素
+    /// 读 AXManualAccessibility；值为 false 或不可读时用 AXUIElementSetAttributeValue
+    /// 设为 true（3 参直调，形态同 writeSelectedRange），返回是否已处于/成功置于
+    /// 开启态。Chromium 系应用（Electron/浏览器）默认不向 AX 暴露完整树，需手动
+    /// 打开该开关；非 Chromium 应用该属性不可读 → 设置多半被拒（返回值如实反映），
+    /// per-bundle 重试缓存由协调器持有（每 bundle 至多重试一次，避免刷设）。
+    /// 注：kAXManualAccessibility 常量未在 macOS SDK 头文件中声明（Chromium 私有
+    /// 约定属性），按 AX 属性名约定用字面量 "AXManualAccessibility"。
+    static func enableManualAccessibilityForFrontApp() -> Bool {
+        guard let copyAttr = copyAttrFunction(),
+              let pid = NSWorkspace.shared.frontmostApplication?.processIdentifier else {
+            return false
+        }
+        let attribute = "AXManualAccessibility" as CFString
+        let appElement = AXUIElementCreateApplication(pid)
+        if let value = copyAttribute(copyAttr, element: appElement, attribute: attribute),
+           CFGetTypeID(value) == CFBooleanGetTypeID(),
+           (value as! CFBoolean) == kCFBooleanTrue {
+            return true  // 已开启
+        }
+        // 值为 false 或不可读：设置后由调用方重读一次（重试编排与日志在协调器）。
+        return AXUIElementSetAttributeValue(appElement, attribute, kCFBooleanTrue) == .success
     }
 }

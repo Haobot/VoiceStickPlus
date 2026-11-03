@@ -7,6 +7,7 @@
 #include "localization.h"
 #include "log.h"
 #include "voice_edit_command.h"
+#include "voice_edit_anchor.h"
 #include "voice_targeted_edit.h"
 #include "xiaomi_buttons.h"
 
@@ -53,6 +54,10 @@ StringId VoiceEditRejectMessageId(VoiceEditRejectReason reason) {
             return StringId::kVoiceEditPassword;
         case VoiceEditRejectReason::kTextMismatch:
             return StringId::kVoiceEditTextChanged;
+        case VoiceEditRejectReason::kAnchorAmbiguous:
+            return StringId::kVoiceEditAnchorAmbiguous;
+        case VoiceEditRejectReason::kCaretMoveFailed:
+            return StringId::kVoiceEditCaretMoveFailed;
         case VoiceEditRejectReason::kEmptyTarget:
         case VoiceEditRejectReason::kNothingToDelete:
         case VoiceEditRejectReason::kNone:
@@ -104,6 +109,7 @@ StringId VoiceTargetedFailureMessageId(VoiceTargetedFailure failure) {
         case VoiceTargetedFailure::kAppChanged: return StringId::kVoiceEditWrongWindow;
         case VoiceTargetedFailure::kAccessibilityDenied: return StringId::kVoiceEditUnreadable;
         case VoiceTargetedFailure::kForegroundElevated: return StringId::kVoiceEditElevated;
+        case VoiceTargetedFailure::kAnchorAmbiguous: return StringId::kVoiceEditAnchorAmbiguous;
         case VoiceTargetedFailure::kNone: break;
     }
     return StringId::kVoiceEditNoTarget;
@@ -705,6 +711,59 @@ void VoiceStickCoordinator::CompletePendingPaste(const std::string& text, bool m
     RecordLastInjection(text, should_press_enter);
 }
 
+
+// ---- 批次 1 交付 D：失败日志与 stage 归类（内容纪律：不记文本内容）----
+
+void VoiceStickCoordinator::LogVoiceEditFailure(std::string_view stage, std::string_view code) {
+    // Windows 无 bundle id：以前台进程名为准（记录已有字段，失败路径可安全重取）。
+    std::string bundle = "unknown";
+    if (foreground_probe_) {
+        const auto process = foreground_probe_->ForegroundProcessName();
+        if (!process.empty()) bundle = process;
+    }
+    LogCoordinatorLine("voice_edit fail_stage=" + std::string(stage) +
+                       " bundle=" + bundle + " code=" + std::string(code));
+}
+
+std::string_view VoiceStickCoordinator::VoiceEditFailureStage(VoiceEditRejectReason reason) {
+    switch (reason) {
+        case VoiceEditRejectReason::kFieldUnreadable: return "focused_element";
+        case VoiceEditRejectReason::kSelectionActive: return "selected_range";
+        case VoiceEditRejectReason::kCaretNotAtEnd: return "selected_range";  // 枚举位保留
+        case VoiceEditRejectReason::kTextMismatch:
+        case VoiceEditRejectReason::kAnchorAmbiguous: return "anchor";  // 定位器语义失败
+        case VoiceEditRejectReason::kCaretMoveFailed: return "caret_move";
+        // L0 拒绝（读取链未启动）与其它：归首环节。
+        case VoiceEditRejectReason::kEmptyTarget:
+        case VoiceEditRejectReason::kPasswordField:
+        case VoiceEditRejectReason::kUnverifiedNotAllowed:
+        case VoiceEditRejectReason::kNothingToDelete:
+        case VoiceEditRejectReason::kNone: break;
+    }
+    return "focused_element";
+}
+
+std::string_view VoiceStickCoordinator::VoiceTargetedFailureStage(VoiceTargetedFailure failure) {
+    switch (failure) {
+        case VoiceTargetedFailure::kNotFound:
+        case VoiceTargetedFailure::kAmbiguous:
+        case VoiceTargetedFailure::kInvalid:
+        case VoiceTargetedFailure::kFieldMismatch:
+        case VoiceTargetedFailure::kAnchorAmbiguous: return "anchor";
+        case VoiceTargetedFailure::kVerifyUnavailable: return "focused_element";
+        case VoiceTargetedFailure::kCaretNotEnd:
+        case VoiceTargetedFailure::kSelectionPresent: return "selected_range";
+        case VoiceTargetedFailure::kResultUnconfirmed: return "field_text";
+        case VoiceTargetedFailure::kNoInjection:
+        case VoiceTargetedFailure::kScopeExpired:
+        case VoiceTargetedFailure::kAppChanged:
+        case VoiceTargetedFailure::kAccessibilityDenied:
+        case VoiceTargetedFailure::kForegroundElevated:
+        case VoiceTargetedFailure::kNone: break;
+    }
+    return "focused_element";
+}
+
 void VoiceStickCoordinator::RecordLastInjection(const std::string& text, bool pressed_enter) {
     if (text.empty()) return;  // Paste 对空文本是 no-op，不记录（否则 L0 得到空目标）
     LastInjection record;
@@ -794,17 +853,24 @@ bool VoiceStickCoordinator::HandleVoiceEditIfMatched(const std::string& text) {
         EnterReady("voice_edit_rejected");
         ui_->ShowTimedMessage(Tr(message_id, language), kVoiceEditToastMs);
     };
+    // 批次 1 交付 D：失败路径统一一行 fail_stage 上下文（stage 归类见
+    // VoiceEditFailureStage；L0 拒绝读取链未启动归首环节）。
+    const auto reject_with_stage = [&](StringId message_id, std::string_view reason,
+                                       std::string_view stage) {
+        LogVoiceEditFailure(stage, reason);
+        reject(message_id, reason);
+    };
 
     // ---- L0 作用域闸（Doc §6.2）----
     const auto now = std::chrono::steady_clock::now();
     if (!last_injection_.has_value() || last_injection_->remaining_text.empty()) {
-        reject(StringId::kVoiceEditNoTarget, "no_injection");
+        reject_with_stage(StringId::kVoiceEditNoTarget, "no_injection", "focused_element");
         return true;
     }
     const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
         now - last_injection_->injected_at);
     if (elapsed.count() > static_cast<long long>(voice_edit.scope_seconds)) {
-        reject(StringId::kVoiceEditNoTarget, "scope_expired");
+        reject_with_stage(StringId::kVoiceEditNoTarget, "scope_expired", "focused_element");
         return true;
     }
     // 前台窗口 + 进程一致（切应用/文本已提交到别处 → 拒绝；探针缺失时 fail-closed）。
@@ -818,14 +884,14 @@ bool VoiceStickCoordinator::HandleVoiceEditIfMatched(const std::string& text) {
         last_injection_->foreground_window == 0 ||
         foreground_window != last_injection_->foreground_window ||
         foreground_process != last_injection_->foreground_process) {
-        reject(StringId::kVoiceEditWrongWindow, "app_changed");
+        reject_with_stage(StringId::kVoiceEditWrongWindow, "app_changed", "focused_element");
         return true;
     }
     // 前台进程完整性不得高于本进程（UIPI 会让 SendInput 静默失效，Doc §6.2 #6）。
     {
         std::wstring elevated_process;
         if (foreground_probe_->IsForegroundHigherIntegrity(elevated_process)) {
-            reject(StringId::kVoiceEditElevated, "foreground_elevated");
+            reject_with_stage(StringId::kVoiceEditElevated, "foreground_elevated", "focused_element");
             return true;
         }
     }
@@ -844,8 +910,9 @@ bool VoiceStickCoordinator::HandleVoiceEditIfMatched(const std::string& text) {
                                     last_injection_->pressed_enter, *command, field,
                                     voice_edit.verify_mode, unverified_allowed);
     if (!plan.ok) {
-        reject(VoiceEditRejectMessageId(plan.reject_reason),
-               VoiceEditRejectReasonName(plan.reject_reason));
+        reject_with_stage(VoiceEditRejectMessageId(plan.reject_reason),
+                          VoiceEditRejectReasonName(plan.reject_reason),
+                          VoiceEditFailureStage(plan.reject_reason));
         return true;
     }
 
@@ -866,9 +933,71 @@ bool VoiceStickCoordinator::HandleVoiceEditIfMatched(const std::string& text) {
     // 先收尾回 ready，再异步注入退格（不阻塞 UI；count 上限=剩余注入文本 grapheme 数）。
     FinishRecognitionCycle();
     EnterReady("voice_edit");
+    // 批次 1（字段内定位）：光标不在 anchorEnd 时先移光标（选区写 + 轮询确认），
+    // 移动失败零退格、记录保留；unverified 计划无锚（盲退格窗口语义不变）。
+    if (plan.verified && plan.needs_caret_move) {
+        MoveCaretForVoiceEditDeletion(plan, *command, generation, 0);
+        return true;
+    }
     StartVoiceEditBackspaces(plan.backspace_count, generation, message,
                              plan.new_remaining_text, plan.new_pressed_enter);
     return true;
+}
+
+// 批次 1（字段内定位）：尾删前置光标移动。须在 UI 线程调用（UIA）；每次重试重写
+// 同一目标（幂等；与 targeted 读回同一节拍）。TODO(win): 待 Windows 机编译+CTest 验证。
+void VoiceStickCoordinator::MoveCaretForVoiceEditDeletion(const VoiceEditPlan& plan,
+                                                          const VoiceEditCommand& command,
+                                                          std::uint64_t generation,
+                                                          int attempt) {
+    if (generation != voice_edit_generation_) return;  // stale：不覆盖新记录
+    const auto language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);
+    const auto fail = [this, language]() {
+        // 零退格、记录保留（用户可手动移过去再试）。
+        LogVoiceEditFailure("caret_move", "caret_move_failed");
+        ui_->ShowTimedMessage(Tr(StringId::kVoiceEditCaretMoveFailed, language),
+                              kVoiceEditToastMs);
+    };
+    if (plan.anchor_end_utf16 == kCaretOutsideTail || targeted_field_editor_ == nullptr) {
+        LogCoordinatorLine("voice edit caret_move: editor absent");
+        fail();
+        return;
+    }
+    // TODO(win): 待 Windows 机编译+CTest 验证（MoveCaretTo 的 UIA 路径）。
+    targeted_field_editor_->MoveCaretTo(plan.anchor_end_utf16);
+    VoiceEditFieldState field;
+    if (focus_text_reader_ && focus_text_reader_->ReadFocusedField(&field) &&
+        field.readable && field.selection_collapsed &&
+        field.caret_tail_utf16 == plan.anchor_end_utf16) {
+        LogCoordinatorLine("voice edit caret_move ok anchor_end=" +
+                           std::to_string(plan.anchor_end_utf16));
+        const std::string message = VoiceEditResultMessage(
+            command, plan, EffectiveUiLanguage(ConfigSnapshot()->ui_language));
+        StartVoiceEditBackspaces(plan.backspace_count, generation, message,
+                                 plan.new_remaining_text, plan.new_pressed_enter);
+        return;
+    }
+    // 轮询节拍与 targeted 读回一致（30/60/120/200ms）；耗尽 → caret_move_failed。
+    static constexpr std::chrono::milliseconds kCaretMovePollDelays[] = {
+        std::chrono::milliseconds(30), std::chrono::milliseconds(60),
+        std::chrono::milliseconds(120), std::chrono::milliseconds(200)};
+    static constexpr int kCaretMoveAttempts =
+        static_cast<int>(sizeof(kCaretMovePollDelays) / sizeof(kCaretMovePollDelays[0]));
+    if (attempt < kCaretMoveAttempts) {
+        const auto alive = alive_;
+        std::thread([this, alive, plan, command, generation, attempt]() {
+            std::this_thread::sleep_for(kCaretMovePollDelays[attempt]);
+            if (!alive->load()) return;
+            RunOnUiThread([this, alive, plan, command, generation, attempt]() {
+                if (!alive->load() || is_shutdown_) return;
+                MoveCaretForVoiceEditDeletion(plan, command, generation, attempt + 1);
+            });
+        }).detach();
+        return;
+    }
+    LogCoordinatorLine("voice edit caret_move unconfirmed anchor_end=" +
+                       std::to_string(plan.anchor_end_utf16));
+    fail();
 }
 
 bool VoiceStickCoordinator::HandleVoiceTargetedEditIfMatched(const std::string& text) {
@@ -899,6 +1028,9 @@ bool VoiceStickCoordinator::HandleVoiceTargetedEditIfMatched(const std::string& 
     const auto reject = [this, language](VoiceTargetedFailure failure) {
         LogCoordinatorLine("voice targeted rejected reason=" +
                            std::string(VoiceTargetedFailureName(failure)));
+        // 批次 1 交付 D：失败路径统一一行 fail_stage 上下文。
+        LogVoiceEditFailure(VoiceTargetedFailureStage(failure),
+                            VoiceTargetedFailureName(failure));
         FinishRecognitionCycle();
         EnterReady("voice_targeted_rejected");
         ui_->ShowTimedMessage(Tr(VoiceTargetedFailureMessageId(failure), language),
@@ -955,11 +1087,34 @@ bool VoiceStickCoordinator::HandleVoiceTargetedEditIfMatched(const std::string& 
         reject(VoiceTargetedFailure::kVerifyUnavailable);
         return true;
     }
-    const auto plan =
-        PlanVoiceTargeted(command, last_injection_->remaining_text,
-                          last_injection_->pressed_enter, field.readable,
-                          NormalizeVoiceEditLineBreaks(field.tail_text), field.caret_at_end,
-                          field.selection_collapsed);
+    const std::string field_tail = NormalizeVoiceEditLineBreaks(field.tail_text);
+    // 批次 1（字段内定位）：读得到光标偏移（Fake/新 UIA）→ 多级锚定（P1a 光标
+    // 前缀/P1b 光标后缀/P1c 字段末尾/P2 唯一出现，零容错），失败码透传；读不到
+    // （旧 UIA 无偏移）→ 沿用 P1c 等价后缀校验路径（行为不变，兼容过渡）。
+    // TODO(win): 待 Windows 机编译+CTest 验证（偏移换算路径）。
+    VoiceTargetedPlan plan;
+    if (field.readable && field.caret_tail_utf16 != kCaretOutsideTail) {
+        const std::string anchored = last_injection_->pressed_enter
+                                         ? last_injection_->remaining_text + "\n"
+                                         : last_injection_->remaining_text;
+        const auto anchor_result =
+            LocateVoiceEditAnchor(field_tail, field.caret_tail_utf16,
+                                  field.selection_collapsed ? 0 : 1, anchored,
+                                  /*anchored_has_recorded_newline=*/last_injection_->pressed_enter);
+        if (!anchor_result.ok) {
+            reject(anchor_result.failure == VoiceEditAnchorFailure::kAnchorAmbiguous
+                       ? VoiceTargetedFailure::kAnchorAmbiguous
+                       : VoiceTargetedFailure::kFieldMismatch);
+            return true;
+        }
+        plan = PlanVoiceTargetedAnchored(command, last_injection_->remaining_text,
+                                         last_injection_->pressed_enter, field.readable,
+                                         field_tail, anchor_result.anchor);
+    } else {
+        plan = PlanVoiceTargeted(command, last_injection_->remaining_text,
+                                 last_injection_->pressed_enter, field.readable, field_tail,
+                                 field.caret_at_end, field.selection_collapsed);
+    }
     if (!plan.ok) {
         reject(plan.failure);
         return true;
@@ -967,7 +1122,9 @@ bool VoiceStickCoordinator::HandleVoiceTargetedEditIfMatched(const std::string& 
     // 防御：尾部窗口与 remaining/前缀长度不自洽（Fake/异常 UIA 行为）→ 安全拒绝。
     const std::size_t tail_prefix_utf16 = VoiceTargetedUtf16Length(plan.tail_prefix);
     const std::size_t expected_tail_utf16 =
-        tail_prefix_utf16 + plan.remaining_utf16_length + (plan.has_recorded_newline ? 1 : 0);
+        tail_prefix_utf16 + plan.remaining_utf16_length +
+        (plan.has_recorded_newline ? 1 : 0) +
+        VoiceTargetedUtf16Length(plan.anchor_after_text);
     if (field.tail_utf16_length < expected_tail_utf16) {
         reject(VoiceTargetedFailure::kFieldMismatch);
         return true;
@@ -1002,10 +1159,9 @@ void VoiceStickCoordinator::ExecuteVoiceTargetedEdit(const VoiceTargetedCommand&
             kVoiceEditToastMs);
         return;
     }
-    // tail 内偏移 = 前缀 UTF-16 长度 + remaining 内偏移（前缀/换行已在计划期确定性
-    // 拆解，天然覆盖 auto_enter 换行在尾部的布局；不假设额外长度在前缀）。
-    const std::size_t tail_relative =
-        VoiceTargetedUtf16Length(plan.tail_prefix) + plan.occurrence.utf16_start;
+    // tail 内偏移 = anchored 段起点 + remaining 内偏移（锚段/换行已在计划期确定性
+    // 拆解；P1c 下 anchor_start_utf16 == Utf16Length(tail_prefix)，与旧公式一致）。
+    const std::size_t tail_relative = plan.anchor_start_utf16 + plan.occurrence.utf16_start;
 
     // 1. 平台精确选区 + 读回实际选中文本；2. 逐字 == target 才继续。
     // 选区已尝试但任一步失败：尽力恢复安全光标（末尾），按不可验证拒绝（不修改）。
@@ -1047,15 +1203,18 @@ void VoiceStickCoordinator::ExecuteVoiceTargetedEdit(const VoiceTargetedCommand&
     } else {
         input_injector_->Paste(plan.action.replacement, /*press_enter=*/false);
     }
-    // 4/5. 延时后回 UI 线程恢复末尾光标 + 终验（stale generation 直接丢弃）。
-    const std::string expected_tail =
-        plan.tail_prefix + plan.new_remaining_text + (plan.has_recorded_newline ? "\n" : "");
+    // 4/5. 延时后回 UI 线程恢复光标 + 终验（stale generation 直接丢弃）。
+    // 批次 1：期望尾部按锚定结构（P1c 时 anchor_after_text=""，与旧公式逐字节一致）。
+    const std::string expected_tail = plan.tail_prefix + plan.new_remaining_text +
+                                      (plan.has_recorded_newline ? "\n" : "") +
+                                      plan.anchor_after_text;
     // 动作前尾部全文（终验窗末区分「动作未落地」与「真不符」用；此刻 last_injection_
-    // 仍是动作前记录，FinishRecognitionCycle 不清它）。
+    // 仍是动作前记录，FinishRecognitionCycle 不清它）。批次 1：含锚段之后的尾部
+    // 内容（P1c 时 anchor_after_text=""，与旧公式一致）。
     const std::string pre_action_tail =
         last_injection_.has_value()
             ? plan.tail_prefix + last_injection_->remaining_text +
-                  (plan.has_recorded_newline ? "\n" : "")
+                  (plan.has_recorded_newline ? "\n" : "") + plan.anchor_after_text
             : std::string();
     const auto alive = alive_;
     std::thread([this, alive, generation, plan, expected_tail, pre_action_tail]() {
@@ -1088,7 +1247,12 @@ void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(std::uint64_t generation,
     if (generation != voice_edit_generation_) return;  // stale：不覆盖新记录
     const UiLanguage language = EffectiveUiLanguage(ConfigSnapshot()->ui_language);
     if (targeted_field_editor_ != nullptr) {
-        targeted_field_editor_->MoveCaretToEnd();
+        // 批次 1：恢复光标到「编辑后 anchored 段末尾」（P1c = 文档末尾，与旧
+        // MoveCaretToEnd 行为一致；P1a/P1b/P2 = 段后内容之前）。
+        // TODO(win): 待 Windows 机编译+CTest 验证（MoveCaretTo 的 UIA 路径）。
+        const std::size_t restore = VoiceTargetedUtf16Length(expected_tail) -
+                                     VoiceTargetedUtf16Length(plan.anchor_after_text);
+        targeted_field_editor_->MoveCaretTo(restore);
     }
     // 终验：当前尾部文本以期望文本的**可重叠公共后缀**结尾（原 tail 是 512 窗口
     // 时，变长替换会使 expected_tail 超过窗口长——不能要求 tail 全长覆盖 expected）。
@@ -1141,6 +1305,7 @@ void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(std::uint64_t generation,
     // 窗末分类（2026-10-31）：尾部仍是动作前原样＝动作未落地（粘贴迟到/丢失）→
     // **记录保留**只提示——后缀不变量仍成立，重试命令要么直接生效、要么被 planner
     // 字段校验拦下，均不污染字段；变成第三种内容＝真不符 → 记录失效防陈旧偏移。
+    LogVoiceEditFailure("field_text", "result_unconfirmed");
     const bool still_old = VoiceTargetedTailOverlaps(tail, pre_action_tail);
     LogCoordinatorLine("voice targeted: verify unconfirmed expected_len=" +
                        std::to_string(expected_tail.size()) +
