@@ -937,6 +937,7 @@ public struct AppConfig {
         scope_seconds = \(voiceEdit.scopeSeconds)
         verify_mode = "\(voiceEdit.verifyMode.rawValue)"
         unverified_seconds = \(voiceEdit.unverifiedSeconds)
+        field_scope = \(voiceEdit.fieldScope.tomlValue)
         local_align_enabled = \(voiceEdit.localAlignEnabled.tomlValue)
         local_align_model = "\(voiceEdit.localAlignModel.tomlEscaped)"
         local_align_timeout_ms = \(voiceEdit.localAlignTimeoutMS)

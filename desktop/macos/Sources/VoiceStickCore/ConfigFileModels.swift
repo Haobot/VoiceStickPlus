@@ -158,6 +158,7 @@ public struct VoiceEditConfigFile: Decodable {
     public var scope_seconds: Int?
     public var verify_mode: String?
     public var unverified_seconds: Int?
+    public var field_scope: Bool?
     public var local_align_enabled: Bool?
     public var local_align_url: String?
     public var local_align_model: String?

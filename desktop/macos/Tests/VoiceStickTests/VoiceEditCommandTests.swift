@@ -24,6 +24,7 @@ private func expectDeletionPlan(_ result: VoiceEditPlanResult, count: Int, charC
                                 newlineCount: Int, remaining: String,
                                 verification: VoiceEditVerification,
                                 anchorEndUTF16: Int? = nil, needsCaretMove: Bool = false,
+                                newPressedEnter: Bool = false,
                                 _ name: String) {
     guard case .plan(let plan) = result else {
         check(false, "\(name)（期望删除计划，实际 \(result)）")
@@ -34,7 +35,7 @@ private func expectDeletionPlan(_ result: VoiceEditPlanResult, count: Int, charC
     checkEqual(plan.newlineCount, newlineCount, "\(name)：换行删除数")
     checkEqual(plan.newRemainingText, remaining, "\(name)：新 remainingText")
     checkEqual(plan.verification, verification, "\(name)：verified/unverified")
-    checkEqual(plan.newPressedEnter, false, "\(name)：新 pressedEnter")
+    checkEqual(plan.newPressedEnter, newPressedEnter, "\(name)：新 pressedEnter")
     // 批次 1 锚点字段（显式传入 anchorEndUTF16 才断言；unverified 计划 = -1/false）。
     if let anchorEndUTF16 {
         checkEqual(plan.anchorEndUTF16, anchorEndUTF16, "\(name)：anchorEndUTF16")
@@ -487,10 +488,121 @@ private func runVoiceEditPlannerTests() {
     }
 }
 
+// ---- 批次 2 交付 E：上下文撤销短语白名单 ----
+
+private func runVoiceEditUndoPhraseTests() {
+    check(VoiceEditParser.isUndoPhrase("撤销"), "undoPhrase: 撤销")
+    check(VoiceEditParser.isUndoPhrase("撤回"), "undoPhrase: 撤回")
+    check(VoiceEditParser.isUndoPhrase("撤销刚才的"), "undoPhrase: 撤销刚才的")
+    check(VoiceEditParser.isUndoPhrase("撤回刚才的"), "undoPhrase: 撤回刚才的")
+    check(VoiceEditParser.isUndoPhrase(" 撤销。"), "undoPhrase: 尾部标点+空白")
+    check(!VoiceEditParser.isUndoPhrase("删除刚才的"), "undoPhrase: 删除刚才的非撤销短语")
+    check(!VoiceEditParser.isUndoPhrase("清空"), "undoPhrase: 清空非撤销短语")
+    check(!VoiceEditParser.isUndoPhrase("撤销一下"), "undoPhrase: 撤销一下非白名单")
+    check(!VoiceEditParser.isUndoPhrase("全部删除"), "undoPhrase: 全部删除非白名单")
+}
+
+// ---- 批次 2 交付 D：定位失败降级为删光标前 N 字/句 ----
+
+private func runVoiceEditCaretFallbackTests() {
+    // 场景基线：remaining「你好世界」在字段「你好世」（用户删过「界」）中锚定全
+    // miss → field_mismatch/anchor_ambiguous。
+    let field = "你好世"
+    func fallbackPlan(action: VoiceEditAction, caret: Int, fieldScope: Bool = true,
+                      pressedEnter: Bool = false, maxChars: Int = 20) -> VoiceEditPlanResult {
+        VoiceEditPlanner.plan(
+            remainingText: "你好世界", pressedEnter: pressedEnter, action: action,
+            fieldText: field, caretUTF16: caret, selectionLength: 0,
+            maxChars: maxChars, verifyMode: .auto, unverifiedWindowOpen: false,
+            fieldScopeEnabled: fieldScope)
+    }
+
+    // 字：删光标前 N 个字（grapheme，clamp 到光标前可用字数）。
+    guard case .plan(let charsPlan) = fallbackPlan(
+        action: .deleteLastChars(2), caret: 3) else {
+        check(false, "fallback: 删 2 字应降级成功")
+        return
+    }
+    check(charsPlan.caretFallback, "fallback: 降级标记")
+    checkEqual(charsPlan.count, 2, "fallback: 字退格 2 次")
+    checkEqual(charsPlan.anchorEndUTF16, 3, "fallback: anchorEnd=光标")
+    checkEqual(charsPlan.needsCaretMove, false, "fallback: 不需移光标")
+    checkEqual(charsPlan.newRemainingText, "你好世界", "fallback: 注入记录不变（remaining）")
+    checkEqual(charsPlan.verification, .verified, "fallback: verified")
+
+    // clamp：N 超过光标前字数（光标 2、删 5）→ 只删 2。
+    guard case .plan(let clampPlan) = fallbackPlan(
+        action: .deleteLastChars(5), caret: 2) else {
+        check(false, "fallback: clamp 应成功")
+        return
+    }
+    checkEqual(clampPlan.count, 2, "fallback: clamp 到光标前 2 字")
+
+    // max_chars 纵深防御：N=30 超上限 20 → clamp 20（光标前有 3 字再 clamp 3）。
+    guard case .plan(let capPlan) = fallbackPlan(
+        action: .deleteLastChars(30), caret: 3, maxChars: 20) else {
+        check(false, "fallback: maxChars 应成功")
+        return
+    }
+    checkEqual(capPlan.count, 3, "fallback: maxChars 纵深防御")
+
+    // 句：对 field[0..<caret] 计算 trailingSentenceGraphemeCount。
+    guard case .plan(let sentencePlan) = VoiceEditPlanner.plan(
+        remainingText: "你好", pressedEnter: false, action: .deleteLastSentences(1),
+        fieldText: "你世界。", caretUTF16: 4, selectionLength: 0,
+        fieldScopeEnabled: true) else {
+        check(false, "fallback: 删 1 句应降级成功")
+        return
+    }
+    check(sentencePlan.caretFallback, "fallback: 句降级标记")
+    checkEqual(sentencePlan.count, 4, "fallback: 删 1 句=4 graphemes（整句 你世界。）")
+
+    // pressedEnter 保持：记录不变（newPressedEnter 不写 false）。
+    guard case .plan(let enterPlan) = fallbackPlan(
+        action: .deleteLastChars(1), caret: 3, pressedEnter: true) else {
+        check(false, "fallback: pressedEnter 应成功")
+        return
+    }
+    checkEqual(enterPlan.newPressedEnter, true, "fallback: newPressedEnter 保持 true")
+
+    // deleteAll 不降级。
+    expectDeletionFailure(fallbackPlan(action: .deleteAll, caret: 3),
+                          .fieldMismatch, "fallback: deleteAll 不降级")
+
+    // field_scope=false 不降级（批次 1 行为）。
+    expectDeletionFailure(fallbackPlan(action: .deleteLastChars(2), caret: 3, fieldScope: false),
+                          .fieldMismatch, "fallback: 开关关不降级")
+
+    // 选区非空不降级（selectionPresent 先拒绝，进不到定位器）。
+    let selectionResult = VoiceEditPlanner.plan(
+        remainingText: "你好世界", pressedEnter: false, action: .deleteLastChars(2),
+        fieldText: field, caretUTF16: 1, selectionLength: 2,
+        fieldScopeEnabled: true)
+    expectDeletionFailure(selectionResult, .selectionPresent, "fallback: 选区非空不降级")
+
+    // 光标在字段最前（caret=0）→ 光标前无可删 → 按原定位失败码拒绝。
+    expectDeletionFailure(fallbackPlan(action: .deleteLastChars(2), caret: 0),
+                          .fieldMismatch, "fallback: 光标前无可删拒绝")
+
+    // 定位成功时不降级（正常锚定路径不受影响）。
+    let anchored = VoiceEditPlanner.plan(
+        remainingText: "你好世界", pressedEnter: false, action: .deleteLastChars(2),
+        fieldText: "你好世界", caretUTF16: 4, selectionLength: 0,
+        fieldScopeEnabled: true)
+    guard case .plan(let anchoredPlan) = anchored else {
+        check(false, "fallback: 锚定成功应正常计划")
+        return
+    }
+    check(!anchoredPlan.caretFallback, "fallback: 锚定成功无降级标记")
+    checkEqual(anchoredPlan.newRemainingText, "你好", "fallback: 锚定成功正常记录更新")
+}
+
 // ---- 入口 ----
 
 func runVoiceEditCommandTests() {
     runVoiceEditParserPositiveTests()
     runVoiceEditParserNegativeTests()
     runVoiceEditPlannerTests()
+    runVoiceEditUndoPhraseTests()
+    runVoiceEditCaretFallbackTests()
 }

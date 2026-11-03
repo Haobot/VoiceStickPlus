@@ -221,6 +221,156 @@ public:
         }
         return true;
     }
+
+    // 批次 2（整框搜索域）：GetDocumentRange → GetText 读**全文**（上限
+    // kFieldScopeFullTextMaxUtf16 码元，超出置 full_truncated 且 full_text 为空）；
+    // 尾窗/选区/光标与 ReadFocusedField 同口径填充（一次 UIA 往返）。
+    // TODO(win): 待 Windows 机编译+CTest 验证（全文 GetText 路径）。
+    bool ReadFocusedFieldFullText(VoiceEditFieldState* out) override {
+        if (out == nullptr) return false;
+        *out = VoiceEditFieldState{};
+        ComPtr<IUIAutomation> automation;
+        HRESULT hr = CoCreateInstance(
+            __uuidof(CUIAutomation8), nullptr, CLSCTX_INPROC_SERVER,
+            __uuidof(IUIAutomation), reinterpret_cast<void**>(automation.Put()));
+        if (FAILED(hr) || !automation) {
+            LogApp("voice edit: CoCreateInstance(CUIAutomation8) failed hr=" +
+                   std::to_string(static_cast<long long>(hr)));
+            return false;
+        }
+        ComPtr<IUIAutomationElement> focused;
+        hr = automation->GetFocusedElement(focused.Put());
+        if (FAILED(hr) || !focused) {
+            LogApp("voice edit: GetFocusedElement failed hr=" +
+                   std::to_string(static_cast<long long>(hr)));
+            return false;
+        }
+        BOOL is_password = FALSE;
+        if (SUCCEEDED(focused->get_CurrentIsPassword(&is_password)) && is_password) {
+            out->is_password = true;
+            return false;
+        }
+        ComPtr<IUIAutomationTextPattern> text_pattern;
+        hr = focused->GetCurrentPatternAs(UIA_TextPatternId,
+                                          __uuidof(IUIAutomationTextPattern),
+                                          reinterpret_cast<void**>(text_pattern.Put()));
+        if (FAILED(hr) || !text_pattern) return false;
+        ComPtr<IUIAutomationTextRange> document;
+        hr = text_pattern->GetDocumentRange(document.Put());
+        if (FAILED(hr) || !document) {
+            LogApp("voice edit: GetDocumentRange failed hr=" +
+                   std::to_string(static_cast<long long>(hr)));
+            return false;
+        }
+        // 全文长度（文档 range Start 前进 INT_MAX 的实际移动数）。
+        ComPtr<IUIAutomationTextRange> measure;
+        hr = document->Clone(measure.Put());
+        if (FAILED(hr) || !measure) return false;
+        int doc_length = 0;
+        hr = measure->MoveEndpointByUnit(UIA_TextPatternRangeEndpoint_Start,
+                                         UIA_TextUnit_Character, INT_MAX, &doc_length);
+        if (FAILED(hr)) return false;
+        // 超上限：不读全文（避免大文档 GetText 阻塞 UI 线程），置 truncated。
+        if (static_cast<std::size_t>(doc_length) > kFieldScopeFullTextMaxUtf16) {
+            out->full_truncated = true;
+            out->full_utf16_length = static_cast<std::size_t>(doc_length);
+            return false;
+        }
+        BSTR full = nullptr;
+        hr = document->GetText(-1, &full);
+        if (FAILED(hr)) return false;
+        if (full != nullptr) {
+            const UINT length = SysStringLen(full);
+            out->full_text = Utf8FromUtf16(std::wstring_view(full, length));
+            out->full_utf16_length = length;
+            SysFreeString(full);
+        }
+        // 尾部窗口（与 ReadFocusedField 同一窗口定义；既有消费方保持可用）。
+        ComPtr<IUIAutomationTextRange> tail;
+        hr = document->Clone(tail.Put());
+        if (FAILED(hr) || !tail) return false;
+        int moved = 0;
+        hr = tail->MoveEndpointByUnit(UIA_TextPatternRangeEndpoint_Start,
+                                      UIA_TextUnit_Character, -kTailUtf16Limit, &moved);
+        if (FAILED(hr)) return false;
+        BSTR tail_text = nullptr;
+        hr = tail->GetText(-1, &tail_text);
+        if (FAILED(hr)) return false;
+        if (tail_text != nullptr) {
+            const UINT length = SysStringLen(tail_text);
+            out->tail_text = Utf8FromUtf16(std::wstring_view(tail_text, length));
+            out->tail_utf16_length = length;
+            SysFreeString(tail_text);
+        }
+        {
+            int compare_start = 0;
+            if (SUCCEEDED(tail->CompareEndpoints(UIA_TextPatternRangeEndpoint_Start,
+                                                 document.Get(),
+                                                 UIA_TextPatternRangeEndpoint_Start,
+                                                 &compare_start))) {
+                out->truncated = compare_start != 0;
+            }
+        }
+        // 选区/光标：与 ReadFocusedField 同段（全文坐标下另记绝对偏移）。
+        ComPtr<IUIAutomationTextRangeArray> selections;
+        hr = text_pattern->GetSelection(selections.Put());
+        if (FAILED(hr) || !selections) {
+            LogApp("voice edit: GetSelection failed hr=" +
+                   std::to_string(static_cast<long long>(hr)));
+            return false;
+        }
+        int selection_count = 0;
+        selections->get_Length(&selection_count);
+        if (selection_count == 0) return false;
+        if (selection_count != 1) {
+            out->readable = true;
+            out->selection_collapsed = false;
+            out->caret_at_end = false;
+            return true;
+        }
+        ComPtr<IUIAutomationTextRange> selection;
+        hr = selections->GetElement(0, selection.Put());
+        if (FAILED(hr) || !selection) return false;
+        int collapsed = 0;
+        hr = selection->CompareEndpoints(UIA_TextPatternRangeEndpoint_Start,
+                                         selection.Get(),
+                                         UIA_TextPatternRangeEndpoint_End, &collapsed);
+        if (FAILED(hr)) return false;
+        out->readable = true;
+        out->selection_collapsed = collapsed == 0;
+        if (out->selection_collapsed) {
+            int at_end = 0;
+            hr = selection->CompareEndpoints(UIA_TextPatternRangeEndpoint_End,
+                                             document.Get(),
+                                             UIA_TextPatternRangeEndpoint_End, &at_end);
+            if (FAILED(hr)) return false;
+            out->caret_at_end = at_end == 0;
+            // 绝对光标（整框域坐标）与尾窗相对偏移一起换算。
+            // TODO(win): 待 Windows 机编译+CTest 验证（UIA 偏移换算路径）。
+            ComPtr<IUIAutomationTextRange> caret_measure;
+            hr = selection->Clone(caret_measure.Put());
+            if (SUCCEEDED(hr) && caret_measure) {
+                int to_end = 0;
+                hr = caret_measure->MoveEndpointByUnit(
+                    UIA_TextPatternRangeEndpoint_Start, UIA_TextUnit_Character, INT_MAX,
+                    &to_end);
+                if (SUCCEEDED(hr) && to_end >= 0) {
+                    const std::size_t caret_abs =
+                        static_cast<std::size_t>(doc_length) -
+                        static_cast<std::size_t>(to_end);
+                    out->caret_abs_utf16 = caret_abs;
+                    const std::size_t window_start =
+                        static_cast<std::size_t>(doc_length) >= out->tail_utf16_length
+                            ? static_cast<std::size_t>(doc_length) - out->tail_utf16_length
+                            : 0;
+                    out->caret_tail_utf16 = caret_abs >= window_start
+                                                ? caret_abs - window_start
+                                                : kCaretOutsideTail;
+                }
+            }
+        }
+        return true;
+    }
 };
 
 class TargetedFieldEditorWin : public ITargetedFieldEditor {
@@ -373,6 +523,117 @@ public:
         hr = caret->MoveEndpointByUnit(
             UIA_TextPatternRangeEndpoint_End, UIA_TextUnit_Character,
             -(static_cast<int>(doc_len - abs)), &moved);
+        if (FAILED(hr)) return false;
+        return SUCCEEDED(caret->Select());
+    }
+
+    // 批次 2（整框搜索域）：以文档绝对偏移设置选区并读回（无尾窗换算）。
+    // TODO(win): 待 Windows 机编译+CTest 验证。
+    bool SelectAndReadBackAbsolute(std::size_t abs_start_utf16,
+                                   std::size_t length_utf16,
+                                   std::string* selected_text) override {
+        if (selected_text == nullptr) return false;
+        selected_text->clear();
+        ComPtr<IUIAutomation> automation;
+        HRESULT hr = CoCreateInstance(
+            __uuidof(CUIAutomation8), nullptr, CLSCTX_INPROC_SERVER,
+            __uuidof(IUIAutomation), reinterpret_cast<void**>(automation.Put()));
+        if (FAILED(hr) || !automation) return false;
+        ComPtr<IUIAutomationElement> focused;
+        hr = automation->GetFocusedElement(focused.Put());
+        if (FAILED(hr) || !focused) return false;
+        ComPtr<IUIAutomationTextPattern> text_pattern;
+        hr = focused->GetCurrentPatternAs(UIA_TextPatternId,
+                                          __uuidof(IUIAutomationTextPattern),
+                                          reinterpret_cast<void**>(text_pattern.Put()));
+        if (FAILED(hr) || !text_pattern) return false;
+        ComPtr<IUIAutomationTextRange> document;
+        hr = text_pattern->GetDocumentRange(document.Put());
+        if (FAILED(hr) || !document) return false;
+        ComPtr<IUIAutomationTextRange> measure;
+        hr = document->Clone(measure.Put());
+        if (FAILED(hr) || !measure) return false;
+        int doc_length = 0;
+        hr = measure->MoveEndpointByUnit(UIA_TextPatternRangeEndpoint_Start,
+                                         UIA_TextUnit_Character, INT_MAX, &doc_length);
+        if (FAILED(hr)) return false;
+        const std::size_t doc_len = static_cast<std::size_t>(doc_length);
+        if (abs_start_utf16 + length_utf16 > doc_len) return false;
+        ComPtr<IUIAutomationTextRange> selection;
+        hr = document->Clone(selection.Put());
+        if (FAILED(hr) || !selection) return false;
+        int moved = 0;
+        hr = selection->MoveEndpointByUnit(UIA_TextPatternRangeEndpoint_Start,
+                                           UIA_TextUnit_Character,
+                                           static_cast<int>(abs_start_utf16), &moved);
+        if (FAILED(hr) || static_cast<std::size_t>(moved) != abs_start_utf16) {
+            return false;
+        }
+        const std::size_t abs_end = abs_start_utf16 + length_utf16;
+        hr = selection->MoveEndpointByUnit(
+            UIA_TextPatternRangeEndpoint_End, UIA_TextUnit_Character,
+            -(static_cast<int>(doc_len - abs_end)), &moved);
+        if (FAILED(hr)) return false;
+        if (FAILED(selection->Select())) return false;
+        ComPtr<IUIAutomationTextRangeArray> selections;
+        hr = text_pattern->GetSelection(selections.Put());
+        if (FAILED(hr) || !selections) return false;
+        int selection_count = 0;
+        selections->get_Length(&selection_count);
+        if (selection_count != 1) return false;
+        ComPtr<IUIAutomationTextRange> actual;
+        hr = selections->GetElement(0, actual.Put());
+        if (FAILED(hr) || !actual) return false;
+        BSTR selected = nullptr;
+        hr = actual->GetText(-1, &selected);
+        if (FAILED(hr)) return false;
+        if (selected != nullptr) {
+            *selected_text =
+                Utf8FromUtf16(std::wstring_view(selected, SysStringLen(selected)));
+            SysFreeString(selected);
+        }
+        return true;
+    }
+
+    // 批次 2（整框搜索域）：光标折叠定位到文档绝对偏移。
+    // TODO(win): 待 Windows 机编译+CTest 验证。
+    bool MoveCaretToAbsolute(std::size_t abs_utf16) override {
+        ComPtr<IUIAutomation> automation;
+        HRESULT hr = CoCreateInstance(
+            __uuidof(CUIAutomation8), nullptr, CLSCTX_INPROC_SERVER,
+            __uuidof(IUIAutomation), reinterpret_cast<void**>(automation.Put()));
+        if (FAILED(hr) || !automation) return false;
+        ComPtr<IUIAutomationElement> focused;
+        hr = automation->GetFocusedElement(focused.Put());
+        if (FAILED(hr) || !focused) return false;
+        ComPtr<IUIAutomationTextPattern> text_pattern;
+        hr = focused->GetCurrentPatternAs(UIA_TextPatternId,
+                                          __uuidof(IUIAutomationTextPattern),
+                                          reinterpret_cast<void**>(text_pattern.Put()));
+        if (FAILED(hr) || !text_pattern) return false;
+        ComPtr<IUIAutomationTextRange> document;
+        hr = text_pattern->GetDocumentRange(document.Put());
+        if (FAILED(hr) || !document) return false;
+        ComPtr<IUIAutomationTextRange> measure;
+        hr = document->Clone(measure.Put());
+        if (FAILED(hr) || !measure) return false;
+        int doc_length = 0;
+        hr = measure->MoveEndpointByUnit(UIA_TextPatternRangeEndpoint_Start,
+                                         UIA_TextUnit_Character, INT_MAX, &doc_length);
+        if (FAILED(hr)) return false;
+        const std::size_t doc_len = static_cast<std::size_t>(doc_length);
+        if (abs_utf16 > doc_len) return false;
+        ComPtr<IUIAutomationTextRange> caret;
+        hr = document->Clone(caret.Put());
+        if (FAILED(hr) || !caret) return false;
+        int moved = 0;
+        hr = caret->MoveEndpointByUnit(UIA_TextPatternRangeEndpoint_Start,
+                                       UIA_TextUnit_Character,
+                                       static_cast<int>(abs_utf16), &moved);
+        if (FAILED(hr) || static_cast<std::size_t>(moved) != abs_utf16) return false;
+        hr = caret->MoveEndpointByUnit(
+            UIA_TextPatternRangeEndpoint_End, UIA_TextUnit_Character,
+            -(static_cast<int>(doc_len - abs_utf16)), &moved);
         if (FAILED(hr)) return false;
         return SUCCEEDED(caret->Select());
     }

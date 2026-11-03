@@ -521,11 +521,82 @@ DeleteAmount ComputeDeleteAmount(const VoiceEditCommand& command, std::string_vi
 
 }  // namespace
 
+// 批次 2（交付 E）：上下文撤销短语白名单（现属 deleteAllForms 子集）——协调器
+// 据此在原「删掉刚才整句」语义之前优先尝试还原上一次语音修改。归一化与解析同口径。
+bool IsVoiceEditUndoPhrase(std::string_view text) {
+    const std::string normalized = NormalizeCommandText(text);
+    return normalized == "撤销" || normalized == "撤回" || normalized == "撤销刚才的" ||
+           normalized == "撤回刚才的";
+}
+
+// 批次 2（交付 D）光标前降级计划：字段前缀 [0, caret) 上计算删除量——
+//「删掉最后N个字」= 删光标前 N 个字（grapheme，clamp 到光标前可用字数，max_chars
+// 纵深防御不变）；「删掉最后N句」= 尾句 grapheme 数对 field[0..<caret] 计算。
+// 光标前无可删 → 按原定位失败码拒绝。返回计划的 new_remaining/new_pressed_enter
+// 保持原值（注入记录不变）、caret_fallback=true。
+VoiceEditPlan CaretFallbackPlan(std::string_view remaining_text, bool pressed_enter,
+                                const VoiceEditCommand& command,
+                                std::string_view field_text, std::size_t caret_utf16,
+                                VoiceEditRejectReason fallback_failure) {
+    VoiceEditPlan plan;
+    plan.action = command.action;
+    // 光标前前缀（UTF-16 偏移 → 字节偏移后切 UTF-8）。
+    const auto byte_offset_at = [](std::string_view text,
+                                   std::size_t target_utf16) -> std::size_t {
+        std::size_t utf16_offset = 0;
+        std::size_t pos = 0;
+        while (pos < text.size()) {
+            if (utf16_offset >= target_utf16) return pos;
+            const auto decoded = utf8::DecodeUtf8(text, pos);
+            utf16_offset += decoded.value <= 0xFFFF ? 1 : 2;
+            pos += decoded.length;
+        }
+        return text.size();
+    };
+    const std::size_t clamped_caret = std::min(caret_utf16, Utf16Length(field_text));
+    const std::string prefix(field_text.substr(
+        0, byte_offset_at(field_text, clamped_caret)));
+    int graphemes = 0;
+    int sentences = 0;
+    if (command.action == VoiceEditAction::kDeleteLastChars) {
+        const auto spans = SplitGraphemes(prefix);
+        graphemes = static_cast<int>(
+            std::min<std::size_t>(spans.size(), static_cast<std::size_t>(command.count)));
+    } else {
+        // 句：对前缀算尾句 grapheme 数。
+        const auto sentence_counts = VoiceEditSentenceGraphemes(prefix);
+        int take = std::min<std::size_t>(sentence_counts.size(),
+                                         static_cast<std::size_t>(command.count));
+        for (int i = static_cast<int>(sentence_counts.size()) - take;
+             i < static_cast<int>(sentence_counts.size()); ++i) {
+            graphemes += static_cast<int>(sentence_counts[static_cast<std::size_t>(i)]);
+        }
+        sentences = take;
+    }
+    if (graphemes <= 0) {
+        RejectPlan(&plan, fallback_failure);
+        return plan;
+    }
+    plan.ok = true;
+    plan.delete_graphemes = graphemes;
+    plan.deleted_sentences = sentences;
+    plan.delete_newline = false;
+    plan.backspace_count = graphemes;
+    plan.new_remaining_text = std::string(remaining_text);  // 注入记录不变
+    plan.new_pressed_enter = pressed_enter;
+    plan.verified = true;
+    plan.anchor_end_utf16 = clamped_caret;
+    plan.needs_caret_move = false;
+    plan.caret_fallback = true;
+    return plan;
+}
+
 VoiceEditPlan PlanVoiceEdit(std::string_view remaining_text, bool pressed_enter,
                             const VoiceEditCommand& command,
                             const VoiceEditFieldState& field,
                             VoiceEditVerifyMode verify_mode,
-                            bool unverified_allowed) {
+                            bool unverified_allowed,
+                            bool field_scope_enabled) {
     VoiceEditPlan plan;
     plan.action = command.action;
     // 行尾归一化：UIA TextPattern 用 \r 作段分隔，记录里的 auto_enter 换行是 \n。
@@ -600,10 +671,23 @@ VoiceEditPlan PlanVoiceEdit(std::string_view remaining_text, bool pressed_enter,
                               field.selection_collapsed ? 0 : 1, anchored,
                               /*anchored_has_recorded_newline=*/pressed_enter);
     if (!anchor_result.ok) {
-        RejectPlan(&plan,
-                   anchor_result.failure == VoiceEditAnchorFailure::kAnchorAmbiguous
-                       ? VoiceEditRejectReason::kAnchorAmbiguous
-                       : VoiceEditRejectReason::kTextMismatch);
+        const VoiceEditRejectReason anchor_code =
+            anchor_result.failure == VoiceEditAnchorFailure::kAnchorAmbiguous
+                ? VoiceEditRejectReason::kAnchorAmbiguous
+                : VoiceEditRejectReason::kTextMismatch;
+        // 批次 2（交付 D）：定位失败且选区折叠且 field_scope 开 → 降级为删光标前
+        // N 字/句（deleteAll 不降级——不知道该删什么）。降级计划 anchor_end =
+        // 光标、needs_caret_move=false、注入记录不变（new_remaining/enter 保持原值）。
+        if (field_scope_enabled && field.selection_collapsed &&
+            field.caret_tail_utf16 != kCaretOutsideTail &&
+            (command.action == VoiceEditAction::kDeleteLastChars ||
+             command.action == VoiceEditAction::kDeleteLastSentences)) {
+            const auto fallback =
+                CaretFallbackPlan(remaining, pressed_enter, command, field_body,
+                                  field.caret_tail_utf16, anchor_code);
+            if (fallback.ok) return fallback;
+        }
+        RejectPlan(&plan, anchor_code);
         return plan;
     }
     // 已记录换行以「锚段实际覆盖 remaining+1」判定（P1c 裸回落 = 用户已手删换行）。

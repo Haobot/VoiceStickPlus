@@ -240,8 +240,10 @@ void VoiceStickCoordinator::Shutdown() {
     active_session_started_at_ = {};
     pending_paste_state_ = {};
     debug_audio_recorder_.Discard();
-    // 语音编辑：退出清理最近注入记录（Doc §6.1）。
+    // 语音编辑：退出清理最近注入记录（Doc §6.1）与批次 2 追问/撤销上下文。
     last_injection_.reset();
+    pending_clarification_.reset();
+    last_voice_edit_.reset();
     ++voice_edit_generation_;
     ble_->Shutdown();
 }
@@ -271,7 +273,10 @@ void VoiceStickCoordinator::UpdateConfig(AppConfig config) {
     }
     // 语音编辑（Doc §6.1 清理项）：配置更新（输出目标/auto_enter/开关等）后作废最近一次
     // 注入记录，避免用旧配置口径的 pressedEnter/目标继续执行；代际 +1 使在途异步回调失效。
+    // 批次 2：追问 pending 与撤销记录一并失效（updateConfig 清除时机）。
     last_injection_.reset();
+    pending_clarification_.reset();
+    last_voice_edit_.reset();
     ++voice_edit_generation_;
     live_air_mouse_params_.clear();  // config_ 变化，运行期 live 参数跟随回退到 AirMouseParamsForDevice
     translator_ = LLMTranslationClient(*ConfigSnapshot());
@@ -2444,6 +2449,9 @@ void VoiceStickCoordinator::CancelShortRecording() {
 void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
     if (pasted_final_text_) return;
     pasted_final_text_ = true;
+    // 批次 2 交付 B：追问「第几个」的序数应答最优先（早于旧解析器与 targeted
+    // 拦截；非应答一律清 pending 放行正常链路）。
+    if (HandlePendingClarificationIfMatched(text)) return;
     // 语音编辑（Doc/Plan/voice-edit-commands.md §5.6）：入口拦截——命中指令即接管本轮，
     // 不保存精修回退文本、不进入精修/翻译/粘贴。命中处理内部自行 FinishRecognitionCycle
     // + EnterReady，并异步退格。

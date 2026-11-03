@@ -775,6 +775,9 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
                 config.voice_edit.unverified_seconds = std::clamp(
                     *value, kVoiceEditUnverifiedSecondsMin, kVoiceEditUnverifiedSecondsMax);
             }
+            if (auto value = TomlBool(*voice_edit, "field_scope")) {
+                config.voice_edit.field_scope = *value;
+            }
         }
         // 顶层 [hotword_corrections]：热词纠错映射（错误文本 -> 正确文本）。
         if (const auto* corrections = table["hotword_corrections"].as_table()) {
@@ -1144,6 +1147,7 @@ void AppConfig::WriteTo(const std::filesystem::path& path) const {
     output << "verify_mode = \""
            << std::string(VoiceEditVerifyModeName(voice_edit.verify_mode)) << "\"\n";
     output << "unverified_seconds = " << voice_edit.unverified_seconds << "\n";
+    output << "field_scope = " << (voice_edit.field_scope ? "true" : "false") << "\n";
     output << "\n[license]\n";
     output << "serial = \"" << TomlEscape(license.serial) << "\"\n";
     if (license.trial_anchor_days) {  // 未锚定（试用未开始）不落盘

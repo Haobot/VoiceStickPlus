@@ -1011,3 +1011,45 @@ completePendingPaste 注入「。」）与 C 交叉——注入文本恰为「�
 保留、「今天很好。」照剥）+ macOS 协调器级「单字「。」句中注入不剥」；
 `swift run VoiceStickTests` PASSED 1850/1850，Windows 纯逻辑本机 clang 链接运行全绿
 （另过 ASan/UBSan），MSVC/CTest 同上待 Windows 机。
+
+### 17.9 批次 2：追问「第几个」+ 整个输入框可编辑 + 上下文撤销 + 尾删光标降级（2026-11-03 实现，feat/voice-edit-followup）
+
+用户验收批次 1 后的两项新需求：① 目标多处时提示「第几个」，用户紧接着说「第二个」直接执行（不再当文本上屏；位置词从只认第一个/最后一个扩展到第 N 个/倒数第 N 个）；② 修改不再局限于最近一次语音输入（被手改过的注入、更早几轮的口述、手打文字都可改）。安全论证：执行链三道保护（AX/UIA 选区读回逐字确认、单次动作、执行后文本终验）本身保证「改的就是此刻输入框里那个词」，不依赖注入记录；注入记录只承担作用域与自然简写门控。新增真实风险是误触发（口述恰好是「把X改成Y」句式且 X 在框内），缓解 = 撤销（交付 E）+ 配置开关（交付 A `[voice_edit].field_scope`，默认 true，false 完全回到批次 1 行为）。
+
+**A. 搜索域解析**（新纯逻辑 `VoiceTargetedDomain.swift` / `voice_targeted_domain.{h,cc}`，规则表可单测）：
+输入 (command, recent?, fieldText)，recent = 协调器过完批次 1 L0 闸（记录/时间窗/同应用）且 `VoiceEditAnchor.locate` 锚定成功：
+
+| 指令形态 | 搜索域 |
+|---|---|
+| 无作用域、无位置 | Tier 1：recent 可用且 remaining 内 X 恰 1 处 → lastInjection；否则整框 |
+| 显式作用域「刚才的X」 | recent 可用 → lastInjection（X 不在其中 → notFound，不回落）；不可用（被改过/歧义/过期/无记录）→ 整框 |
+| 无作用域 + 位置（第N个） | 整框按文档顺序 |
+| 显式作用域 + 位置 | recent 可用 → lastInjection；不可用 → 整框 |
+
+- 唯一 → 执行；多处 → **追问**（交付 B，域内编号）；越界 → 「只有 N 处，请说第 1 到第 N 个」（`position_out_of_range`）；整框域 >200,000 UTF-16 → `field_too_long`（「输入框文字过长…」；Tier 1/最近输入域不受此限，沿用 2M）。
+- 位置限定扩展：`VoiceTargetedPosition` 增 `.ordinal(Int)`/`.fromEnd(Int)`（`.last` 保留枚举位等价 `.fromEnd(1)`，既有向量零改写——两端同此选择）；consumePosition 支持第N个/第N处/倒数第N个/倒数第N处，N = 中文一…九十九（含「十一」「二十三」「两」）+ 阿拉伯 1–99（全角转半角）；越上限/零/负不识别（进目标）。
+- **C++ 映射差异**：C++ 枚举无关联值 → `VoiceTargetedPosition` 增 `kOrdinal/kFromEnd` 枚举位 + `VoiceTargetedCommand::position_n`（1 基 N）承载；Swift 关联值 ↔ C++ 枚举位+侧车字段，双端向量同表。
+- 自然简写门控：X 在最近注入**或**整框存在 → 接管（整框存在性需读一次字段）；都不存在 → 本地对齐兜底（仍只针对最近注入）→ 普通文本。
+- 整框域不要求注入记录、不检查 120s 窗/应用切换（作用对象是当前前台输入框）；仍要求 voice_edit 开、focused_app、AX 权限、字段可读。
+
+**B. 追问「第几个」**：歧义时存 `pendingClarification{command, domain, occurrenceCount, app, createdAt, generation}`，弹「找到 N 处X，请说第几个」4 秒（新 L10nKey `voiceTargetedClarifyPrompt`，%d+%@ 格式助手）。`finishWithFinalText` 最前面插 `handlePendingClarificationIfMatched`（早于旧解析器与 targeted 拦截；非应答一律清 pending 放行，标点独词路径不受影响——收口仍在 finishWithRefinedText）。序数应答解析新纯函数 `VoiceEditOrdinalReplyParser`（`voice_targeted_domain.cc ParseVoiceEditOrdinalReply`）：第N个/处/N、第N个X（X==pending 目标）、倒数第N、最后一个/那个/一处（「最后那个」尾缀剥「那个」后的裸「最后」同收）、裸数字（中文一…二十/阿拉伯 1–20，仅 pending 期内误触面极小）；前缀就/就是/选择/选/是/要/改、尾缀吧/啊/呀/的/就行/那个各剥一层；剥尾部标点；取消词取消/算了/不改了/不用了/不要了；其余 nil 放行。应答吞轮，**执行前重过 L0 + 读字段 + 锚定 + 同域重算出现次数**：变化 → 「文本已变化」清 pending；越界 → 「只有 N 处」**保留** pending；一致 → 合成 `.ordinal(n)` 走原 verified 链。清除时机：执行/取消/超时（20s）/新注入/其他语音编辑指令/前台变化（应答时判）/updateConfig；代际守卫。
+
+**C. 整框执行与光标、记录维护**：整框域选区 = occurrence 的字段绝对 UTF-16 起点；读回逐字确认、单次动作、终验期望 = 字段全文按该 occurrence 替换/删除后的文本、still_old 分类全沿用批次 1 链（Windows 绝对坐标路径用全文精确相等，尾窗路径保留可重叠后缀比较）。**光标恢复统一「原位置 + 平移」纯函数**（原光标 ≤区间起点不变 / ≥终点加长度差 / 区间内→编辑后区间末尾；`VoiceTargetedCursorMath`/`VoiceTargetedRestoredCaret`）：末尾追加+唯一匹配与批次 1「恢复段末」**完全一致**（回归底线，既有用例零改动）；**有意变化**——P1b（光标在段首）/段中由「移到段末」改为留在原位附近（T1 全链路等既有用例恢复值不变，因光标都在段末/区间后）。注入记录维护三情形（终验成功后）：整框编辑区间完全落在 remaining 内 → 同步映射更新（`MapWholeFieldEditToRemaining`）；完全在锚段外 → 不变；跨界（含吃掉已记录换行）→ 作废；计划时刻不可定位 → 不变。
+
+**D. 尾删光标降级**：`VoiceEditPlanner.plan`/`PlanVoiceEdit` 增 `fieldScopeEnabled`（默认 false = 批次 1 行为）；verified 定位失败（field_mismatch/anchor_ambiguous）且选区折叠且开关开 → 「删掉最后N个字」= 删光标前 N 个字（grapheme、clamp 到光标前可用字数、max_chars 纵深防御不变）、「删掉最后N句」= `trailingSentenceGraphemeCount` 对 field[0..<caret]；**deleteAll 不降级**（不知道该删什么）；光标前无可删按原失败码拒绝。降级计划 `anchorEndUTF16=光标、needsCaretMove=false、newRemaining/newPressedEnter 保持原值（注入记录不变）、caretFallback=true`；日志 `voice_edit tail_caret_fallback=1`。文案修正：尾删通道 `voiceEditFieldMismatch`「光标位置已变化，未删除」→「刚才的输入已被修改，未删除」（批次 1 多级锚定后旧文案语义不符；EN 同步）。
+
+**E. 上下文撤销**：每次成功语音编辑（targeted 替换/删除、尾删）记 `lastVoiceEdit{postEditFieldText, 编辑后区间(start,len), insertedText, originalText, preEditRemainingText?, app, createdAt, generation}`（尾删在退格完成回调读一次字段全文得 postEdit——读不到不记，撤销不可用；unverified 计划不记）。「撤销/撤回/撤销刚才的/撤回刚才的」（`isUndoPhrase`/`IsVoiceEditUndoPhrase` 白名单）在协调器 deleteAll 前分流：记录 ≤30 秒 + 同前台 + 字段可读且**当前字段全文严格等于 postEditFieldText**（宁拒勿错）→ 执行还原（选中编辑后区间/删除类折叠 → 读回确认（替换类逐字==插入文本）→ 粘贴原文本 → 终验==编辑前全文 → 恢复 remainingText → 「已撤销修改」）；字段已变化 → 「文本已变化，无法撤销」（记录作废）；其余（无记录/超时/换应用/不可读）→ **原地落回原 deleteAll 语义**（行为不变）。一级撤销：记录进入执行即清（撤销不可再撤销）；链式——撤销后再撤销还原更早一次编辑（最近一次成功编辑的锚点）；新注入/updateConfig 清记录。日志 `voice_edit undo result=ok|failure code=…`。
+
+**有意行为变化清单**（除注明外均为 field_scope=true 且非越界/超长路径）：
+1. 「把X改成Y/删除X」无位置限定、最近输入中 X 非 1 处或不存在时：从「拒绝（ambiguous/not_found）」改为**整框搜索**——唯一执行、多处追问；批次 1 验收 C2（注入被手改后 field_mismatch 拒绝）修复。field_scope=false 时全部保持批次 1 逐字节语义（歧义仍走旧 `voiceTargetedAmbiguous` toast——该 key 因此保留）。
+2. 显式「刚才的X」在注入不可定位（被改过/歧义/过期/无记录）时：从 field_mismatch/anchor_ambiguous/no_injection/scope_expired 拒绝 → 退回整框（仍找不到才 notFound）。
+3. 光标恢复：P1b/段中情形从「移到段末」→「原位置+平移」（末尾追加情形不变，回归底线）。
+4. 尾删定位失败且选区折叠：从 field_mismatch 拒绝 → 删光标前 N 字/句（deleteAll 除外）；`voiceEditFieldMismatch` 文案改「刚才的输入已被修改，未删除」。
+5. 「撤销/撤回」30 秒内优先还原上一次语音修改（此前恒删掉刚才整句；不满足条件时仍删整句）。
+6. 位置词新形态（第N个/倒数第N个）进入指令语法；位置越界新失败码 `position_out_of_range` + 「只有 N 处」提示。
+7. 整框域新失败码 `field_too_long`（>200k UTF-16）。
+8. 新文案：voiceTargetedClarifyPrompt/ClarifyCancelled/ClarifyChanged/OrdinalRange/UndoOk/UndoChanged/voiceEditFieldTooLong（EN/ZH 双端双表）；设置页语音编辑提示更新为整框语义（「替换/删除X默认搜索整个输入框（刚说的优先）；多处匹配会追问第几个；说撤销可还原上一次语音修改」）。
+
+**实现落点（双端同构）**：macOS `VoiceTargetedDomain.swift`（域+序数+光标平移）/`VoiceEditOrdinalReply.swift`（应答）+ `VoiceTargetedEdit.swift`（位置/选择器/失败码）+ `VoiceEditCommand.swift`（尾删降级+isUndoPhrase）+ 协调器（pending/undo 状态机、TakeOver/域执行/记录维护/光标平移接线）；Windows `voice_targeted_domain.{h,cc}`（域+序数应答+光标平移+映射，**单文件**承载——与 macOS 双文件的落点差异）+ `voice_targeted_edit`/`voice_edit_command`/`voice_edit_anchor` 同构 + 协调器 tail.cc（`TakeOverTargetedCommand` 接管主体、`HandlePendingClarificationIfMatched`/`ExecuteClarifiedReply`、`TryHandleVoiceEditUndo`/`Execute`/`FinalizeVoiceEditUndo`、`ComputeTailUndoIngredients`/`RecordTail*`、`ApplyTargetedRecordMaintenance`）+ `focus_text_reader`（`ReadFocusedFieldFullText` 全文 ≤200k + `SelectAndReadBackAbsolute`/`MoveCaretToAbsolute` + `VoiceEditFieldState` 增 full_text/full_truncated/caret_abs_utf16）+ `app_config` field_scope + localization 7 新文案。
+
+**测试（双端同向量）**：macOS 新增 `VoiceTargetedDomainTests`（域规则表/光标平移/序数应答全形态）+ 位置/越界计划向量 + 尾删降级向量 10 组 + 撤销短语 9 组 + 协调器级三套件（追问 11 组、整框+记录维护+超长+光标 8 组、撤销 5 组）+ 既有用例按有意变化更新（手工改动 notFound、真不符后整框 notFound、锚定歧义退整框追问、未落地重试 select(2,0)、对齐回退多一次门控读、T5b/T15 field_scope=false 回归）；`swift run VoiceStickTests` PASSED 2116/2116（批次 1 基线 1850）。Windows 纯逻辑同向量（位置/域/光标/应答/撤销短语/降级七组，本机 clang++ 链接临时 main 全绿，src 四纯逻辑文件 -Wall 零警告）；协调器级（`_WIN32` Fake 补全文读取/绝对选区）与平台 UIA 路径 **待 Windows 机 MSVC 编译+CTest 验证**（TODO(win) 标注：focus_text_reader 全文/绝对选区、coordinator tail 域解析与 undo 接线、localization/settings/CMake、core_tests WIN32 段）。

@@ -112,7 +112,9 @@ public enum VoiceEditVerification: String, Equatable {
 
 /// 删除计划（方案 §6.3 输出）：count = 退格次数（含尾随换行），执行后写回
 /// LastInjection.remainingText / pressedEnter。批次 1 起 verified 计划附带
-/// anchorEndUTF16/needsCaretMove（anchored 段终点 + 光标是否需先移过去）。
+/// anchorEndUTF16/needsCaretMove（anchored 段终点 + 光标是否需先移过去）；
+/// 批次 2（交付 D）起 caretFallback 标记「定位失败降级为删光标前 N 字/句」
+///（此时 newRemainingText/newPressedEnter 保持原值 = 注入记录不变）。
 public struct VoiceEditDeletionPlan: Equatable {
     /// 退格注入次数（charCount + newlineCount）。
     public let count: Int
@@ -131,11 +133,15 @@ public struct VoiceEditDeletionPlan: Equatable {
     /// 光标不在 anchorEnd 时为 true：协调器须先移光标（移动失败零退格）。
     /// unverified 计划恒 false（盲退格窗口语义不变）。
     public let needsCaretMove: Bool
+    /// 批次 2（交付 D）：定位失败且选区折叠且 field_scope 开时，降级为删光标前
+    /// N 字/句（anchorEndUTF16 = 光标、needsCaretMove = false、注入记录不变）。
+    public let caretFallback: Bool
 
     public init(count: Int, charCount: Int, newlineCount: Int,
                 newRemainingText: String, newPressedEnter: Bool,
                 verification: VoiceEditVerification,
-                anchorEndUTF16: Int = -1, needsCaretMove: Bool = false) {
+                anchorEndUTF16: Int = -1, needsCaretMove: Bool = false,
+                caretFallback: Bool = false) {
         self.count = count
         self.charCount = charCount
         self.newlineCount = newlineCount
@@ -144,6 +150,7 @@ public struct VoiceEditDeletionPlan: Equatable {
         self.verification = verification
         self.anchorEndUTF16 = anchorEndUTF16
         self.needsCaretMove = needsCaretMove
+        self.caretFallback = caretFallback
     }
 }
 
@@ -207,8 +214,7 @@ public enum VoiceEditParser {
     ///   - text: ASR final 原文（可含尾部标点/首尾空白/全角数字）。
     ///   - defaultChars: 单独说「删除」时删几个字（配置 default_chars）。
     ///   - maxChars: 显式数量上限（配置 max_chars），越界一律不识别。
-    public static func parse(_ text: String, defaultChars: Int = 1, maxChars: Int = 20) -> VoiceEditCommand? {
-        let limit = max(1, maxChars)
+    public static func parse(_ text: String, defaultChars: Int = 1, maxChars: Int = 20) -> VoiceEditCommand? {        let limit = max(1, maxChars)
         let defaultCount = min(max(1, defaultChars), limit)
         let normalized = normalize(text)
         guard !normalized.isEmpty, normalized.count <= kVoiceEditMaxCommandChars else { return nil }
@@ -238,6 +244,16 @@ public enum VoiceEditParser {
         // 4) 把字句/后置动词式：把最后两个字删掉 / 最后两个字删掉 / 把最后一句删掉。
         if let command = matchTrailingVerb(chars, limit: limit) { return command }
         return nil
+    }
+
+    /// 批次 2 交付 E：上下文撤销短语白名单（现属 deleteAllForms 子集）——协调器
+    /// 据此在原「删掉刚才整句」语义之前优先尝试还原上一次语音修改（30 秒内、
+    /// 同应用、字段与编辑后状态严格一致才执行；不满足则回落原语义）。
+    /// 归一化口径与 parse 相同（首尾空白/尾部标点/全角数字/内部空白）。
+    public static func isUndoPhrase(_ text: String) -> Bool {
+        let normalized = normalize(text)
+        return normalized == "撤销" || normalized == "撤回"
+            || normalized == "撤销刚才的" || normalized == "撤回刚才的"
     }
 
     /// 句尾最后 N 句的 grapheme 数（供计划算法使用；无标点时整段算一句）。
@@ -455,6 +471,9 @@ public enum VoiceEditPlanner {
     ///     整段删除按方案 §6.4 属例外；sentence 的单位是句不是字）。
     ///   - verifyMode: 配置 verify_mode。
     ///   - unverifiedWindowOpen: auto 模式下 now-injectedAt <= unverified_seconds。
+    ///   - fieldScopeEnabled: 批次 2（交付 D）——verified 定位失败（field_mismatch/
+    ///     anchor_ambiguous）且选区折叠时降级为删光标前 N 字/句（deleteAll 不降级）。
+    ///     false（默认）= 批次 1 行为（定位失败即拒绝）。
     public static func plan(
         remainingText: String,
         pressedEnter: Bool,
@@ -464,7 +483,8 @@ public enum VoiceEditPlanner {
         selectionLength: Int? = nil,
         maxChars: Int = 20,
         verifyMode: VoiceEditVerifyMode = .auto,
-        unverifiedWindowOpen: Bool = false
+        unverifiedWindowOpen: Bool = false,
+        fieldScopeEnabled: Bool = false
     ) -> VoiceEditPlanResult {
         let remaining = Array(remainingText)
         guard !remaining.isEmpty else { return .failure(.noInjection) }
@@ -504,10 +524,30 @@ public enum VoiceEditPlanner {
             fieldText: field, caretUTF16: caret, selectionLength: selection
         )
         guard case .anchored(let anchor) = anchorResult else {
+            let anchorCode: VoiceEditFailureCode
             if case .failure(let code) = anchorResult {
-                return .failure(code == .anchorAmbiguous ? .anchorAmbiguous : .fieldMismatch)
+                anchorCode = code == .anchorAmbiguous ? .anchorAmbiguous : .fieldMismatch
+            } else {
+                anchorCode = .fieldMismatch
             }
-            return .failure(.fieldMismatch)
+            // 批次 2（交付 D）：定位失败且选区折叠且 field_scope 开 → 降级为删
+            // 光标前 N 字/句（deleteAll 不降级——不知道该删什么）。降级计划
+            // anchorEndUTF16 = 光标、needsCaretMove = false、注入记录不变。
+            if fieldScopeEnabled, selection == 0, caret >= 0,
+               case .deleteLastChars = action {
+                return caretFallbackPlan(
+                    remainingText: remainingText, pressedEnter: pressedEnter,
+                    action: action, fieldText: field, caretUTF16: caret,
+                    maxChars: maxChars, fallbackFailure: anchorCode)
+            }
+            if fieldScopeEnabled, selection == 0, caret >= 0,
+               case .deleteLastSentences = action {
+                return caretFallbackPlan(
+                    remainingText: remainingText, pressedEnter: pressedEnter,
+                    action: action, fieldText: field, caretUTF16: caret,
+                    maxChars: maxChars, fallbackFailure: anchorCode)
+            }
+            return .failure(anchorCode)
         }
         // 已记录换行以「锚段实际覆盖 remaining+1」判定（P1c 裸回落 = 用户已手删
         // 换行 → 0；等价旧「pressedEnter && 字段以 \n 结尾」在锚定成立时的结论）。
@@ -579,6 +619,44 @@ public enum VoiceEditPlanner {
             newRemainingText: String(remaining.dropLast(deleteChars)),
             newPressedEnter: false,
             verification: .unverified
+        ))
+    }
+
+    /// 批次 2（交付 D）光标前降级计划：字段前缀 [0, caret) 上计算删除量——
+    /// 「删掉最后N个字」= 删光标前 N 个字（grapheme，clamp 到光标前可用字数，
+    /// max_chars 纵深防御不变）；「删掉最后N句」= trailingSentenceGraphemeCount
+    /// 对 field[0..<caret] 计算。光标前无可删 → 按原定位失败码拒绝。
+    /// newRemainingText/newPressedEnter 保持原值 = 注入记录不变。
+    private static func caretFallbackPlan(
+        remainingText: String, pressedEnter: Bool, action: VoiceEditAction,
+        fieldText: String, caretUTF16: Int, maxChars: Int,
+        fallbackFailure: VoiceEditFailureCode
+    ) -> VoiceEditPlanResult {
+        let fieldUnits = Array(fieldText.utf16)
+        let clampedCaret = min(max(0, caretUTF16), fieldUnits.count)
+        let prefix = String(decoding: fieldUnits[0..<clampedCaret], as: UTF16.self)
+        let targetChars: Int
+        switch action {
+        case .deleteLastChars(let count):
+            targetChars = min(max(0, count), max(1, maxChars))
+        case .deleteLastSentences(let count):
+            targetChars = VoiceEditParser.trailingSentenceGraphemeCount(
+                prefix, sentences: max(0, count))
+        case .deleteAll:
+            return .failure(fallbackFailure)   // 不降级（调用方已过滤，防御）
+        }
+        let deleteChars = min(targetChars, prefix.count)
+        guard deleteChars > 0 else { return .failure(fallbackFailure) }
+        return .plan(VoiceEditDeletionPlan(
+            count: deleteChars,
+            charCount: deleteChars,
+            newlineCount: 0,
+            newRemainingText: remainingText,   // 注入记录不变
+            newPressedEnter: pressedEnter,
+            verification: .verified,
+            anchorEndUTF16: clampedCaret,
+            needsCaretMove: false,
+            caretFallback: true
         ))
     }
 }

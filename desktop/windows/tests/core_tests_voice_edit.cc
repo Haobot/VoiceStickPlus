@@ -19,6 +19,7 @@
 #include <algorithm>
 
 #include "voice_edit_anchor.h"
+#include "voice_targeted_domain.h"
 #include "voice_targeted_edit.h"
 
 #include <cassert>
@@ -771,6 +772,19 @@ public:
         *out = state;
         return state.readable;
     }
+    // 批次 2（整框域）：Fake 直接把 tail 当全文（测试字段都远小于上限）。
+    bool ReadFocusedFieldFullText(VoiceEditFieldState* out) override {
+        if (out == nullptr) return false;
+        *out = state;
+        if (!state.readable) return false;
+        out->full_text = state.tail_text;
+        out->full_utf16_length = state.tail_utf16_length;
+        out->full_truncated = false;
+        if (out->caret_tail_utf16 != kCaretOutsideTail) {
+            out->caret_abs_utf16 = out->caret_tail_utf16;  // Fake：tail 覆盖全文
+        }
+        return true;
+    }
     VoiceEditFieldState state;
 };
 
@@ -1096,6 +1110,30 @@ public:
                                     : kCaretOutsideTail;
         return true;
     }
+    // 批次 2（整框域）：Fake 读全文（测试字段都远小于 200k 上限）。
+    bool ReadFocusedFieldFullText(VoiceEditFieldState* out) override {
+        if (out == nullptr) return false;
+        *out = VoiceEditFieldState{};
+        if (!readable || field == nullptr) return false;
+        out->readable = true;
+        out->full_text = Utf8FromUtf16ForTest(std::wstring_view(field->doc));
+        out->full_utf16_length = field->doc.size();
+        out->full_truncated = false;
+        out->selection_collapsed = field->sel_len == 0;
+        out->caret_at_end = field->sel_start + field->sel_len == field->doc.size();
+        out->caret_abs_utf16 = field->sel_start + field->sel_len;
+        // 尾窗字段同步（既有消费方保持可用；小字段 tail = 全文）。
+        constexpr std::size_t kTail = 512;
+        const std::size_t tail_len = std::min(kTail, field->doc.size());
+        const std::size_t tail_start = field->doc.size() - tail_len;
+        out->tail_text = Utf8FromUtf16ForTest(
+            std::wstring_view(field->doc).substr(tail_start, tail_len));
+        out->tail_utf16_length = tail_len;
+        out->caret_tail_utf16 = out->caret_abs_utf16 >= tail_start
+                                    ? out->caret_abs_utf16 - tail_start
+                                    : kCaretOutsideTail;
+        return true;
+    }
     VoiceTargetedFakeField* field = nullptr;
     bool readable = true;
 };
@@ -1136,6 +1174,30 @@ public:
         ops->push_back("end");
         if (field == nullptr) return false;
         field->sel_start = field->doc.size();
+        field->sel_len = 0;
+        return true;
+    }
+    // 批次 2（整框域）：绝对偏移选区/光标（Fake 文档即全文，直接落位）。
+    bool SelectAndReadBackAbsolute(std::size_t abs_start_utf16, std::size_t length_utf16,
+                                   std::string* selected_text) override {
+        if (selected_text == nullptr || field == nullptr) return false;
+        ops->push_back("select");
+        if (abs_start_utf16 + length_utf16 > field->doc.size()) return false;
+        field->sel_start = abs_start_utf16;
+        field->sel_len = length_utf16;
+        if (drift) {
+            *selected_text = "北";
+        } else {
+            *selected_text = Utf8FromUtf16ForTest(
+                std::wstring_view(field->doc).substr(field->sel_start, field->sel_len));
+        }
+        return true;
+    }
+    bool MoveCaretToAbsolute(std::size_t abs_utf16) override {
+        if (field == nullptr) return false;
+        ops->push_back(abs_utf16 >= field->doc.size() ? "end" : "abs");
+        if (move_fails) return false;
+        field->sel_start = abs_utf16;
         field->sel_len = 0;
         return true;
     }
@@ -1849,6 +1911,278 @@ void TestTargetedPlanner() {
     assert(!p18.ok && p18.failure == VoiceTargetedFailure::kFieldMismatch);
 }
 
+// ======================= 批次 2（追问 + 整框）纯逻辑（双端同向量） =======================
+
+// 位置限定扩展：第 N 个 / 倒数第 N 个（解析 + 选择 + 越界）。
+void TestTargetedPositionParse() {
+    ExpectTargetedCommand("删除刚才的第二个北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kOrdinal, "第二个");
+    assert(ParseVoiceTargetedCommand("删除刚才的第二个北京")->command.position_n == 2);
+    ExpectTargetedCommand("删除刚才的第2个北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kOrdinal, "第2个");
+    assert(ParseVoiceTargetedCommand("删除刚才的第2个北京")->command.position_n == 2);
+    ExpectTargetedCommand("删除刚才的第十一个北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kOrdinal, "第十一个");
+    assert(ParseVoiceTargetedCommand("删除刚才的第十一个北京")->command.position_n == 11);
+    ExpectTargetedCommand("删除刚才的第二十三个北京", VoiceTargetedActionKind::kDelete, "北京",
+                          "", VoiceTargetedPosition::kOrdinal, "二十三个");
+    assert(ParseVoiceTargetedCommand("删除刚才的第二十三个北京")->command.position_n == 23);
+    ExpectTargetedCommand("删除刚才的第二处北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kOrdinal, "第N处");
+    ExpectTargetedCommand("删除刚才的倒数第二个北京", VoiceTargetedActionKind::kDelete, "北京",
+                          "", VoiceTargetedPosition::kFromEnd, "倒数第二个");
+    assert(ParseVoiceTargetedCommand("删除刚才的倒数第二个北京")->command.position_n == 2);
+    ExpectTargetedCommand("删除刚才的倒数第3个北京", VoiceTargetedActionKind::kDelete, "北京",
+                          "", VoiceTargetedPosition::kFromEnd, "倒数阿拉伯");
+    ExpectTargetedCommand("删除刚才最后一个北京", VoiceTargetedActionKind::kDelete, "北京", "",
+                          VoiceTargetedPosition::kLast, "最后一个（保留专词）");
+    ExpectTargetedCommand("把刚才第二个北京改成上海", VoiceTargetedActionKind::kReplace, "北京",
+                          "上海", VoiceTargetedPosition::kOrdinal, "把字句第二个");
+    ExpectTargetedCommand("删除刚才的第一百个北京", VoiceTargetedActionKind::kDelete,
+                          "第一百个北京", "", VoiceTargetedPosition::kUnspecified,
+                          "第一百个不识别（进目标）");
+    ExpectTargetedCommand("删除刚才的第100个北京", VoiceTargetedActionKind::kDelete,
+                          "第100个北京", "", VoiceTargetedPosition::kUnspecified,
+                          "阿拉伯 100 不识别（进目标）");
+    ExpectTargetedCommand("删除刚才的第零个北京", VoiceTargetedActionKind::kDelete,
+                          "第零个北京", "", VoiceTargetedPosition::kUnspecified, "零不识别");
+    ExpectTargetedCommand("删除刚才的倒数第0个北京", VoiceTargetedActionKind::kDelete,
+                          "倒数第0个北京", "", VoiceTargetedPosition::kUnspecified,
+                          "倒数 0 不识别");
+    // 计划：序数选择 + 越界（域内 3 处；TargetedDelete 不带 n，单独构造）。
+    VoiceTargetedCommand ordinal2;
+    ordinal2.action = VoiceTargetedAction{VoiceTargetedActionKind::kDelete, {}};
+    ordinal2.target = "北京";
+    ordinal2.position = VoiceTargetedPosition::kOrdinal;
+    ordinal2.position_n = 2;
+    auto second2 = PlanVoiceTargeted(ordinal2, "北京和北京再北京", false, true,
+                                     "北京和北京再北京", true, true);
+    assert(second2.ok && second2.occurrence.index == 1 &&
+           second2.occurrence.utf16_start == 3 && second2.new_remaining_text == "北京和再北京");
+    VoiceTargetedCommand fromEnd2 = ordinal2;
+    fromEnd2.position = VoiceTargetedPosition::kFromEnd;
+    auto fromEnd = PlanVoiceTargeted(fromEnd2, "北京和北京再北京", false, true,
+                                     "北京和北京再北京", true, true);
+    assert(fromEnd.ok && fromEnd.occurrence.index == 1);
+    VoiceTargetedCommand ordinal4 = ordinal2;
+    ordinal4.position_n = 4;
+    auto oor = PlanVoiceTargeted(ordinal4, "北京和北京再北京", false, true,
+                                 "北京和北京再北京", true, true);
+    assert(!oor.ok && oor.failure == VoiceTargetedFailure::kPositionOutOfRange);
+}
+
+// 域解析全规则表 + 光标平移 + 整框映射（与 macOS VoiceTargetedDomainTests 同向量）。
+void TestTargetedDomainResolve() {
+    const std::string field = "手打开头北京和北京以及手打北京结尾";
+    const auto recent = [](std::string_view remaining, std::size_t anchor_start) {
+        return VoiceTargetedRecentDomain{
+            std::string(remaining),
+            VoiceEditAnchor{VoiceEditAnchor::Kind::kFieldEnd, anchor_start,
+                            anchor_start + VoiceTargetedUtf16Length(remaining)}};
+    };
+    // 无显式作用域（自然简写语义；TargetedDelete 默认 has_explicit_scope=true）。
+    const auto plainDelete = [](std::string_view target) {
+        VoiceTargetedCommand cmd;
+        cmd.action = VoiceTargetedAction{VoiceTargetedActionKind::kDelete, {}};
+        cmd.target = std::string(target);
+        cmd.has_explicit_scope = false;
+        return cmd;
+    };
+    // Tier 1 命中。
+    {
+        const auto domain = recent("今天去了北京一趟", 6);
+        auto out = ResolveVoiceTargetedDomain(plainDelete("北京"), &domain, field);
+        assert(out.kind == VoiceTargetedDomainOutcome::Kind::kExecute &&
+               out.domain == VoiceTargetedDomainKind::kLastInjection &&
+               out.selected.utf16_start == 4);
+    }
+    // Tier 1 不唯一 → 整框追问。
+    {
+        const auto domain = recent("北京和北京", 4);
+        auto out = ResolveVoiceTargetedDomain(plainDelete("北京"), &domain, field);
+        assert(out.kind == VoiceTargetedDomainOutcome::Kind::kClarify &&
+               out.domain == VoiceTargetedDomainKind::kWholeField && out.count == 3);
+    }
+    // 注入不可定位 → 整框唯一执行。
+    {
+        auto out = ResolveVoiceTargetedDomain(plainDelete("北京"), nullptr, "开头有北京结尾");
+        assert(out.kind == VoiceTargetedDomainOutcome::Kind::kExecute &&
+               out.domain == VoiceTargetedDomainKind::kWholeField &&
+               out.selected.utf16_start == 3);
+    }
+    // 显式作用域：recent 可用 → 域内追问；目标不在域内 → not_found；不可用 → 整框。
+    {
+        const auto domain = recent("北京和北京", 4);
+        VoiceTargetedCommand scoped = TargetedDelete("北京");
+        scoped.has_explicit_scope = true;
+        auto out = ResolveVoiceTargetedDomain(scoped, &domain, field);
+        assert(out.kind == VoiceTargetedDomainOutcome::Kind::kClarify &&
+               out.domain == VoiceTargetedDomainKind::kLastInjection && out.count == 2);
+        const auto miss = recent("今天去了上海一趟", 6);
+        auto out2 = ResolveVoiceTargetedDomain(scoped, &miss, "开头有北京结尾");
+        assert(out2.kind == VoiceTargetedDomainOutcome::Kind::kFailure &&
+               out2.failure == VoiceTargetedFailure::kNotFound);
+        auto out3 = ResolveVoiceTargetedDomain(scoped, nullptr, "开头有北京结尾");
+        assert(out3.kind == VoiceTargetedDomainOutcome::Kind::kExecute &&
+               out3.domain == VoiceTargetedDomainKind::kWholeField);
+    }
+    // 无作用域 + 位置 → 整框按文档序（recent 可用也不启用 Tier 1）。
+    {
+        const auto domain = recent("今天去了北京一趟", 6);
+        VoiceTargetedCommand ordinal2;
+        ordinal2.action = VoiceTargetedAction{VoiceTargetedActionKind::kDelete, {}};
+        ordinal2.target = "北京";
+        ordinal2.position = VoiceTargetedPosition::kOrdinal;
+        ordinal2.position_n = 2;
+        ordinal2.has_explicit_scope = false;  // 无作用域 + 位置 → 恒整框
+        auto out = ResolveVoiceTargetedDomain(ordinal2, &domain, field);
+        assert(out.kind == VoiceTargetedDomainOutcome::Kind::kExecute &&
+               out.domain == VoiceTargetedDomainKind::kWholeField &&
+               out.selected.utf16_start == 7);
+        // 越界。
+        VoiceTargetedCommand ordinal5 = ordinal2;
+        ordinal5.position_n = 5;
+        auto oor = ResolveVoiceTargetedDomain(ordinal5, nullptr, field);
+        assert(oor.kind == VoiceTargetedDomainOutcome::Kind::kOutOfRange && oor.count == 3);
+    }
+    // field_too_long（> 200,000 UTF-16）。
+    {
+        std::string huge;
+        for (int i = 0; i < 200001; ++i) huge += "\xe5\xad\x97";  // UTF-8「字」×200001
+        auto out = ResolveVoiceTargetedDomain(plainDelete("北京"), nullptr, huge);
+        assert(out.kind == VoiceTargetedDomainOutcome::Kind::kFailure &&
+               out.failure == VoiceTargetedFailure::kFieldTooLong);
+        // Tier 1 命中不受限。
+        const auto domain = recent("今天去了北京一趟", 6);
+        auto tier1 = ResolveVoiceTargetedDomain(plainDelete("北京"), &domain, huge);
+        assert(tier1.kind == VoiceTargetedDomainOutcome::Kind::kExecute &&
+               tier1.domain == VoiceTargetedDomainKind::kLastInjection);
+    }
+}
+
+void TestTargetedCursorRestore() {
+    assert(VoiceTargetedRestoredCaret(2, 5, 3, 4) == 2);   // 区间前不变
+    assert(VoiceTargetedRestoredCaret(5, 5, 3, 4) == 5);   // 恰在起点不变
+    assert(VoiceTargetedRestoredCaret(8, 5, 3, 4) == 9);   // 区间后扩长
+    assert(VoiceTargetedRestoredCaret(10, 5, 3, 0) == 7);  // 区间后收缩
+    assert(VoiceTargetedRestoredCaret(8, 5, 3, 3) == 8);   // 等长替换不变
+    assert(VoiceTargetedRestoredCaret(6, 5, 3, 4) == 9);   // 区间内→编辑后末尾
+    assert(VoiceTargetedRestoredCaret(6, 5, 3, 0) == 5);   // 区间内→折叠点
+    assert(VoiceTargetedRestoredCaret(5, 1, 2, 0) == 3);   // emoji 删除平移
+    assert(VoiceTargetedRestoredCaret(6, 2, 2, 0) == 4);   // 末尾追加删除=批次 1
+    assert(VoiceTargetedRestoredCaret(6, 2, 2, 2) == 6);   // 末尾追加等长=批次 1
+    // 整框编辑 → remaining 映射（UTF-16 拼接）。
+    assert(MapWholeFieldEditToRemaining("我去北京上班", 2, 2, "") == "我去上班");
+    assert(MapWholeFieldEditToRemaining("我去北京上班", 2, 2, "上海") == "我去上海上班");
+}
+
+// 序数应答解析（与 macOS VoiceEditOrdinalReplyTests 同向量）。
+void TestVoiceEditOrdinalReply() {
+    const auto parse = [](std::string_view text, std::string_view target) {
+        return ParseVoiceEditOrdinalReply(text, target);
+    };
+    auto expect = [](std::string_view text, std::string_view target,
+                     VoiceEditOrdinalReply::Kind kind, int n, const char* name) {
+        const auto r = ParseVoiceEditOrdinalReply(text, target);
+        if (!r || r->kind != kind || r->n != n) {
+            std::printf("FAIL ordinal reply: %s\n", name);
+            assert(false && "ordinal reply mismatch");
+        }
+    };
+    auto expectNil = [](std::string_view text, std::string_view target, const char* name) {
+        if (ParseVoiceEditOrdinalReply(text, target).has_value()) {
+            std::printf("FAIL ordinal reply (expected nil): %s\n", name);
+            assert(false && "ordinal reply should be nil");
+        }
+    };
+    expect("第二个", "北京", VoiceEditOrdinalReply::Kind::kOrdinal, 2, "第二个");
+    expect("第2个", "北京", VoiceEditOrdinalReply::Kind::kOrdinal, 2, "阿拉伯");
+    expect("第十一", "北京", VoiceEditOrdinalReply::Kind::kOrdinal, 11, "裸第N");
+    expect("第十一处", "北京", VoiceEditOrdinalReply::Kind::kOrdinal, 11, "第N处");
+    expect("倒数第二个", "北京", VoiceEditOrdinalReply::Kind::kFromEnd, 2, "倒数第二");
+    expect("最后一个", "北京", VoiceEditOrdinalReply::Kind::kFromEnd, 1, "最后一个");
+    expect("最后那个", "北京", VoiceEditOrdinalReply::Kind::kFromEnd, 1, "最后那个（尾缀剥那个）");
+    expect("第二处", "北京", VoiceEditOrdinalReply::Kind::kOrdinal, 2, "第N处简写");
+    expect("第二个北京", "北京", VoiceEditOrdinalReply::Kind::kOrdinal, 2, "第N个+目标");
+    expectNil("第二个上海", "北京", "目标不一致");
+    expect("就第二个", "", VoiceEditOrdinalReply::Kind::kOrdinal, 2, "前缀就");
+    expect("就是第二个", "", VoiceEditOrdinalReply::Kind::kOrdinal, 2, "前缀就是");
+    expect("选第三个", "", VoiceEditOrdinalReply::Kind::kOrdinal, 3, "前缀选");
+    expect("要2", "", VoiceEditOrdinalReply::Kind::kOrdinal, 2, "前缀要+裸数字");
+    expect("第二个吧", "", VoiceEditOrdinalReply::Kind::kOrdinal, 2, "尾缀吧");
+    expect("第二个。", "", VoiceEditOrdinalReply::Kind::kOrdinal, 2, "尾部句号");
+    expect("第二个就行", "", VoiceEditOrdinalReply::Kind::kOrdinal, 2, "尾缀就行");
+    expect("就第二个北京吧", "北京", VoiceEditOrdinalReply::Kind::kOrdinal, 2, "前缀+目标+尾缀");
+    expect("第２个", "", VoiceEditOrdinalReply::Kind::kOrdinal, 2, "全角数字");
+    expect("五", "", VoiceEditOrdinalReply::Kind::kOrdinal, 5, "裸中文五");
+    expect("二十", "", VoiceEditOrdinalReply::Kind::kOrdinal, 20, "裸二十（上限）");
+    expect("3", "", VoiceEditOrdinalReply::Kind::kOrdinal, 3, "裸阿拉伯");
+    expectNil("二十一", "", "裸二十一超限");
+    expectNil("0", "", "裸 0");
+    expect("取消", "", VoiceEditOrdinalReply::Kind::kCancel, 0, "取消");
+    expect("算了", "", VoiceEditOrdinalReply::Kind::kCancel, 0, "算了");
+    expect("算了吧", "", VoiceEditOrdinalReply::Kind::kCancel, 0, "取消+尾缀");
+    expect("不改了", "", VoiceEditOrdinalReply::Kind::kCancel, 0, "不改了");
+    expect("不用了", "", VoiceEditOrdinalReply::Kind::kCancel, 0, "不用了");
+    expect("不要了", "", VoiceEditOrdinalReply::Kind::kCancel, 0, "不要了");
+    expectNil("你好", "", "普通文本");
+    expectNil("把北京改成上海", "", "完整指令");
+    expectNil("", "", "空串");
+    (void)parse;
+}
+
+// 撤销短语白名单 + 尾删光标降级（与 macOS 同向量）。
+void TestVoiceEditUndoPhraseAndFallback() {
+    assert(IsVoiceEditUndoPhrase("撤销"));
+    assert(IsVoiceEditUndoPhrase("撤回"));
+    assert(IsVoiceEditUndoPhrase("撤销刚才的"));
+    assert(IsVoiceEditUndoPhrase("撤回刚才的"));
+    assert(IsVoiceEditUndoPhrase(" 撤销。"));
+    assert(!IsVoiceEditUndoPhrase("删除刚才的"));
+    assert(!IsVoiceEditUndoPhrase("清空"));
+    assert(!IsVoiceEditUndoPhrase("撤销一下"));
+
+    // 尾删光标降级：remaining「你好世界」在字段「你好世」锚定全 miss。
+    VoiceEditCommand chars_cmd;
+    chars_cmd.action = VoiceEditAction::kDeleteLastChars;
+    chars_cmd.count = 2;
+    chars_cmd.source = VoiceEditCommandSource::kExplicitCount;
+    VoiceEditFieldState field;
+    field.readable = true;
+    field.selection_collapsed = true;
+    field.tail_text = "你好世";
+    field.tail_utf16_length = 3;
+    field.caret_tail_utf16 = 3;
+    auto fallback = PlanVoiceEdit("你好世界", false, chars_cmd, field,
+                                  VoiceEditVerifyMode::kAuto, false, /*field_scope=*/true);
+    assert(fallback.ok && fallback.caret_fallback && fallback.backspace_count == 2 &&
+           fallback.anchor_end_utf16 == 3 && !fallback.needs_caret_move &&
+           fallback.new_remaining_text == "你好世界" && fallback.new_pressed_enter == false);
+    // clamp：N 超过光标前字数（光标 2、删 5）→ 只删 2。
+    field.caret_tail_utf16 = 2;
+    chars_cmd.count = 5;
+    auto clamped = PlanVoiceEdit("你好世界", false, chars_cmd, field,
+                                 VoiceEditVerifyMode::kAuto, false, true);
+    assert(clamped.ok && clamped.backspace_count == 2);
+    // deleteAll 不降级。
+    VoiceEditCommand all_cmd;
+    all_cmd.action = VoiceEditAction::kDeleteAll;
+    auto all = PlanVoiceEdit("你好世界", false, all_cmd, field, VoiceEditVerifyMode::kAuto,
+                             false, true);
+    assert(!all.ok && all.reject_reason == VoiceEditRejectReason::kTextMismatch);
+    // field_scope=false 不降级（批次 1 行为）。
+    chars_cmd.count = 2;
+    field.caret_tail_utf16 = 3;
+    auto off = PlanVoiceEdit("你好世界", false, chars_cmd, field, VoiceEditVerifyMode::kAuto,
+                             false, false);
+    assert(!off.ok && off.reject_reason == VoiceEditRejectReason::kTextMismatch);
+    // 选区非空不降级（selectionPresent 先拒绝）。
+    field.selection_collapsed = false;
+    auto selection = PlanVoiceEdit("你好世界", false, chars_cmd, field,
+                                   VoiceEditVerifyMode::kAuto, false, true);
+    assert(!selection.ok && selection.reject_reason == VoiceEditRejectReason::kSelectionActive);
+}
+
 }  // namespace
 
 void RunVoiceEditTests() {
@@ -1866,6 +2200,11 @@ void RunVoiceEditTests() {
     TestTargetedParserNegative();
     TestTargetedMatcher();
     TestTargetedPlanner();
+    TestTargetedPositionParse();
+    TestTargetedDomainResolve();
+    TestTargetedCursorRestore();
+    TestVoiceEditOrdinalReply();
+    TestVoiceEditUndoPhraseAndFallback();
 #ifdef _WIN32
     TestVoiceEditConfigDefaultsAndPersistence();
     TestVoiceEditCoordinatorDeletesWithBackspace();

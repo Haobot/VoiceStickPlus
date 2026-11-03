@@ -150,6 +150,10 @@ enum L10nKey: String, CaseIterable {
     case voiceTargetedTextChanged, voiceTargetedUnconfirmed
     // 语音编辑批次 1（字段内定位）：新失败码文案。
     case voiceEditAnchorAmbiguous, voiceEditCaretMoveFailed
+    // 语音编辑批次 2（整框搜索域 + 追问）：新失败码/追问文案。
+    case voiceEditFieldTooLong, voiceTargetedOrdinalRange
+    case voiceTargetedClarifyPrompt, voiceTargetedClarifyCancelled
+    case voiceTargetedClarifyChanged, voiceTargetedUndoOk, voiceTargetedUndoChanged
 }
 
 /// 界面文案查表。当前语言由 AppDelegate 在启动与配置变更时写入 `Localization.current`
@@ -512,7 +516,7 @@ enum Localization {
         .settingsSectionVoiceEdit: "Voice Editing",
         .settingsVoiceEditEnabled: "Enable voice edit commands (say e.g. “delete the last two characters”)",
         .settingsVoiceEditDefaultChars: "Characters deleted by “delete” alone",
-        .settingsVoiceEditHint: "Applies only to the most recent dictation and only while its text is unchanged; \"delete the last few words\" now moves the cursor back to the end of that dictation automatically. Subtitle and WeChat input-method modes are not supported.",
+        .settingsVoiceEditHint: "\"Replace/delete X\" now searches the whole text field by default (the last dictation first); multiple matches will ask which one; say \"undo\" to revert the last voice edit. Subtitle and WeChat input-method modes are not supported.",
         .voiceEditDeletedChars: "Deleted %d characters",
         .voiceEditDeletedSentences: "Deleted the last %d sentences",
         .voiceEditDeletedSentenceOne: "Deleted the last sentence",
@@ -521,7 +525,7 @@ enum Localization {
         .voiceEditNoInjection: "No voice input to delete",
         .voiceEditScopeExpired: "The last dictation expired; nothing deleted",
         .voiceEditAppChanged: "The app changed; nothing deleted",
-        .voiceEditFieldMismatch: "The cursor position changed; nothing deleted",
+        .voiceEditFieldMismatch: "The last dictation was changed; nothing deleted",
         .voiceEditCaretNotEnd: "Move the cursor back to the end first",
         .voiceEditSelectionPresent: "Clear the selection first",
         .voiceEditVerifyUnavailable: "Cannot verify the cursor position in this app; nothing deleted",
@@ -537,6 +541,13 @@ enum Localization {
         .voiceTargetedUnconfirmed: "The edit could not be confirmed; please check the text field",
         .voiceEditAnchorAmbiguous: "That dictation appears multiple times; move the cursor next to it and try again",
         .voiceEditCaretMoveFailed: "Couldn't move the cursor to the end of that dictation; move it there manually and try again",
+        .voiceEditFieldTooLong: "The text field is too long to edit across the whole field",
+        .voiceTargetedOrdinalRange: "There are only %d matches; say 1 to %d",
+        .voiceTargetedClarifyPrompt: "Found %d matches for “%@”; say which one (e.g. “the second one”)",
+        .voiceTargetedClarifyCancelled: "Edit cancelled",
+        .voiceTargetedClarifyChanged: "The text changed; say the edit command again",
+        .voiceTargetedUndoOk: "Edit undone",
+        .voiceTargetedUndoChanged: "The text changed; cannot undo",
     ]
 
     private static let chinese: [L10nKey: String] = [
@@ -841,7 +852,7 @@ enum Localization {
         .settingsSectionVoiceEdit: "语音编辑",
         .settingsVoiceEditEnabled: "启用语音编辑指令（说“删除最后两个字”等）",
         .settingsVoiceEditDefaultChars: "单独说“删除”时删除字数",
-        .settingsVoiceEditHint: "仅对最近一次语音输入、且文本未被改动时生效；「删掉最后几个字」会自动把光标移回刚才输入的末尾；字幕/微信输入法模式不支持。",
+        .settingsVoiceEditHint: "「替换/删除X」默认搜索整个输入框（刚说的内容优先）；多处匹配会追问第几个；说「撤销」可还原上一次语音修改；字幕/微信输入法模式不支持。",
         .voiceEditDeletedChars: "已删除 %d 个字",
         .voiceEditDeletedSentences: "已删除最后 %d 句",
         .voiceEditDeletedSentenceOne: "已删除最后一句",
@@ -850,7 +861,7 @@ enum Localization {
         .voiceEditNoInjection: "没有可删除的语音输入",
         .voiceEditScopeExpired: "最近一次语音输入已过期，未删除",
         .voiceEditAppChanged: "已切换应用，未删除",
-        .voiceEditFieldMismatch: "光标位置已变化，未删除",
+        .voiceEditFieldMismatch: "刚才的输入已被修改，未删除",
         .voiceEditCaretNotEnd: "请先将光标移回末尾",
         .voiceEditSelectionPresent: "请先取消选中",
         .voiceEditVerifyUnavailable: "当前应用无法确认光标位置，未删除",
@@ -866,6 +877,13 @@ enum Localization {
         .voiceTargetedUnconfirmed: "修改结果未能确认，请检查输入框",
         .voiceEditAnchorAmbiguous: "刚才的输入在文本里出现多次，请把光标移到它旁边再试",
         .voiceEditCaretMoveFailed: "无法把光标移到刚才输入的末尾，请手动移过去再试",
+        .voiceEditFieldTooLong: "输入框文字过长，无法在整个输入框里修改",
+        .voiceTargetedOrdinalRange: "只有 %d 处，请说第 1 到第 %d 个",
+        .voiceTargetedClarifyPrompt: "找到 %d 处“%@”，请说第几个（如“第二个”）",
+        .voiceTargetedClarifyCancelled: "已取消修改",
+        .voiceTargetedClarifyChanged: "文本已变化，请重新说修改指令",
+        .voiceTargetedUndoOk: "已撤销修改",
+        .voiceTargetedUndoChanged: "文本已变化，无法撤销",
     ]
 }
 

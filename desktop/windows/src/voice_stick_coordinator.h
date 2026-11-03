@@ -26,6 +26,7 @@
 #include "pcm_ring_buffer.h"
 #include "virtual_mic_renderer.h"
 #include "voice_targeted_edit.h"
+#include "voice_targeted_domain.h"
 #include "wasapi_virtual_mic_renderer.h"
 #include "wechat_input_method_hotkey.h"
 
@@ -688,32 +689,86 @@ private:
         std::uintptr_t foreground_window = 0;  // 注入目标前台窗口（L0 一致性校验）
         std::string foreground_process;   // 目标窗口所属进程 exe 名（UTF-8）
     };
+    // 批次 2（交付 B/E）嵌套状态类型前置声明（方法签名引用；定义见下方成员区）。
+    struct PendingVoiceEditClarification;
+    struct LastVoiceEditRecord;
+
     // 命中指令并接管本轮返回 true（调用方不得继续精修/翻译/粘贴）；非指令返回 false。
     bool HandleVoiceEditIfMatched(const std::string& text);
     // targeted 编辑（删除/替换最近一次输入中的指定词；旧解析器优先、targeted 其次）。
     // 同样只在 finalizing 内接受；命中（含结构非法）即吞掉本轮并接管。
     bool HandleVoiceTargetedEditIfMatched(const std::string& text);
+    // targeted 接管主体（批次 2：直命中与整框门控命中两条入口共用；对齐 macOS
+    // performTargetedTakeover——field_scope 开走域解析，关走批次 1 原路径）。
+    bool TakeOverTargetedCommand(const std::string& text,
+                                 const VoiceTargetedParseResult& parse_result,
+                                 std::shared_ptr<const AppConfig> config);
     // targeted 执行（UI 线程内同步完成选区+读回+单次动作；延时终验经 worker +
     // RunOnUiThread 回收，generation 防 stale 回调覆盖新记录）。终验小步轮询重试
     // （动作在部分目标异步落地），窗末按「未落地→记录保留 / 真不符→记录失效」分类。
+    // 批次 2（交付 C）：exec 携带域/光标/记录维护上下文；absolute_coords=true 时
+    // 选区与终验用文档绝对坐标（整框域全文读取）。
+    struct TargetedExecutionContext {
+        VoiceTargetedDomainKind domain = VoiceTargetedDomainKind::kLastInjection;
+        bool absolute_coords = false;      // 整框域/全文坐标（绝对选区 + 全文终验）
+        std::size_t original_caret_utf16 = 0;
+        enum class RecordAction { kNone, kUpdate, kKeep, kInvalidate };
+        RecordAction record_action = RecordAction::kNone;
+        std::string record_update_remaining;         // kUpdate 的新 remaining
+        std::optional<std::string> pre_edit_remaining_text;  // 撤销恢复用
+        std::string pre_action_text;                // 动作前字段全文（still_old 分类用）
+    };
     void ExecuteVoiceTargetedEdit(const VoiceTargetedCommand& command,
                                   const VoiceTargetedPlan& plan,
-                                  std::size_t tail_utf16_length);
+                                  std::size_t tail_utf16_length,
+                                  const TargetedExecutionContext& exec);
     void FinalizeVoiceTargetedEdit(std::uint64_t generation, const VoiceTargetedPlan& plan,
                                    std::string expected_tail, std::string pre_action_tail,
-                                   int attempt);
+                                   const VoiceTargetedCommand& command,
+                                   const TargetedExecutionContext& exec, int attempt);
+    // 批次 2（交付 B）：追问「第几个」——pending 存在且有效（20 秒 + 同前台 + 同
+    // 代际）且本句是序数应答 → 吞轮执行；非应答清 pending 放行正常链路。
+    bool HandlePendingClarificationIfMatched(const std::string& text);
+    void ExecuteClarifiedReply(const VoiceEditOrdinalReply& reply,
+                               const PendingVoiceEditClarification& pending);
+    // 尾删撤销素材（计划时刻算好；对齐 macOS TailUndoIngredients）。
+    struct TailUndoIngredients {
+        std::string deleted_text;
+        std::size_t edit_start_utf16 = 0;
+        std::string pre_edit_remaining_text;
+    };
+    std::optional<TailUndoIngredients> ComputeTailUndoIngredients(
+        const VoiceEditPlan& plan, const VoiceEditFieldState& field) const;
+    void RecordTailDeletionUndo(std::optional<TailUndoIngredients> ingredients,
+                                std::uint64_t generation);
+    void RecordTargetedUndo(const VoiceTargetedCommand& command,
+                            const VoiceTargetedPlan& plan,
+                            const TargetedExecutionContext& exec,
+                            const std::string& post_edit_text);
+    // 终验成功后的注入记录维护（交付 C 三情形；lastInjection 域写新 remaining）。
+    void ApplyTargetedRecordMaintenance(const VoiceTargetedPlan& plan,
+                                        const TargetedExecutionContext& exec);
+    // 批次 2（交付 E）：上下文撤销——「撤销/撤回(刚才的)」优先还原上一次语音
+    // 修改；不可用（无记录/超时/换应用/字段不可读）返回 false 落回原 deleteAll。
+    bool TryHandleVoiceEditUndo(const std::string& text);
+    void ExecuteVoiceEditUndo(const LastVoiceEditRecord& record);
+    void FinalizeVoiceEditUndo(std::uint64_t generation, const LastVoiceEditRecord record,
+                               std::string expected_text, std::size_t restore_caret_utf16,
+                               int attempt);
     // 唯一粘贴 chokepoint 记录本次注入（Paste 之后调用；无回执仍记录，靠 L1 兜底）。
     void RecordLastInjection(const std::string& text, bool pressed_enter);
     // 异步退格执行：std::thread 逐次 SendKeyCombo(backspace)（约 12ms 节拍），完成后
     // RunOnUiThread 更新记录并提示；不得阻塞 UI 线程。
     void StartVoiceEditBackspaces(int count, std::uint64_t generation, std::string message,
-                                  std::string new_remaining_text, bool new_pressed_enter);
+                                  std::string new_remaining_text, bool new_pressed_enter,
+                                  std::optional<TailUndoIngredients> undo_ingredients = std::nullopt);
     // 批次 1（字段内定位）：尾删前置光标移动——MoveCaretTo(anchor_end) + 按读回
     // 节拍轮询确认（UIA 读取须在 UI 线程，经 RunOnUiThread 重入）；到位后转正常
     // 退格；耗尽 → caret_move_failed（零退格、记录保留）。须在 UI 线程调用。
     // TODO(win): 待 Windows 机编译+CTest 验证。
     void MoveCaretForVoiceEditDeletion(const VoiceEditPlan& plan,
                                        const VoiceEditCommand& command,
+                                       std::optional<TailUndoIngredients> undo_ingredients,
                                        std::uint64_t generation, int attempt);
     // 语音编辑失败日志（一行，只在失败路径打）：fail_stage 对应读取链失败环节；
     // bundle 用前台进程名（无 bundle id 概念，nil → unknown）。
@@ -863,6 +918,31 @@ private:
     // last_injection_ 仅 UI 线程读写（注入执行 worker 经 RunOnUiThread 回收）。
     std::optional<LastInjection> last_injection_;
     std::uint64_t voice_edit_generation_ = 0;
+    // ---- 批次 2 交付 B：追问「第几个」pending（20 秒有效；UI 线程读写）----
+    struct PendingVoiceEditClarification {
+        VoiceTargetedCommand command;
+        VoiceTargetedDomainKind domain = VoiceTargetedDomainKind::kLastInjection;
+        int occurrence_count = 0;
+        std::uintptr_t foreground_window = 0;
+        std::string foreground_process;
+        std::chrono::steady_clock::time_point created_at{};
+        std::uint64_t generation = 0;
+    };
+    std::optional<PendingVoiceEditClarification> pending_clarification_;
+    // ---- 批次 2 交付 E：上下文撤销记录（最近一次成功语音编辑；UI 线程读写）----
+    struct LastVoiceEditRecord {
+        std::string post_edit_field_text;   // 编辑终验通过时的字段全文（LF 归一化）
+        std::size_t edit_start_utf16 = 0;   // 编辑后区间起点（删除类=折叠点）
+        std::size_t edit_length_utf16 = 0;  // 插入文本长度（删除类 0）
+        std::string inserted_text;          // 替换类=替换词（读回确认用）
+        std::string original_text;          // 还原时粘贴的原文本
+        std::optional<std::string> pre_edit_remaining_text;  // 撤销恢复 remaining
+        std::uintptr_t foreground_window = 0;
+        std::string foreground_process;
+        std::chrono::steady_clock::time_point created_at{};
+        std::uint64_t generation = 0;
+    };
+    std::optional<LastVoiceEditRecord> last_voice_edit_;
     // 焦点输入框读取实现（外壳注入；nullptr = L1 不可验证）。
     std::unique_ptr<IFocusTextReader> focus_text_reader_;
     // targeted 编辑平台实现（外壳注入；nullptr = targeted 一律不可验证拒绝）。

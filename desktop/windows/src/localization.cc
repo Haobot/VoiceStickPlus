@@ -568,9 +568,9 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kVoiceEditDefaultChars)] =
         "Characters deleted when you say \"delete\" alone";
     table[Index(StringId::kVoiceEditHintRuntime)] =
-        "Works only on the most recent dictation, with its text unchanged; deleting "
-        "trailing words now moves the cursor back to the end of that dictation "
-        "automatically.";
+        "By default "replace/delete X" searches the whole text field (the last "
+        "dictation first); multiple matches will ask which one; say "undo" to revert "
+        "the last voice edit.";
     table[Index(StringId::kVoiceEditHintMode)] =
         "Not available in subtitle or third-party input-method modes.";
     table[Index(StringId::kVoiceEditDeletedChars)] = "Deleted %d characters";
@@ -586,7 +586,7 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kVoiceEditPassword)] =
         "Voice delete is not supported in password fields";
     table[Index(StringId::kVoiceEditTextChanged)] =
-        "The dictated text has changed; nothing deleted";
+        "The last dictation was changed; nothing deleted";
     table[Index(StringId::kVoiceEditUnverifiedExpired)] =
         "Too late to verify the cursor; nothing deleted";
     table[Index(StringId::kVoiceEditUnreadable)] =
@@ -608,6 +608,18 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kVoiceEditCaretMoveFailed)] =
         "Couldn't move the cursor to the end of that dictation; move it there manually "
         "and try again";
+    table[Index(StringId::kVoiceEditFieldTooLong)] =
+        "The text field is too long to edit across the whole field";
+    table[Index(StringId::kVoiceTargetedOrdinalRange)] =
+        "There are only %d matches; say 1 to %d";
+    table[Index(StringId::kVoiceTargetedClarifyPrompt)] =
+        "Found %d matches for “%s”; say which one (e.g. “the second "
+        "one”)";
+    table[Index(StringId::kVoiceTargetedClarifyCancelled)] = "Edit cancelled";
+    table[Index(StringId::kVoiceTargetedClarifyChanged)] =
+        "The text changed; say the edit command again";
+    table[Index(StringId::kVoiceTargetedUndoOk)] = "Edit undone";
+    table[Index(StringId::kVoiceTargetedUndoChanged)] = "The text changed; cannot undo";
     return table;
 }
 
@@ -1131,7 +1143,7 @@ constexpr StringTable ChineseStrings() {
         "启用语音编辑指令（说\"删除最后两个字\"、\"撤销\"等直接编辑刚输入的文本）";
     table[Index(StringId::kVoiceEditDefaultChars)] = "单独说\"删除\"时删除的字数";
     table[Index(StringId::kVoiceEditHintRuntime)] =
-        "仅对最近一次语音输入、文本未被改动时生效；「删掉最后几个字」会自动把光标移回刚才输入的末尾。";
+        "「替换/删除X」默认搜索整个输入框（刚说的内容优先）；多处匹配会追问第几个；说「撤销」可还原上一次语音修改。";
     table[Index(StringId::kVoiceEditHintMode)] = "字幕 / 第三方输入法模式不支持。";
     table[Index(StringId::kVoiceEditDeletedChars)] = "已删除 %d 个字";
     table[Index(StringId::kVoiceEditDeletedSentence)] = "已删除最后一句";
@@ -1143,7 +1155,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kVoiceEditCursorMoved)] = "光标位置已变化，未删除";
     table[Index(StringId::kVoiceEditSelectionActive)] = "请先取消选中";
     table[Index(StringId::kVoiceEditPassword)] = "密码框中不支持语音删除";
-    table[Index(StringId::kVoiceEditTextChanged)] = "语音输入内容已变化，未删除";
+    table[Index(StringId::kVoiceEditTextChanged)] = "刚才的输入已被修改，未删除";
     table[Index(StringId::kVoiceEditUnverifiedExpired)] = "已超过可校验时间，未删除";
     table[Index(StringId::kVoiceEditUnreadable)] = "当前应用无法校验光标，未删除";
     table[Index(StringId::kVoiceTargetedDeleted)] = "已删除 %d 个字";
@@ -1157,6 +1169,15 @@ constexpr StringTable ChineseStrings() {
         "刚才的输入在文本里出现多次，请把光标移到它旁边再试";
     table[Index(StringId::kVoiceEditCaretMoveFailed)] =
         "无法把光标移到刚才输入的末尾，请手动移过去再试";
+    table[Index(StringId::kVoiceEditFieldTooLong)] =
+        "输入框文字过长，无法在整个输入框里修改";
+    table[Index(StringId::kVoiceTargetedOrdinalRange)] = "只有 %d 处，请说第 1 到第 %d 个";
+    table[Index(StringId::kVoiceTargetedClarifyPrompt)] =
+        "找到 %d 处“%s”，请说第几个（如“第二个”）";
+    table[Index(StringId::kVoiceTargetedClarifyCancelled)] = "已取消修改";
+    table[Index(StringId::kVoiceTargetedClarifyChanged)] = "文本已变化，请重新说修改指令";
+    table[Index(StringId::kVoiceTargetedUndoOk)] = "已撤销修改";
+    table[Index(StringId::kVoiceTargetedUndoChanged)] = "文本已变化，无法撤销";
     return table;
 }
 
