@@ -3091,6 +3091,8 @@ public final class VoiceStickCoordinator {
         case .verifyUnavailable: return "focused_element"
         case .caretNotEnd, .selectionPresent: return "selected_range"
         case .resultUnconfirmed: return "field_text"
+        case .fieldTooLong: return "field_text"  // 字段已读到、超长保护
+        case .positionOutOfRange: return "anchor"  // 位置选择层语义失败
         case .noInjection, .scopeExpired, .appChanged, .accessibilityDenied:
             return "focused_element"
         }
@@ -3278,7 +3280,16 @@ public final class VoiceStickCoordinator {
         case .failure(let code):
             NSLog("voice_targeted result=failure code=%@", code.rawValue)
             logVoiceEditFailure(stage: voiceTargetedFailureStage(for: code), code: code.rawValue)
-            showVoiceTargetedFailureToast(code)
+            // 位置越界提示携带域内实际出现次数（批次 2；域解析接入后由其 outOfRange
+            // 结果提供，planner 失败路径从最近注入现算，读不到按 0）。
+            var ordinalCount = 0
+            if code == .positionOutOfRange,
+               case .command(let failedCommand) = parseResult,
+               let remaining = lastInjection?.remainingText {
+                ordinalCount = VoiceTargetedMatcher.occurrences(
+                    of: failedCommand.target, in: remaining).count
+            }
+            showVoiceTargetedFailureToast(code, count: ordinalCount)
         case .context(let command, let plan, let context):
             NSLog("voice_targeted action=%@ target_len=%d occ=%d/%d",
                   describeVoiceTargetedAction(command.action), plan.targetLength,
@@ -3571,7 +3582,17 @@ public final class VoiceStickCoordinator {
         }
     }
 
-    private func showVoiceTargetedFailureToast(_ code: VoiceTargetedFailureCode) {
+    private func showVoiceTargetedFailureToast(
+        _ code: VoiceTargetedFailureCode, count: Int = 0
+    ) {
+        if code == .positionOutOfRange {
+            // 「只有 N 处，请说第 1 到第 N 个」（两个 %d；count 由域解析/匹配层携带）。
+            statusController.showTimedMessage(
+                voiceEditText2("voiceTargetedOrdinalRange", count, count),
+                duration: 2.5, deviceID: activeDeviceID
+            )
+            return
+        }
         let key: String
         switch code {
         case .notFound: key = "voiceTargetedNotFound"
@@ -3587,10 +3608,18 @@ public final class VoiceStickCoordinator {
         case .appChanged: key = "voiceEditAppChanged"
         case .accessibilityDenied: key = "voiceEditAccessibilityDenied"
         case .anchorAmbiguous: key = "voiceEditAnchorAmbiguous"
+        case .fieldTooLong: key = "voiceEditFieldTooLong"
+        case .positionOutOfRange: key = "voiceTargetedOrdinalRange"  // 上方已特判
         }
         statusController.showTimedMessage(
             voiceEditText(key), duration: 2.5, deviceID: activeDeviceID
         )
+    }
+
+    /// 双整数格式化助手（voiceTargetedOrdinalRange 等「%d…%d」文案）。
+    private func voiceEditText2(_ key: String, _ count1: Int, _ count2: Int) -> String {
+        let format = trText?(key) ?? key
+        return String(format: format, count1, count2)
     }
 
     private func showVoiceTargetedSuccessToast(plan: VoiceTargetedPlan) {

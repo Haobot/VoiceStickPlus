@@ -30,11 +30,46 @@ public enum VoiceTargetedAction: Equatable {
     case replace(String)
 }
 
-/// 位置限定：第一个 / 最后一个 / 未指定（仅 1 个精确匹配才允许未指定）。
+/// 位置限定：第一个 / 最后一个 / 第 N 个 / 倒数第 N 个 / 未指定（仅 1 个精确匹配
+/// 才允许未指定）。批次 2 起新增 `.ordinal(Int)`（1 基，文档顺序）与 `.fromEnd(Int)`
+///（倒数第 N，1 基）；`.last` 保留枚举位且语义等价 `.fromEnd(1)`（既有向量与
+/// Windows 侧 kLast 不改写）。
 public enum VoiceTargetedPosition: Equatable {
     case first
     case last
+    /// 第 N 个（N ≥ 1，按域内文档顺序）。
+    case ordinal(Int)
+    /// 倒数第 N 个（N ≥ 1；`.fromEnd(1)` == `.last`）。
+    case fromEnd(Int)
     case unspecified
+
+    /// 在非空匹配表中选择目标 occurrence（选择规则双端同构）。
+    /// - Parameter matches: 非空（调用方保证 notFound 已先行拦截）。
+    public func select(from matches: [VoiceTargetedOccurrence]) -> VoiceTargetedPositionOutcome {
+        switch self {
+        case .first:
+            return .selected(matches[0])
+        case .last:
+            return .selected(matches[matches.count - 1])
+        case .fromEnd(let n):
+            guard n >= 1, n <= matches.count else { return .outOfRange(count: matches.count) }
+            return .selected(matches[matches.count - n])
+        case .ordinal(let n):
+            guard n >= 1, n <= matches.count else { return .outOfRange(count: matches.count) }
+            return .selected(matches[n - 1])
+        case .unspecified:
+            guard matches.count == 1 else { return .ambiguous(count: matches.count) }
+            return .selected(matches[0])
+        }
+    }
+}
+
+/// 位置选择结果：选中一处 / 未指定且多处（歧义，交追问）/ 序号越界（携带域内
+/// 实际出现次数，供「只有 N 处」提示）。
+public enum VoiceTargetedPositionOutcome: Equatable {
+    case selected(VoiceTargetedOccurrence)
+    case ambiguous(count: Int)
+    case outOfRange(count: Int)
 }
 
 /// 解析结果（操作数已剥首尾空白，内部有意义空白保留）。
@@ -83,6 +118,10 @@ public enum VoiceTargetedFailureCode: String, CaseIterable, Equatable {
     // 批次 1（字段内定位）：anchored 段在字段中出现 ≥2 次且 P1 全 miss——零容错
     // 拒绝，不猜偏移（双端同构追加，见 VoiceEditAnchor）。
     case anchorAmbiguous = "anchor_ambiguous"
+    // 批次 2（整框搜索域）：整框域字段超长保护（> 200,000 UTF-16 码元）。
+    case fieldTooLong = "field_too_long"
+    // 批次 2（位置限定扩展）：第 N 个 / 倒数第 N 个越界（域内出现次数不足 N）。
+    case positionOutOfRange = "position_out_of_range"
 }
 
 /// remainingText 内的一次非重叠精确匹配。
@@ -304,10 +343,28 @@ public enum VoiceTargetedParser {
         return false
     }
 
-    /// 消费位置限定词（可选）；未命中返回 .unspecified（index 不动）。
+    /// 消费位置限定词（可选）；未命中返回 .unspecified（index 不动）。批次 2 起支持
+    /// 第 N 个 / 第 N 处 / 倒数第 N 个 / 倒数第 N 处（N = 中文一…九十九或阿拉伯
+    /// 1–99，全角数字已在 normalize 转半角）；「第一个/最后一个」保留专词优先。
     private static func consumePosition(_ chars: [Character], _ index: inout Int) -> VoiceTargetedPosition {
         if matchToken(chars, &index, positionFirst) { return .first }
         if matchToken(chars, &index, positionLast) { return .last }
+        // 倒数第 N 个/处
+        var probe = index
+        if matchToken(chars, &probe, "倒数第"),
+           let n = VoiceEditNumberParsing.consumeOrdinal(chars, &probe, max: 99),
+           matchToken(chars, &probe, "个") || matchToken(chars, &probe, "处") {
+            index = probe
+            return .fromEnd(n)
+        }
+        // 第 N 个/处
+        probe = index
+        if matchToken(chars, &probe, "第"),
+           let n = VoiceEditNumberParsing.consumeOrdinal(chars, &probe, max: 99),
+           matchToken(chars, &probe, "个") || matchToken(chars, &probe, "处") {
+            index = probe
+            return .ordinal(n)
+        }
         return .unspecified
     }
 
@@ -460,14 +517,13 @@ public enum VoiceTargetedPlanner {
         let matches = VoiceTargetedMatcher.occurrences(of: command.target, in: remainingText)
         guard !matches.isEmpty else { return .failure(.notFound) }
         let selected: VoiceTargetedOccurrence
-        switch command.position {
-        case .first:
-            selected = matches[0]
-        case .last:
-            selected = matches[matches.count - 1]
-        case .unspecified:
-            guard matches.count == 1 else { return .failure(.ambiguous) }
-            selected = matches[0]
+        switch command.position.select(from: matches) {
+        case .selected(let occurrence):
+            selected = occurrence
+        case .ambiguous:
+            return .failure(.ambiguous)
+        case .outOfRange:
+            return .failure(.positionOutOfRange)
         }
 
         // L1：targeted 恒 verified——任何 verify_mode 下都强制字段/光标/选区**可读**
@@ -500,14 +556,13 @@ public enum VoiceTargetedPlanner {
         let matches = VoiceTargetedMatcher.occurrences(of: command.target, in: remainingText)
         guard !matches.isEmpty else { return .failure(.notFound) }
         let selected: VoiceTargetedOccurrence
-        switch command.position {
-        case .first:
-            selected = matches[0]
-        case .last:
-            selected = matches[matches.count - 1]
-        case .unspecified:
-            guard matches.count == 1 else { return .failure(.ambiguous) }
-            selected = matches[0]
+        switch command.position.select(from: matches) {
+        case .selected(let occurrence):
+            selected = occurrence
+        case .ambiguous:
+            return .failure(.ambiguous)
+        case .outOfRange:
+            return .failure(.positionOutOfRange)
         }
         // L1 可读性守卫（防御性复检；定位器语义失败在协调器入口已透传）。
         guard fieldText.utf16.count <= kVoiceEditMaxVerifiableFieldUTF16,

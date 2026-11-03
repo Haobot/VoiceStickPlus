@@ -197,6 +197,91 @@ private func runTargetedParserNegativeTests() {
     expectNoTargeted(huge, "负例：超长指令")
 }
 
+// ---- 批次 2：位置限定扩展（第 N 个 / 倒数第 N 个）解析 + 计划向量 ----
+
+private func runTargetedPositionTests() {
+    // 解析：中文数字（一…九十九）与阿拉伯数字 1–99；两种句式。
+    expectTargeted("删除刚才的第二个北京", deleteCommand("北京", .ordinal(2)),
+                   "位置：删除刚才的第二个")
+    expectTargeted("删除刚才的第2个北京", deleteCommand("北京", .ordinal(2)),
+                   "位置：阿拉伯数字")
+    expectTargeted("删除刚才的第十一个北京", deleteCommand("北京", .ordinal(11)),
+                   "位置：十一")
+    expectTargeted("删除刚才的第二十三个北京", deleteCommand("北京", .ordinal(23)),
+                   "位置：二十三")
+    expectTargeted("删除刚才的第二处北京", deleteCommand("北京", .ordinal(2)),
+                   "位置：第N处")
+    expectTargeted("删除刚才的倒数第二个北京", deleteCommand("北京", .fromEnd(2)),
+                   "位置：倒数第二个")
+    expectTargeted("删除刚才的倒数第2个北京", deleteCommand("北京", .fromEnd(2)),
+                   "位置：倒数阿拉伯")
+    expectTargeted("删除刚才的倒数第三处北京", deleteCommand("北京", .fromEnd(3)),
+                   "位置：倒数第N处")
+    expectTargeted("删除刚才最后一个北京", deleteCommand("北京", .last),
+                   "位置：最后一个（保留专词）")
+    expectTargeted("把刚才第二个北京改成上海", replaceCommand("北京", "上海", .ordinal(2)),
+                   "位置：把字句第二个")
+    expectTargeted("把刚才的倒数第二个北京删掉", deleteCommand("北京", .fromEnd(2)),
+                   "位置：把字句倒数")
+    expectTargeted("把第二个北京改成上海",
+                   replaceCommand("北京", "上海", .ordinal(2), false),
+                   "位置：自然简写第二个")
+    expectTargeted("删除第九十九个字",
+                   deleteCommand("字", .ordinal(99), false),
+                   "位置：自然简写第 99 个（合法上限内）")
+
+    // 非法/不识别：越上限（>99）与 0 不消费位置词（成为目标的一部分）。
+    expectTargeted("删除刚才的第一百个北京",
+                   deleteCommand("第一百个北京", .unspecified),
+                   "位置：第一百个不识别（进目标）")
+    expectTargeted("删除刚才的第100个北京",
+                   deleteCommand("第100个北京", .unspecified),
+                   "位置：阿拉伯 100 不识别（进目标）")
+    expectTargeted("删除刚才的第零个北京", deleteCommand("第零个北京", .unspecified),
+                   "位置：零不识别")
+    expectTargeted("删除刚才的倒数第0个北京",
+                   deleteCommand("倒数第0个北京", .unspecified),
+                   "位置：倒数 0 不识别")
+    // 「第一个/最后一个」专词优先于通用第N个（既有语义回归）。
+    expectTargeted("删除刚才第一个北京", deleteCommand("北京", .first),
+                   "位置：第一个专词优先")
+
+    // 计划：序数选择 + 越界失败（域内 3 处）。
+    guard case .plan(let secondPlan) = VoiceTargetedPlanner.plan(
+        command: deleteCommand("北京", .ordinal(2)), remainingText: "北京和北京再北京",
+        fieldText: "北京和北京再北京", caretUTF16: 8, selectionLength: 0) else {
+        check(false, "位置计划：第二个应成功")
+        return
+    }
+    checkEqual(secondPlan.occurrence.index, 1, "位置计划：ordinal(2) index=1")
+    checkEqual(secondPlan.occurrence.utf16Start, 3, "位置计划：ordinal(2) 偏移")
+    checkEqual(secondPlan.newRemainingText, "北京和再北京", "位置计划：ordinal(2) newRemaining")
+    guard case .plan(let fromEndPlan) = VoiceTargetedPlanner.plan(
+        command: deleteCommand("北京", .fromEnd(2)), remainingText: "北京和北京再北京",
+        fieldText: "北京和北京再北京", caretUTF16: 8, selectionLength: 0) else {
+        check(false, "位置计划：倒数第二个应成功")
+        return
+    }
+    checkEqual(fromEndPlan.occurrence.index, 1, "位置计划：fromEnd(2) index=1")
+    checkEqual(fromEndPlan.occurrence.utf16Start, 3, "位置计划：fromEnd(2) 偏移")
+    expectTargetedPlanFailure(
+        command: deleteCommand("北京", .ordinal(4)), remainingText: "北京和北京再北京",
+        fieldText: "北京和北京再北京", caretUTF16: 8, selectionLength: 0,
+        .positionOutOfRange, "位置计划：第 4 个越界 positionOutOfRange")
+    expectTargetedPlanFailure(
+        command: deleteCommand("北京", .fromEnd(4)), remainingText: "北京和北京再北京",
+        fieldText: "北京和北京再北京", caretUTF16: 8, selectionLength: 0,
+        .positionOutOfRange, "位置计划：倒数第 4 个越界 positionOutOfRange")
+    // .last == .fromEnd(1) 等价（同选择结果）。
+    guard case .plan(let lastEquiv) = VoiceTargetedPlanner.plan(
+        command: deleteCommand("北京", .fromEnd(1)), remainingText: "北京和北京",
+        fieldText: "北京和北京", caretUTF16: 5, selectionLength: 0) else {
+        check(false, "位置计划：fromEnd(1) 应成功")
+        return
+    }
+    checkEqual(lastEquiv.occurrence.index, 1, "位置计划：fromEnd(1)==last")
+}
+
 // ---- 匹配器向量 ----
 
 private func runTargetedMatcherTests() {
@@ -560,6 +645,7 @@ private func runVoiceTargetedAlignParseTests() {
 func runVoiceTargetedEditTests() {
     runTargetedParserPositiveTests()
     runTargetedParserNegativeTests()
+    runTargetedPositionTests()
     runTargetedMatcherTests()
     runTargetedPlannerTests()
     runVoiceTargetedAlignScoreTests()

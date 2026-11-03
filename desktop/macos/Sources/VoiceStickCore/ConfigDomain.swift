@@ -198,6 +198,11 @@ public struct VoiceEditSettings: Equatable {
     public var verifyMode: VoiceEditVerifyMode = .auto
     /// auto 模式下不可验证时的允许窗口（秒）：短窗 + 前台应用一致才允许盲删。
     public var unverifiedSeconds = 8
+    /// 批次 2（整框搜索域）：true（默认）= 无位置限定的「把X改成Y/删除X」在最近
+    /// 一次语音输入中唯一命中时优先改它，否则扩展到整个输入框；显式「刚才的」
+    /// 在最近输入不可定位时退回整框。false = 完全回到批次 1 行为（只在最近一次
+    /// 语音输入里找，回归开关）。双端同名同默认。
+    public var fieldScope = true
 
     /// targeted 目标词本地对齐（本地小模型兜底，**默认关**；方案 targeted 章 §对齐）：
     /// 自然简写门控未命中（ASR 把目标词听漂）时，用拼音预筛候选 + 本地模型
@@ -721,6 +726,7 @@ public struct KeySpec: Equatable {
             settings.unverifiedSeconds = clampVoiceEditValue(
                 value, range: VoiceEditSettings.unverifiedSecondsRange)
         }
+        if let value = file.field_scope { settings.fieldScope = value }
         if let value = file.local_align_enabled { settings.localAlignEnabled = value }
         if let value = file.local_align_url?.trimmingCharacters(in: .whitespacesAndNewlines),
            !value.isEmpty {
@@ -785,6 +791,7 @@ public struct KeySpec: Equatable {
         file.scope_seconds = values["scope_seconds"].flatMap(Int.init)
         file.verify_mode = values["verify_mode"]
         file.unverified_seconds = values["unverified_seconds"].flatMap(Int.init)
+        file.field_scope = values["field_scope"].map { boolValue($0, default: fallback.fieldScope) }
         file.local_align_enabled = values["local_align_enabled"]
             .map { boolValue($0, default: fallback.localAlignEnabled) }
         file.local_align_url = values["local_align_url"]
