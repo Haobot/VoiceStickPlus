@@ -616,6 +616,58 @@ func runVoiceEditCoordinatorTests() {
                "voiceEdit: 无权限 toast key")
 }
 
+// ---- 语音编辑批次 2 交付 D：尾删定位失败降级为删光标前 N 字/句 ----
+
+func runVoiceEditCaretFallbackCoordinatorTests() {
+    // 场景：注入「你好世界」后用户删掉「界」→ 剩余段锚定全 miss。
+    // 降级：删光标前 2 字（Fake 不推进字段，只断言退格数/toast/日志/零选区写）。
+    var h = makeVoiceEditHarness()
+    var noEnter = AppConfig.defaults
+    noEnter.autoEnter = false
+    h.coordinator.updateConfig(noEnter)
+    var logLines: [String] = []
+    h.coordinator.voiceEditLog = { logLines.append($0) }
+    h.asr.onFinal?("你好世界")
+    pumpMainRunLoop(0.1)
+    h.field.state = FocusedFieldState(text: "你好世", caretUTF16: 3, selectionLength: 0)
+    h.input.sentKeyCombos.removeAll()
+    h.asr.onFinal?("删除最后两个字")
+    pumpMainRunLoop(0.5)
+    checkEqual(h.input.sentKeyCombos, voiceEditBackspaces(2),
+               "fallback: 光标前删 2 字（2 次退格，无需选区写）")
+    check(h.sink.timedMessages.contains("voiceEditDeletedChars"),
+          "fallback: 成功 toast key")
+    check(logLines.isEmpty, "fallback: 成功路径无 fail 日志")
+    h.input.sentKeyCombos.removeAll()
+    h.asr.onFinal?("删除")
+    pumpMainRunLoop(0.5)
+    checkEqual(h.input.sentKeyCombos, voiceEditBackspaces(1),
+               "fallback: 默认删 1 字继续降级（光标前 1 字）")
+
+    // deleteAll 不降级：仍按定位失败拒绝（新文案 key voiceEditFieldMismatch）。
+    h.input.sentKeyCombos.removeAll()
+    h.asr.onFinal?("删除刚才的")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.input.sentKeyCombos.count, 0, "fallback: deleteAll 不降级零退格")
+    checkEqual(h.sink.timedMessages.last, "voiceEditFieldMismatch",
+               "fallback: deleteAll 拒绝 toast key")
+
+    // field_scope=false：不降级，保持批次 1 fieldMismatch 拒绝。
+    h = makeVoiceEditHarness()
+    var scopeOff = noEnter
+    scopeOff.voiceEdit.fieldScope = false
+    h.coordinator.updateConfig(scopeOff)
+    h.asr.onFinal?("你好世界")
+    pumpMainRunLoop(0.1)
+    h.field.state = FocusedFieldState(text: "你好世", caretUTF16: 3, selectionLength: 0)
+    h.input.sentKeyCombos.removeAll()
+    h.asr.onFinal?("删除最后两个字")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.input.sentKeyCombos.count, 0, "fallback: 开关关零退格")
+    checkEqual(h.sink.timedMessages.last, "voiceEditFieldMismatch",
+               "fallback: 开关关拒绝 toast key")
+}
+
 // ---- targeted 语音编辑：协调器接线（选区执行/读回确认/终验/代际防 stale）----
 // Doc/Plan/voice-edit-commands.md targeted 章节：完整调用顺序 select → selected-text
 // verify → 一次 delete 或 paste(false) → restore end → final verify → update；
@@ -1738,9 +1790,12 @@ func runVoiceEditAnchorCoordinatorTests() {
     checkEqual(enableCalls, 1, "anchor T14: 同 bundle 第二轮不再设置（缓存）")
     checkEqual(he.input.sentKeyCombos.count, 0, "anchor T14: 缓存后读不到零退格")
 
-    // T15 失败日志行：fail_stage/bundle/code 字段存在（Fake 日志收集）。
+    // T15 失败日志行：fail_stage/bundle/code 字段存在（Fake 日志收集）。field_scope
+    // 关（批次 1 语义）：开时该场景会走交付 D 光标前降级而非 field_mismatch。
     he = makeVoiceEditHarness()
-    he.coordinator.updateConfig(noEnter)
+    var t15Config = noEnter
+    t15Config.voiceEdit.fieldScope = false
+    he.coordinator.updateConfig(t15Config)
     var failLines: [String] = []
     he.coordinator.voiceEditLog = { failLines.append($0) }
     he.asr.onFinal?("你好世界")

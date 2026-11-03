@@ -2970,9 +2970,13 @@ public final class VoiceStickCoordinator {
             logVoiceEditFailure(stage: voiceEditFailureStage(for: code), code: code.rawValue)
             showVoiceEditFailureToast(code)
         case .plan(let plan):
-            NSLog("voice_edit command=%@ result=plan count=%d chars=%d newline=%d verification=%@ move=%d",
+            NSLog("voice_edit command=%@ result=plan count=%d chars=%d newline=%d verification=%@ move=%d fallback=%d",
                   commandDescription, plan.count, plan.charCount, plan.newlineCount,
-                  plan.verification.rawValue, plan.needsCaretMove ? 1 : 0)
+                  plan.verification.rawValue, plan.needsCaretMove ? 1 : 0,
+                  plan.caretFallback ? 1 : 0)
+            if plan.caretFallback {
+                NSLog("voice_edit tail_caret_fallback=1 count=%d", plan.count)
+            }
             guard lastInjection != nil else { return true }
             // 批次 1：光标不在 anchorEnd 时先把光标移过去（选区写 + 轮询确认），
             // 移动失败零退格、记录保留；unverified 计划无锚（盲退格窗口照旧）。
@@ -3060,7 +3064,8 @@ public final class VoiceStickCoordinator {
             selectionLength: fieldState?.selectionLength,
             maxChars: settings.maxChars,
             verifyMode: settings.verifyMode,
-            unverifiedWindowOpen: elapsed <= TimeInterval(settings.unverifiedSeconds)
+            unverifiedWindowOpen: elapsed <= TimeInterval(settings.unverifiedSeconds),
+            fieldScopeEnabled: settings.fieldScope
         )
     }
 
