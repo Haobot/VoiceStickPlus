@@ -3,6 +3,7 @@
 #include "encoder_speed.h"
 #include "localization.h"
 #include "log.h"
+#include "spoken_punctuation.h"
 #include "voice_edit_command.h"
 #include "xiaomi_buttons.h"
 
@@ -2483,7 +2484,10 @@ void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
         });
         return;
     }
-    if (ConfigSnapshot()->refine_enabled || (session_uses_local_refine_ && local_refiner_)) {
+    // 标点独词轮不进精修（TransformText 内拦截），也就不预刷 Refining 态，
+    // 免得悬浮窗先闪一下原词再被确认态的符号覆盖。
+    if ((ConfigSnapshot()->refine_enabled || (session_uses_local_refine_ && local_refiner_)) &&
+        !SpokenPunctuationOnlySymbol(text)) {
         ui_->SetStatus("Refining");
         // 立即把 ASR 原文刷上悬浮窗并进入精修态（kRefining 指示器 + 末尾闪烁光标），
         // 让用户在 LLM 首 token 到达前（建连 + TTFT 约 1~2s；本地引擎首句含
@@ -2690,6 +2694,17 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
                            std::to_string(text.size()) + " -> " +
                            std::to_string(corrected.size()));
     }
+    // 标点独词输入（与 macOS finishWithFinalText 拦截同语义）：整轮 final 只
+    // 说了标点名（如“逗号”）→ 直接改写为符号本身。翻译分支照常吃符号
+    //（译文标点形态交给翻译器，如中文“，”译英文“,”）；标点轮同时跳过
+    // 改写对与精修——规则精修第 5 步会剥句首孤立标点，纯符号过精修管线
+    // 会被清空，LLM 也无句子可修。
+    bool punct_only = false;
+    if (auto symbol = SpokenPunctuationOnlySymbol(corrected)) {
+        LogCoordinatorLine("spoken punctuation only: '" + corrected + "' -> '" + *symbol + "'");
+        corrected = *symbol;
+        punct_only = true;
+    }
     const std::string& effective = corrected;
     // 最终文本产出时记录热词使用统计（计数+最近使用时间），供高频优先裁剪评分；
     // 翻译/精修/直通三条路径统一经 wrapped 收口，每会话只记录一次。
@@ -2706,6 +2721,11 @@ void VoiceStickCoordinator::TransformText(const std::string& text,
         // 翻译 prompt 热词段同样按高频评分取 top-N，防大库稀释小模型注意力。
         translator_.Translate(effective, profile.translation_target, HotwordsForLlmPrompts(),
                               std::move(wrapped));
+        return;
+    }
+    // 标点独词轮：非翻译路径无后处理可做（改写对/精修见上），直接收口。
+    if (punct_only) {
+        wrapped(true, effective);
         return;
     }
     // 改写对应用闭环（doubao 方案 §3.1 应用位置 1）：全句精确命中改写对 → 直接替换

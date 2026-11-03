@@ -194,6 +194,7 @@ add_library(voicestick_core STATIC
     src/llm_refinement_client.cc
     src/text_refiner.cc
     src/local_refinement_client.cc
+    src/spoken_punctuation.cc
     src/correction_pairs.cc
     src/usage_events.cc
     src/session_history.cc
@@ -529,6 +530,8 @@ add_executable(voicestick_windows_tests
     tests/core_tests_device_plan.cc
     # 用户数据飞轮 P0-1: 纠错对资产化批
     tests/core_tests_corrections.cc
+    # 标点独词输入批（spoken_punctuation 纯逻辑，双端同向量）
+    tests/core_tests_spoken_punctuation.cc
     # 用户数据飞轮 P1-1: 负信号事件流水批
     tests/core_tests_usage_events.cc
     # 用户数据飞轮 P0-3: 会话历史批

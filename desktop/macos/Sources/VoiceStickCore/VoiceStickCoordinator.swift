@@ -2017,6 +2017,18 @@ public final class VoiceStickCoordinator {
         // targeted 编辑（删除/替换最近一次输入中的指定词）：旧解析器优先、targeted
         // 其次（互不重叠）；同样命中即整轮接管并 return。
         if handleVoiceTargetedEditIfMatched(text, allowAlign: allowTargetedAlign) { return }
+        // 标点独词输入：整轮 final 只说了标点名（如「逗号」）→ 直接注入符号
+        // 本身。必须在改写对/精修之前拦截——精修 L1 规则会剥句首孤立标点，
+        // 纯符号过精修管线会被清空，LLM 也无句子可修；字幕/翻译分支由
+        // finishWithRefinedText 统一收口（译文标点形态交给翻译器）。
+        if let symbol = SpokenPunctuation.symbolIfSoleUtterance(text) {
+            NSLog("spoken punctuation only: '%@' -> '%@'", text, symbol)
+            cancelStreamingRefinement()
+            beginSessionHistory(rawAsr: text)
+            finishEditTracking(status: EditTrackingStatus.skipped, editedSpan: nil)
+            finishWithRefinedText(symbol)
+            return
+        }
         // 会话历史草稿（用户数据飞轮 P0-3）：final 文本产出即建立，落库在
         // finishWithRefinedText（所有收口路径统一经过）。
         beginSessionHistory(rawAsr: text)
@@ -2356,6 +2368,9 @@ public final class VoiceStickCoordinator {
             completion?(false)
             return
         }
+        // 标点独词转换（幂等：已是符号则原样直通）——字幕路径（含字幕周期
+        // final 与 definite segment）不经过 finishWithFinalText，须在此收口。
+        let text = SpokenPunctuation.symbolIfSoleUtterance(text) ?? text
         transformText(text, profile: profile, deviceID: deviceID) { [weak self] result in
             guard let self else { return }
             switch result {

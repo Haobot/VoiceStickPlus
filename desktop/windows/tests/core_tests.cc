@@ -146,6 +146,7 @@ int main() {
     try {
     RunDevicePlanMiscBatchTests();  // N8 cut15 (final): suite in core_tests_device_plan.cc
     RunCorrectionPairsBatchTests();  // 用户数据飞轮 P0-1: suite in core_tests_corrections.cc
+    RunSpokenPunctuationBatchTests();  // 标点独词输入: suite in core_tests_spoken_punctuation.cc
     RunUsageEventsBatchTests();  // 用户数据飞轮 P1-1: suite in core_tests_usage_events.cc
     RunSessionHistoryBatchTests();  // 用户数据飞轮 P0-3: suite in core_tests_session_history.cc
     RunVoiceEditTests();  // 语音编辑指令: suite in core_tests_voice_edit.cc
