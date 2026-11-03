@@ -15,15 +15,23 @@ if "%VERSION%"=="" (
 echo Building VoiceStick v%VERSION% MSI installer...
 
 :: Initialize VS build environment (cmake, ninja, cl, rc, etc.)
-set VSWHERE="%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
-if exist %VSWHERE% (
-    for /f "delims=" %%i in ('%VSWHERE% -latest -property installationPath') do set VS_PATH=%%i
+:: Pin MSVC 2022 first (project standard per AGENTS.md): vswhere -latest drifts to
+:: newly installed VS majors. 2026-11-04: VS18 Community grabbed -latest; its 14.51
+:: STL headers mixed with the cached 2022 cl 14.44 -> llama STL1001. Same probe
+:: order as build_win.bat; vswhere kept only as the fallback. Full rationale in
+:: the commit message. NOTE: keep comment lines ASCII-only -- UTF-8 Chinese here
+:: misdecodes under the GBK console codepage and cmd executes the fragments.
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "VS_PATH="
+for %%P in (
+    "C:\Program Files\Microsoft Visual Studio\2022\Community"
+    "C:\Program Files\Microsoft Visual Studio\2022\BuildTools"
+    "C:\Program Files (x86)\Microsoft Visual Studio\2022\Community"
+    "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools"
+) do (
+    if not defined VS_PATH if exist "%%~P\VC\Auxiliary\Build\vcvarsall.bat" set "VS_PATH=%%~P"
 )
-if not exist "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" (
-    if exist "%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" (
-        set "VS_PATH=%ProgramFiles(x86)%\Microsoft Visual Studio\2022\BuildTools"
-    )
-)
+if exist "%VSWHERE%" if not defined VS_PATH for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -property installationPath`) do set VS_PATH=%%i
 if not exist "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" (
     echo ERROR: Could not find vcvarsall.bat. Is Visual Studio installed?
     exit /b 1
