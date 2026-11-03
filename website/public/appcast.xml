@@ -6,35 +6,35 @@
     <description>VoiceStick app updates</description>
     <language>zh-CN</language>
     <item>
-      <title>Version 2.4.10</title>
+      <title>Version 2.5.0</title>
       <description><![CDATA[
-        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><div># VoiceStick 2.4.10</div><b>改进</b><b>说明</b><ul><li><b>录音音质与识别精度（本版核心）</b>：固件音频链路参数收紧——软件高通滤波 90→120Hz（喷麦爆破音能量实测集中在 100-150Hz）、AGC 目标 -6→-12dBFS、增益上限 +20→+12dB。爆点不再撞限幅产生削波失真，语音间隙底噪泵升直降约 8dB；近场说话、喷麦场景的语音识别准确率明显提升（真机 A/B 已验证）。</li><li><b>桌面端人声增强/降噪（RNNoise，PoC）</b>：新增 <code>audio_noise_suppression</code> 配置项（默认关）。开启后 ASR 前对音频做 RNNoise 频域降噪（抑制风扇/空调/环境稳态底噪），macOS 与 Windows 双端可用；仅覆盖主输入路径，处理失败自动回退透传，增加约 10ms 时延。</li><li><b>小米遥控器直连模式</b>：桌面端后处理链 HPF/AGC 与固件同步收紧，音质与网关模式拉齐。</li><li>本版本包含固件 2.4.10：设备 OTA 会自动提示升级，建议 app 与固件一起升。</li><li>喷麦的物理层手段（麦克风防风罩/海绵罩）仍是最有效单点，与本次软件改进叠加效果最佳。</li><li>网站下载按钮按版本号拼直链；若某平台安装包处于发布过渡窗口暂未就绪，请直接在本 Release 页面下载对应资产。</li></ul></div>
+        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><div># VoiceStick 2.5.0</div><b>新增</b><b>改进</b><b>修复</b><b>说明</b><ul><li><b>语音编辑（本版核心，双端默认开启）</b>：对刚输入的文本直接动口修改——说「把 X 改成 Y」「删除 X」，app 在输入框内定位目标词并替换/删除，不用手动移动光标。支持多处命中时追问「第几个」；「替换/删除」默认搜索整个输入框（最近一次语音输入唯一命中时优先）；「撤销/撤回」一键还原上一次语音修改；句中插入自动去掉末尾句号；目标词支持自然简写；尾删定位失败自动降级为删除光标前内容。</li><li><b>标点独词输入</b>：单独说「句号」「逗号」等标点名，直接上屏符号本身。</li><li><b>本地离线识别（实验）</b>：设置中可开启 SenseVoice 本地 ASR——语音会话本地识别，断网可用、零 API 成本、音频不出本机；配套设置页「服务提供方」本地模型下载入口。另内置本地小模型（llama.cpp）：语音精修与语音编辑目标词对齐可走本地兜底（默认关）。</li><li><b>热词体系升级（Windows）</b>：新增热词分区管理与智能热词管理——按输入内容自动切换领域分类、冷词自动清理进回收池、池内词回升自动恢复；新增热词碟，自动聚合各分类高活跃热词优先匹配，并结合领域语境推理。macOS 端新增热词候选挖掘：从你的修改中自动挖掘新词，设置页确认后入库。</li><li><b>纠错学习闭环（越用越准）</b>：app 自动记录你的修改与取消/重录等使用信号，沉淀个人纠错对；后续识别遇到同类错误自动纠正，支持拼音同音/近音归并、按应用场景分域、全句精确命中直接替换；Windows 端支持选中文字后直接纠错替换。</li><li><b>小米遥控器增强（macOS）</b>：方向/删除/音量键支持长按连发（节拍可调，直连与网关模式均生效）；电源键支持自定义映射，补齐与 Windows 一致的 12 键全集。</li><li><b>Windows 电池监测</b>：托盘实时电量指示，开发者模式支持快速采集与实时电压曲线。</li><li><b>Windows 虚拟麦克风增强</b>：新增直通输出模式；虚拟麦克风设备支持重命名；新增设备级麦克风模式。</li><li><b>会话历史与使用统计</b>：双端新增会话历史数据底座；Windows 端采集确认/取消/重录/停留时长等使用事件。</li><li><b>macOS 悬浮窗液态玻璃</b>：悬浮窗背景升级为系统玻璃材质，支持调节通透程度，观感与系统控件一致。</li><li><b>固件</b>：BLE 断连自动记录诊断数据，断连原因可追溯；设备息屏时进入动态电源管理，降低待机功耗。</li><li><b>精修响应速度</b>：精修链路增加预算回退与短文本跳过，长尾延迟从最差约 29 秒压到按文本长度封顶；DeepSeek 模型自动禁用思考链输出，不再拖慢首字。</li><li><b>耳语/小声说话更灵敏</b>：AGC 引入自适应噪声门并将增益上限 +12→+36dB，耳语场景不再录成静音（真机验证）。</li><li><b>遥控器网关模式录音卡顿/变调</b>：固件 I2S DMA 缓冲环加深并提高采集任务优先级（此前麦克风链路丢样 13%~50%）；对遥控器采集时间基做自适应修正（三次插值），修复录音「变快/发闷」。</li><li>修复 BLE 连接参数协商导致的音频卡顿。</li><li><b>语音编辑在浏览器/Electron 应用失效</b>：Chromium 系目标的辅助功能写入为异步生效，替换结果校验改为轮询确认，不再假失败。</li><li>修复 macOS 设置窗口内容超屏后无法滚动到底部。</li><li>修复句中「去句号」误删单独口述的句号（与标点独词输入的交叉场景）。</li><li>本版本包含固件 2.5.0：设备 OTA 会自动提示升级，建议 app 与固件一起升（固件含音频链路与功耗改进）。</li><li>本地离线识别为实验特性，默认关闭；使用前需在设置中下载本地模型。</li><li>网站下载按钮按版本号拼直链；若某平台安装包处于发布过渡窗口暂未就绪，请直接在本 Release 页面下载对应资产。</li></ul></div>
       ]]></description>
-      <pubDate>Wed, 14 Oct 2026 05:06:00 +0000</pubDate>
+      <pubDate>Tue, 03 Nov 2026 23:33:17 +0000</pubDate>
       <enclosure
-        url="https://dl.davenger.cloud/software/windows/v2.4.10/VoiceStick_2.4.10_zh-CN.msi"
+        url="https://dl.davenger.cloud/software/windows/v2.5.0/VoiceStick_2.5.0_zh-CN.msi"
         sparkle:os="windows"
-        sparkle:version="2.4.10"
-        sparkle:shortVersionString="2.4.10"
+        sparkle:version="2.5.0"
+        sparkle:shortVersionString="2.5.0"
         sparkle:installerArguments="/passive"
-        length="33652736"
+        length="34308096"
         type="application/octet-stream"
       />
     </item>
     <item>
-      <title>Version 2.4.10</title>
+      <title>Version 2.5.0</title>
       <description><![CDATA[
-        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><div># VoiceStick 2.4.10</div><b>改进</b><b>说明</b><ul><li><b>录音音质与识别精度（本版核心）</b>：固件音频链路参数收紧——软件高通滤波 90→120Hz（喷麦爆破音能量实测集中在 100-150Hz）、AGC 目标 -6→-12dBFS、增益上限 +20→+12dB。爆点不再撞限幅产生削波失真，语音间隙底噪泵升直降约 8dB；近场说话、喷麦场景的语音识别准确率明显提升（真机 A/B 已验证）。</li><li><b>桌面端人声增强/降噪（RNNoise，PoC）</b>：新增 <code>audio_noise_suppression</code> 配置项（默认关）。开启后 ASR 前对音频做 RNNoise 频域降噪（抑制风扇/空调/环境稳态底噪），macOS 与 Windows 双端可用；仅覆盖主输入路径，处理失败自动回退透传，增加约 10ms 时延。</li><li><b>小米遥控器直连模式</b>：桌面端后处理链 HPF/AGC 与固件同步收紧，音质与网关模式拉齐。</li><li>本版本包含固件 2.4.10：设备 OTA 会自动提示升级，建议 app 与固件一起升。</li><li>喷麦的物理层手段（麦克风防风罩/海绵罩）仍是最有效单点，与本次软件改进叠加效果最佳。</li><li>网站下载按钮按版本号拼直链；若某平台安装包处于发布过渡窗口暂未就绪，请直接在本 Release 页面下载对应资产。</li></ul></div>
+        <div style="background:#ffffff;color:#1a1a1a;font-family:'Segoe UI',Arial,sans-serif;font-size:12px;padding:6px 10px;"><div># VoiceStick 2.5.0</div><b>新增</b><b>改进</b><b>修复</b><b>说明</b><ul><li><b>语音编辑（本版核心，双端默认开启）</b>：对刚输入的文本直接动口修改——说「把 X 改成 Y」「删除 X」，app 在输入框内定位目标词并替换/删除，不用手动移动光标。支持多处命中时追问「第几个」；「替换/删除」默认搜索整个输入框（最近一次语音输入唯一命中时优先）；「撤销/撤回」一键还原上一次语音修改；句中插入自动去掉末尾句号；目标词支持自然简写；尾删定位失败自动降级为删除光标前内容。</li><li><b>标点独词输入</b>：单独说「句号」「逗号」等标点名，直接上屏符号本身。</li><li><b>本地离线识别（实验）</b>：设置中可开启 SenseVoice 本地 ASR——语音会话本地识别，断网可用、零 API 成本、音频不出本机；配套设置页「服务提供方」本地模型下载入口。另内置本地小模型（llama.cpp）：语音精修与语音编辑目标词对齐可走本地兜底（默认关）。</li><li><b>热词体系升级（Windows）</b>：新增热词分区管理与智能热词管理——按输入内容自动切换领域分类、冷词自动清理进回收池、池内词回升自动恢复；新增热词碟，自动聚合各分类高活跃热词优先匹配，并结合领域语境推理。macOS 端新增热词候选挖掘：从你的修改中自动挖掘新词，设置页确认后入库。</li><li><b>纠错学习闭环（越用越准）</b>：app 自动记录你的修改与取消/重录等使用信号，沉淀个人纠错对；后续识别遇到同类错误自动纠正，支持拼音同音/近音归并、按应用场景分域、全句精确命中直接替换；Windows 端支持选中文字后直接纠错替换。</li><li><b>小米遥控器增强（macOS）</b>：方向/删除/音量键支持长按连发（节拍可调，直连与网关模式均生效）；电源键支持自定义映射，补齐与 Windows 一致的 12 键全集。</li><li><b>Windows 电池监测</b>：托盘实时电量指示，开发者模式支持快速采集与实时电压曲线。</li><li><b>Windows 虚拟麦克风增强</b>：新增直通输出模式；虚拟麦克风设备支持重命名；新增设备级麦克风模式。</li><li><b>会话历史与使用统计</b>：双端新增会话历史数据底座；Windows 端采集确认/取消/重录/停留时长等使用事件。</li><li><b>macOS 悬浮窗液态玻璃</b>：悬浮窗背景升级为系统玻璃材质，支持调节通透程度，观感与系统控件一致。</li><li><b>固件</b>：BLE 断连自动记录诊断数据，断连原因可追溯；设备息屏时进入动态电源管理，降低待机功耗。</li><li><b>精修响应速度</b>：精修链路增加预算回退与短文本跳过，长尾延迟从最差约 29 秒压到按文本长度封顶；DeepSeek 模型自动禁用思考链输出，不再拖慢首字。</li><li><b>耳语/小声说话更灵敏</b>：AGC 引入自适应噪声门并将增益上限 +12→+36dB，耳语场景不再录成静音（真机验证）。</li><li><b>遥控器网关模式录音卡顿/变调</b>：固件 I2S DMA 缓冲环加深并提高采集任务优先级（此前麦克风链路丢样 13%~50%）；对遥控器采集时间基做自适应修正（三次插值），修复录音「变快/发闷」。</li><li>修复 BLE 连接参数协商导致的音频卡顿。</li><li><b>语音编辑在浏览器/Electron 应用失效</b>：Chromium 系目标的辅助功能写入为异步生效，替换结果校验改为轮询确认，不再假失败。</li><li>修复 macOS 设置窗口内容超屏后无法滚动到底部。</li><li>修复句中「去句号」误删单独口述的句号（与标点独词输入的交叉场景）。</li><li>本版本包含固件 2.5.0：设备 OTA 会自动提示升级，建议 app 与固件一起升（固件含音频链路与功耗改进）。</li><li>本地离线识别为实验特性，默认关闭；使用前需在设置中下载本地模型。</li><li>网站下载按钮按版本号拼直链；若某平台安装包处于发布过渡窗口暂未就绪，请直接在本 Release 页面下载对应资产。</li></ul></div>
       ]]></description>
-      <pubDate>Wed, 14 Oct 2026 05:06:00 +0000</pubDate>
+      <pubDate>Tue, 03 Nov 2026 23:33:17 +0000</pubDate>
       <sparkle:minimumSystemVersion>12.0</sparkle:minimumSystemVersion>
       <enclosure
-        url="https://dl.davenger.cloud/software/macos/v2.4.10/VoiceStick-2.4.10.zip"
+        url="https://dl.davenger.cloud/software/macos/v2.5.0/VoiceStick-2.5.0.zip"
         sparkle:os="macos"
-        sparkle:version="2.4.10"
-        sparkle:shortVersionString="2.4.10"
-        sparkle:edSignature="wualeLKN+WzyCA4JyjFQJbIGMRPPJXSLtI5mfmwqvAu66WG6goB6+vNw3AzjTnWM6HL8q+aL+3p+LoW49NXTAw=="
-        length="5026324"
+        sparkle:version="2.5.0"
+        sparkle:shortVersionString="2.5.0"
+        sparkle:edSignature="Q8QOGT6Fnfn5yE8WN+nNyUKjl9GeTeFh7+326iSo7Wih1+Tfw2l3KduL55UMuxfIEndIk6gM8FuIa8hjphRmDA=="
+        length="5516811"
         type="application/octet-stream"
       />
     </item>
