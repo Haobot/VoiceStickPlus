@@ -69,6 +69,8 @@ public enum VoiceTargetedFailureCode: String, CaseIterable, Equatable {
     case ambiguous = "target_ambiguous"
     case invalid = "target_invalid"
     case fieldMismatch = "field_mismatch"
+    // 以下两个已不再由 targeted planner 返回（2026-10-31 光标门槛放宽，见
+    // VoiceTargetedPlanner）；保留枚举位与双端失败名表/日志码对齐。
     case caretNotEnd = "caret_not_end"
     case selectionPresent = "selection_present"
     case verifyUnavailable = "verify_unavailable"
@@ -78,6 +80,9 @@ public enum VoiceTargetedFailureCode: String, CaseIterable, Equatable {
     case scopeExpired = "scope_expired"
     case appChanged = "app_changed"
     case accessibilityDenied = "accessibility_denied"
+    // 批次 1（字段内定位）：anchored 段在字段中出现 ≥2 次且 P1 全 miss——零容错
+    // 拒绝，不猜偏移（双端同构追加，见 VoiceEditAnchor）。
+    case anchorAmbiguous = "anchor_ambiguous"
 }
 
 /// remainingText 内的一次非重叠精确匹配。
@@ -432,10 +437,17 @@ public enum VoiceTargetedMatcher {
 /// targeted 执行计划纯函数。安全模型（与旧尾部删除不同）：
 ///   * **任何 [voice_edit].verify_mode（strict/auto/off）下都必须 verified**——
 ///     严禁复用 8s unverified 盲删/盲改；读不到字段/光标一律拒绝；
-///   * L1 要求**完整** remainingText 仍是字段后缀（允许末尾一个已记录 auto_enter
-///     换行），不做旧「最长前缀」容错——用户手工变化会使目标偏移不可靠；
-///   * 选区非空、光标不在字段末尾 → 拒绝。
+///   * L1 定位自批次 1 起升级为**字段内多级锚定**（VoiceEditAnchor：光标前缀/
+///     光标后缀/字段末尾/唯一出现，零容错）。旧「完整 remainingText 是字段后缀」
+///     校验 = 字段末尾锚（P1c）的等价实现，由旧签名继续提供（行为不变）；
+///   * 光标位置/既有选区**不拦截**（2026-10-31 放宽）：目标偏移由锚定 + 计划
+///     时刻从当前字段现算，误改风险由「选区读回逐字确认 + 单次动作 + 文本终验」
+///     兜底——光标在句中、双击选中核对是替换的常态动作，按光标拒绝会让功能不可用。
+///     caret/selection 读值仅作诊断日志（协调器）。
 public enum VoiceTargetedPlanner {
+    /// 旧签名（字段末尾后缀校验；批间兼容）。语义与批次 1 之前逐字节一致：完整
+    /// remainingText 须是字段后缀（允许末尾一个**已记录** auto_enter 换行），委托
+    /// 到定位器的 P1c 等价实现（locateFieldEnd），不做「最长前缀」容错。
     public static func plan(
         command: VoiceTargetedCommand,
         remainingText: String,
@@ -458,21 +470,59 @@ public enum VoiceTargetedPlanner {
             selected = matches[0]
         }
 
-        // L1：targeted 恒 verified——任何 verify_mode 下都强制字段/光标校验。
+        // L1：targeted 恒 verified——任何 verify_mode 下都强制字段/光标/选区**可读**
+        // （读不到一律拒绝）；读到的光标/选区值不作拒绝条件（2026-10-31 放宽，见上）。
         guard let fieldText, fieldText.utf16.count <= kVoiceEditMaxVerifiableFieldUTF16,
-              let caretUTF16, let selectionLength else {
+              caretUTF16 != nil, selectionLength != nil else {
             return .failure(.verifyUnavailable)
         }
-        if selectionLength > 0 { return .failure(.selectionPresent) }
-        guard caretUTF16 == fieldText.utf16.count else { return .failure(.caretNotEnd) }
-        // 完整 remainingText 后缀校验（允许末尾一个**已记录** auto_enter 换行；
-        // targeted 不消费该换行，pressedEnter 保持原值）。不使用旧「最长前缀」容错。
-        guard isFieldTailValid(fieldText: fieldText, remainingText: remainingText,
-                               pressedEnter: pressedEnter) else {
+        // 完整 remainingText 后缀校验（= 定位器 P1c 字段末尾锚的等价实现）。
+        guard VoiceEditAnchor.locateFieldEnd(
+            remaining: remainingText, pressedEnter: pressedEnter, fieldText: fieldText
+        ) != nil else {
             return .failure(.fieldMismatch)
         }
+        return makePlan(command: command, remainingText: remainingText, selected: selected)
+    }
 
-        // 执行后的 remainingText。
+    /// 新签名（批次 1 字段内锚定）：协调器先用 VoiceEditAnchor.locate 定出锚点，
+    /// 再带锚进计划——锚已保证 anchored 段在字段中精确成立，本函数只复用
+    /// L1 可读性守卫，不重复做后缀校验（零容错定位在 locate 内完成）。
+    public static func plan(
+        command: VoiceTargetedCommand,
+        remainingText: String,
+        pressedEnter: Bool,
+        anchor: VoiceEditAnchor,
+        fieldText: String,
+        caretUTF16: Int,
+        selectionLength: Int
+    ) -> VoiceTargetedPlanResult {
+        let matches = VoiceTargetedMatcher.occurrences(of: command.target, in: remainingText)
+        guard !matches.isEmpty else { return .failure(.notFound) }
+        let selected: VoiceTargetedOccurrence
+        switch command.position {
+        case .first:
+            selected = matches[0]
+        case .last:
+            selected = matches[matches.count - 1]
+        case .unspecified:
+            guard matches.count == 1 else { return .failure(.ambiguous) }
+            selected = matches[0]
+        }
+        // L1 可读性守卫（防御性复检；定位器语义失败在协调器入口已透传）。
+        guard fieldText.utf16.count <= kVoiceEditMaxVerifiableFieldUTF16,
+              caretUTF16 >= 0, selectionLength >= 0 else {
+            return .failure(.verifyUnavailable)
+        }
+        return makePlan(command: command, remainingText: remainingText, selected: selected)
+    }
+
+    /// 执行后的 remainingText 构造（两个签名共用；grapheme 区间替换）。
+    private static func makePlan(
+        command: VoiceTargetedCommand,
+        remainingText: String,
+        selected: VoiceTargetedOccurrence
+    ) -> VoiceTargetedPlanResult {
         let chars = Array(remainingText)
         let newRemaining: String
         switch command.action {
@@ -490,13 +540,5 @@ public enum VoiceTargetedPlanner {
             occurrence: selected,
             newRemainingText: newRemaining
         ))
-    }
-
-    /// 字段尾部合法性：pressedEnter 时优先按「remaining+\n」判定（避免 remaining 自身
-    /// 以换行结尾时误配裸后缀），否则按裸 remaining 判定——与协调器后缀拆解同一顺序。
-    private static func isFieldTailValid(fieldText: String, remainingText: String,
-                                         pressedEnter: Bool) -> Bool {
-        if pressedEnter, fieldText.hasSuffix(remainingText + "\n") { return true }
-        return fieldText.hasSuffix(remainingText)
     }
 }

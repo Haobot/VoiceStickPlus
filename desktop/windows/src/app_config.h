@@ -353,6 +353,10 @@ struct AppConfig {
     std::map<std::string, OutputProfile> device_output_profiles;
     // 粘贴文本后是否自动按回车确认。默认关闭（用户手动回车，避免误提交）。
     bool auto_enter = false;
+    // 句中插入去句末句号（[output].midline_strip_period，批次 1；默认 true）：
+    // 光标后同一逻辑行还有非空白字符时，去掉注入文本末尾一个句号（。/．/.（前
+    // 字符非 ASCII 字母数字））；！？不去。读不到字段不处理（双端同名同默认）。
+    bool midline_strip_period = true;
     bool global_hotkey_enabled = true;
     std::string global_hotkey = "Alt+X";
     bool show_imu_debug = false;

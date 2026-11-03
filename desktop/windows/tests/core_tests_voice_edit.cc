@@ -18,6 +18,7 @@
 
 #include <algorithm>
 
+#include "voice_edit_anchor.h"
 #include "voice_targeted_edit.h"
 
 #include <cassert>
@@ -75,6 +76,10 @@ VoiceEditFieldState VerifiedField(const std::string& tail, bool caret_at_end = t
     field.caret_at_end = caret_at_end;
     field.selection_collapsed = collapsed;
     field.tail_text = tail;
+    field.tail_utf16_length = VoiceTargetedUtf16Length(tail);
+    // 批次 1：caret_at_end=true 时补窗口内偏移（= tail 末尾），激活 P1a/T10 等价
+    // 路径；false 保持 kCaretOutsideTail（旧行为：仅 P1c/P2 + caret_at_end 兜底）。
+    if (caret_at_end) field.caret_tail_utf16 = field.tail_utf16_length;
     return field;
 }
 
@@ -120,6 +125,214 @@ void ExpectReject(const std::string& remaining, bool pressed_enter,
                     std::string(VoiceEditRejectReasonName(reason)).c_str());
         assert(false && "voice edit reject mismatch");
     }
+}
+
+
+// ============================ 批次 1：字段内定位器（T1-T13 双端同向量）============================
+// 与 macOS Tests/VoiceStickTests/VoiceEditAnchorTests.swift 同一张向量表（双端同
+// 向量约定；T14/T15 为 macOS 协调器级用例，Windows 侧仅纯逻辑可达的 stage 日志点）。
+
+namespace {
+
+void ExpectAnchor(const VoiceEditAnchorResult& result, VoiceEditAnchor::Kind kind,
+                  std::size_t start, std::size_t end, const char* name) {
+    if (!result.ok || result.anchor.kind != kind || result.anchor.anchor_start != start ||
+        result.anchor.anchor_end != end) {
+        std::printf("FAIL anchor %s: ok=%d kind=%d start=%zu end=%zu\n", name,
+                    result.ok ? 1 : 0, static_cast<int>(result.anchor.kind),
+                    result.anchor.anchor_start, result.anchor.anchor_end);
+        assert(false && "anchor mismatch");
+    }
+}
+
+void ExpectAnchorFailure(const VoiceEditAnchorResult& result,
+                         VoiceEditAnchorFailure failure, const char* name) {
+    if (result.ok || result.failure != failure) {
+        std::printf("FAIL anchor failure %s: ok=%d failure=%d\n", name, result.ok ? 1 : 0,
+                    static_cast<int>(result.failure));
+        assert(false && "anchor failure mismatch");
+    }
+}
+
+std::string Anchored(const std::string& remaining, bool pressed_enter) {
+    return pressed_enter ? remaining + "\n" : remaining;
+}
+
+}  // namespace
+
+void TestVoiceEditAnchorLocator() {
+    // T1 光标紧邻段尾（P1a）。
+    ExpectAnchor(LocateVoiceEditAnchor("我去北京上班", 4, 0, "北京", false),
+                 VoiceEditAnchor::Kind::kCaretPrefix, 2, 4, "T1 P1a");
+    // T2 光标紧邻段首（P1b）。
+    ExpectAnchor(LocateVoiceEditAnchor("我去北京上班", 2, 0, "北京", false),
+                 VoiceEditAnchor::Kind::kCaretSuffix, 2, 4, "T2 P1b");
+    // T3 字段末尾追加：光标在末尾（P1a 同位，anchorEnd=字段末尾）+ 光标在开头（P1c）。
+    ExpectAnchor(LocateVoiceEditAnchor("我去北京上班", 6, 0, "上班", false),
+                 VoiceEditAnchor::Kind::kCaretPrefix, 4, 6, "T3 P1a 同位");
+    ExpectAnchor(LocateVoiceEditAnchor("我去北京上班", 0, 0, "上班", false),
+                 VoiceEditAnchor::Kind::kFieldEnd, 4, 6, "T3b P1c");
+    // T3c/d P1c 已记录换行优先/裸回落（FieldEndAnchor 专用接口）。
+    {
+        const auto a = LocateVoiceEditFieldEndAnchor("我去北京上班\n", "上班", true);
+        assert(a.anchor_start == 4 && a.anchor_end == 7);
+        const auto b = LocateVoiceEditFieldEndAnchor("我去北京上班", "上班", true);
+        assert(b.anchor_start == 4 && b.anchor_end == 6);
+        const auto c = LocateVoiceEditFieldEndAnchor("我去上海\n", "上班", true);
+        assert(c.anchor_start == c.anchor_end);  // miss 哨兵
+    }
+    // T4 段唯一出现（P2，光标在别处）。
+    ExpectAnchor(LocateVoiceEditAnchor("我在杭州北京出差", 7, 0, "北京", false),
+                 VoiceEditAnchor::Kind::kUniqueOccurrence, 4, 6, "T4 P2");
+    // T5 段出现两次且 P1 全 miss → anchor_ambiguous。
+    ExpectAnchorFailure(
+        LocateVoiceEditAnchor("北京很好，我去北京出差", 11, 0, "北京", false),
+        VoiceEditAnchorFailure::kAnchorAmbiguous, "T5 ambiguous");
+    // T6 用户改过段内文本（全 miss）→ field_mismatch。
+    ExpectAnchorFailure(LocateVoiceEditAnchor("背景很好", 4, 0, "北京", false),
+                        VoiceEditAnchorFailure::kFieldMismatch, "T6 mismatch");
+    // T7 pressedEnter 已记录换行 + P1a：anchored 含 \n。
+    ExpectAnchor(LocateVoiceEditAnchor("我去北京上班\n吗", 7, 0, "上班\n", true),
+                 VoiceEditAnchor::Kind::kCaretPrefix, 4, 7, "T7 P1a 含换行");
+    // T8 anchored 自身以 \n 结尾（口述多行）：不误并前缀。
+    ExpectAnchor(LocateVoiceEditAnchor("序第一行\n尾", 5, 0, "第一行\n", false),
+                 VoiceEditAnchor::Kind::kCaretPrefix, 1, 5, "T8 口述换行");
+    {
+        const auto b = LocateVoiceEditFieldEndAnchor("序你好\n", "你好\n", true);
+        assert(b.anchor_start == 1 && b.anchor_end == 4);  // 裸回落锚段=remaining
+    }
+    // T11 surrogate 对（emoji）：UTF-16 偏移（🙂=2 码元；🇨🇳=4 码元）。
+    ExpectAnchor(LocateVoiceEditAnchor("你🙂好呀", 4, 0, "🙂好", false),
+                 VoiceEditAnchor::Kind::kCaretPrefix, 1, 4, "T11 emoji");
+    ExpectAnchor(LocateVoiceEditAnchor("我爱🇨🇳国", 7, 0, "🇨🇳国", false),
+                 VoiceEditAnchor::Kind::kCaretPrefix, 2, 7, "T11b 国旗");
+    // 补充：选区非空跳过 P1a/P1b → P1c。
+    ExpectAnchor(LocateVoiceEditAnchor("我去北京上班", 2, 2, "上班", false),
+                 VoiceEditAnchor::Kind::kFieldEnd, 4, 6, "选区非空 → P1c");
+    // 补充：P1a 固定最优先。
+    ExpectAnchor(LocateVoiceEditAnchor("你好你好", 2, 0, "你好", false),
+                 VoiceEditAnchor::Kind::kCaretPrefix, 0, 2, "P1a 最优先");
+}
+
+void TestVoiceEditAnchorPlanner() {
+    // T10 回归底线：caret 在锚点（P1a 同位、含换行）→ 计划与批次 1 之前逐字段
+    // 等价（needs_caret_move=false、anchor_end=字段末尾）。
+    {
+        const auto plan = PlanVoiceEdit("你好世界", true, Chars(2),
+                                        VerifiedField("你好世界\n"),
+                                        VoiceEditVerifyMode::kAuto, false);
+        assert(plan.ok && plan.backspace_count == 3 && plan.delete_graphemes == 2 &&
+               plan.delete_newline);
+        assert(!plan.needs_caret_move && plan.anchor_end_utf16 == 5);
+    }
+    // T9 光标不在 anchorEnd（偏移可得，段中）→ 计划成功 + needs_caret_move=true
+    //（协调器先移光标；移动失败零退格由协调器级用例覆盖，见
+    // TestVoiceEditCoordinatorCaretMove）。
+    {
+        auto field = VerifiedField("你好世界");
+        field.caret_tail_utf16 = 1;  // 光标移到段中
+        const auto plan = PlanVoiceEdit("你好世界", false, Chars(2), field,
+                                        VoiceEditVerifyMode::kAuto, false);
+        assert(plan.ok && plan.backspace_count == 2);
+        assert(plan.needs_caret_move && plan.anchor_end_utf16 == 4);
+    }
+    // T9 变体：段后手打 + 光标在末尾 → P2 锚（anchor_end=5=段尾）需移动。
+    {
+        auto field = VerifiedField("你好世界\n吗");
+        field.caret_tail_utf16 = 7;
+        const auto plan = PlanVoiceEdit("你好世界", true, Chars(2), field,
+                                        VoiceEditVerifyMode::kAuto, false);
+        assert(plan.ok && plan.backspace_count == 3 && plan.delete_newline);
+        assert(plan.needs_caret_move && plan.anchor_end_utf16 == 5);
+    }
+}
+
+void TestTargetedAnchorPlanner() {
+    // T1 P1a 句中替换（字段「我去北京上班」、光标 4、锚 [2,4)）。
+    {
+        const VoiceEditAnchor anchor{VoiceEditAnchor::Kind::kCaretPrefix, 2, 4};
+        VoiceTargetedCommand command;
+        command.action.kind = VoiceTargetedActionKind::kReplace;
+        command.action.replacement = "杭州";
+        command.target = "北京";
+        const auto plan = PlanVoiceTargetedAnchored(command, "北京", false, true,
+                                                    "我去北京上班", anchor);
+        assert(plan.ok && plan.new_remaining_text == "杭州");
+        assert(plan.occurrence.utf16_start == 0 && plan.occurrence.utf16_length == 2);
+        assert(plan.anchor_start_utf16 == 2 && plan.anchor_end_utf16 == 4);
+        assert(plan.tail_prefix == "我去" && plan.anchor_after_text == "上班");
+        assert(!plan.has_recorded_newline);
+    }
+    // T2 P1b 段首删除。
+    {
+        const VoiceEditAnchor anchor{VoiceEditAnchor::Kind::kCaretSuffix, 2, 4};
+        VoiceTargetedCommand command;
+        command.action.kind = VoiceTargetedActionKind::kDelete;
+        command.target = "北京";
+        const auto plan = PlanVoiceTargetedAnchored(command, "北京", false, true,
+                                                    "我去北京上班", anchor);
+        assert(plan.ok && plan.new_remaining_text.empty());
+    }
+    // T4 P2 唯一出现替换（段后内容进 anchor_after_text，终验期望拼接用）。
+    {
+        const VoiceEditAnchor anchor{VoiceEditAnchor::Kind::kUniqueOccurrence, 4, 6};
+        VoiceTargetedCommand command;
+        command.action.kind = VoiceTargetedActionKind::kReplace;
+        command.action.replacement = "上海";
+        command.target = "北京";
+        const auto plan = PlanVoiceTargetedAnchored(command, "北京", false, true,
+                                                    "我在杭州北京出差", anchor);
+        assert(plan.ok && plan.new_remaining_text == "上海");
+        assert(plan.tail_prefix == "我在杭州" && plan.anchor_after_text == "出差");
+    }
+    // T12 targeted 恒 verified 红线：字段不可读 → verify_unavailable（锚路径同样）。
+    {
+        const VoiceEditAnchor anchor{VoiceEditAnchor::Kind::kCaretPrefix, 2, 4};
+        VoiceTargetedCommand command;
+        command.action.kind = VoiceTargetedActionKind::kDelete;
+        command.target = "北京";
+        const auto plan = PlanVoiceTargetedAnchored(command, "北京", false, false,
+                                                    "我去北京上班", anchor);
+        assert(!plan.ok && plan.failure == VoiceTargetedFailure::kVerifyUnavailable);
+    }
+    // T13 句中句号剥离纯函数（与 macOS stripMidlinePeriod 同表）。
+    assert(StripMidlinePeriod("今天天气不错。", true) == "今天天气不错");
+    assert(StripMidlinePeriod("今天天气不错．", true) == "今天天气不错");
+    assert(StripMidlinePeriod("收到.", true) == "收到");
+    assert(StripMidlinePeriod("真的吗！", true) == "真的吗！");
+    assert(StripMidlinePeriod("是吗？", true) == "是吗？");
+    assert(StripMidlinePeriod("一共3.", true) == "一共3.");
+    assert(StripMidlinePeriod("升级到v1.", true) == "升级到v1.");
+    assert(StripMidlinePeriod("句话.", true) == "句话");
+    assert(StripMidlinePeriod("今天天气不错。", false) == "今天天气不错。");
+    assert(StripMidlinePeriod("", true).empty());
+    assert(MidlinePeriodStrippable("不错。"));
+    assert(!MidlinePeriodStrippable("3."));
+    assert(!MidlinePeriodStrippable("不错！"));
+    // 裸句号守卫（与标点独词输入的交叉修复：单独说「句号」→ 注入文本恰为「。」）：
+    // 句号之前去掉首尾空白后为空 → 刻意注入的标点，句中也永不剥；句号前有内容
+    // 照剥。预检同口径（与 macOS 同表）。
+    assert(StripMidlinePeriod("。", true) == "。");
+    assert(StripMidlinePeriod("．", true) == "．");
+    assert(StripMidlinePeriod(".", true) == ".");
+    assert(StripMidlinePeriod(" 。", true) == " 。");
+    assert(StripMidlinePeriod("\n.", true) == "\n.");
+    assert(StripMidlinePeriod("今天很好。", true) == "今天很好");
+    assert(!MidlinePeriodStrippable("。"));
+    assert(!MidlinePeriodStrippable("．"));
+    assert(!MidlinePeriodStrippable("."));
+    assert(!MidlinePeriodStrippable(" 。"));
+    assert(!MidlinePeriodStrippable("\n."));
+    assert(MidlinePeriodStrippable("今天很好。"));
+    // isMidlineInsertion：光标后同一逻辑行还有非空白字符。
+    assert(IsMidlineInsertion("你好世界", 2));
+    assert(!IsMidlineInsertion("你好世界", 4));
+    assert(!IsMidlineInsertion("你好\n世界", 2));
+    assert(!IsMidlineInsertion("你好  世界", 2));
+    // 翻译模式样本（判定只看插入位置，不看模式）。
+    assert(StripMidlinePeriod("今天天气很好。", true) == "今天天气很好");
+    assert(StripMidlinePeriod("The weather is nice today.", true) ==
+           "The weather is nice today.");  // ASCII 字母后句点保留（双端一致）
 }
 
 void TestVoiceEditParserPositive() {
@@ -373,9 +586,10 @@ void TestVoiceEditPlannerVerified() {
                VoiceEditVerifyMode::kAuto, false, /*count=*/3, /*graphemes=*/2,
                /*newline=*/true, "你好");
 
-    // 字段尾被用户手动删过：字段 "你好世"+LF → eff=3、count=3 → 剩余 "你"。
-    ExpectPlan("你好世界", true, Chars(2), VerifiedField("你好世\n"),
-               VoiceEditVerifyMode::kAuto, false, 3, 2, true, "你");
+    // 批次 1 语义更新：字段尾被用户手动删过（字段只剩前缀）——零容错拒绝
+    //（旧「最长前缀」容错已移除：偏移不可靠宁拒勿错）。
+    ExpectReject("你好世界", true, Chars(2), VerifiedField("你好世\n"),
+                 VoiceEditVerifyMode::kAuto, false, VoiceEditRejectReason::kTextMismatch);
 
     // 无 auto_enter：字段 = 注入文本、光标在文末 → count=2。
     ExpectPlan("你好世界", false, Chars(2), VerifiedField("你好世界"),
@@ -410,16 +624,22 @@ void TestVoiceEditPlannerVerified() {
     ExpectPlan("你好世界", false, Chars(2), VerifiedField("前面的话你好世界"),
                VoiceEditVerifyMode::kAuto, false, 2, 2, false, "你好");
 
-    // 字段尾被追加手打内容 → 拒绝。
-    ExpectReject("你好世界", true, Chars(2), VerifiedField("你好世界\n吗"),
-                 VoiceEditVerifyMode::kAuto, false, VoiceEditRejectReason::kTextMismatch);
+    // 批次 1 语义更新：字段尾被追加手打内容（光标在末尾）——P2 唯一出现锚命中，
+    // 计划成功（协调器先移光标到锚点再退格）。
+    ExpectPlan("你好世界", true, Chars(2), VerifiedField("你好世界\n吗"),
+               VoiceEditVerifyMode::kAuto, false, 3, 2, true, "你好");
     // 字段文本已不在输入框（已发送/切换应用）→ 拒绝。
     ExpectReject("你好世界", false, Chars(2), VerifiedField(""),
                  VoiceEditVerifyMode::kAuto, false, VoiceEditRejectReason::kTextMismatch);
-    // 光标不在文末 → 拒绝。
-    ExpectReject("你好世界", false, Chars(2), VerifiedField("你好世界", false),
-                 VoiceEditVerifyMode::kAuto, false,
-                 VoiceEditRejectReason::kCaretNotAtEnd);
+    // 批次 1 语义更新：光标不在文末（偏移不可得，caret_at_end=false 兜底）→
+    // P1c 命中且 needs_caret_move=true（协调器先移光标），不再 caret_not_end。
+    {
+        const auto plan = PlanVoiceEdit("你好世界", false, Chars(2),
+                                        VerifiedField("你好世界", false),
+                                        VoiceEditVerifyMode::kAuto, false);
+        assert(plan.ok && plan.backspace_count == 2 && plan.needs_caret_move);
+        assert(plan.anchor_end_utf16 == 4);
+    }
     // 选区非空 → 拒绝。
     ExpectReject("你好世界", false, Chars(2), VerifiedField("你好世界", true, false),
                  VoiceEditVerifyMode::kAuto, false,
@@ -869,6 +1089,11 @@ public:
         out->tail_utf16_length = tail_len;
         out->selection_collapsed = field->sel_len == 0;
         out->caret_at_end = field->sel_start + field->sel_len == field->doc.size();
+        // 批次 1（字段内定位）：小字段 tail 覆盖全文，tail 相对偏移 = 绝对偏移。
+        const std::size_t caret = field->sel_start + field->sel_len;
+        out->caret_tail_utf16 = caret <= tail_start + tail_len && caret >= tail_start
+                                    ? caret - tail_start
+                                    : kCaretOutsideTail;
         return true;
     }
     VoiceTargetedFakeField* field = nullptr;
@@ -895,6 +1120,18 @@ public:
         }
         return true;
     }
+    bool MoveCaretTo(std::size_t tail_relative_utf16) override {
+        if (field == nullptr) return false;
+        constexpr std::size_t kTail = 512;
+        const std::size_t tail_len = std::min(kTail, field->doc.size());
+        const std::size_t tail_start = field->doc.size() - tail_len;
+        // 尾删前置光标移动（批次 1）：记录 op 与终验末尾恢复区分（end/move）。
+        ops->push_back(tail_start + tail_relative_utf16 >= field->doc.size() ? "end" : "move");
+        if (move_fails) return false;
+        field->sel_start = tail_start + tail_relative_utf16;
+        field->sel_len = 0;
+        return true;
+    }
     bool MoveCaretToEnd() override {
         ops->push_back("end");
         if (field == nullptr) return false;
@@ -905,6 +1142,7 @@ public:
     VoiceTargetedFakeField* field = nullptr;
     std::vector<std::string>* ops = nullptr;
     bool drift = false;
+    bool move_fails = false;  // 批次 1：模拟 UIA 移动失败（caret_move_failed 路径）
 };
 
 class VoiceTargetedInputInjector : public FakeInputInjector {
@@ -1038,6 +1276,46 @@ private:
 };
 
 std::string TargetedToast(const char* text) { return std::string(text) + ":3000"; }
+
+
+// 批次 1（字段内定位）T9：尾删前置光标移动——光标在段中 → MoveCaretTo(anchorEnd)
+// 轮询确认后退格；移动失败 → caret_move_failed 零退格、记录保留。
+// TODO(win): 待 Windows 机编译+CTest 验证（与 macOS CoordinatorFsmTests T9 同语义）。
+void TestVoiceEditCoordinatorCaretMove() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("你好世界", 171));
+    // 光标移到段中（1）→ P1c 锚 anchor_end=4 → move(4) → 退格 1 次删「界」。
+    harness.field().sel_start = 1;
+    harness.field().sel_len = 0;
+    harness.ops().clear();
+    assert(harness.RunCommand("删除", 172));
+    assert((harness.ops() == std::vector<std::string>{"move", "backspace"}));
+    assert(harness.field().doc == L"你好世");
+    assert(harness.input().sent_key_combos.size() == 1);
+
+    // 移动失败（Fake editor 拒绝）→ caret_move_failed，零退格、记录保留。
+    VoiceTargetedHarness h2(config);
+    assert(h2.PasteText("你好世界", 173));
+    h2.field().sel_start = 1;
+    h2.field().sel_len = 0;
+    h2.editor().move_fails = true;
+    h2.ops().clear();
+    assert(h2.RunCommand("删除", 174));
+    assert(std::find(h2.ops().begin(), h2.ops().end(), "backspace") == h2.ops().end());
+    assert(h2.input().sent_key_combos.empty());
+    assert(h2.field().doc == L"你好世界");  // 字段未被改动
+    assert(h2.ui().timed_messages.back() ==
+           TargetedToast(Tr(StringId::kVoiceEditCaretMoveFailed, h2.language()).c_str()));
+    // 记录保留：解除移动失败后同命令重试直接生效（remaining 仍完整）。
+    h2.editor().move_fails = false;
+    h2.ops().clear();
+    assert(h2.RunCommand("删除", 175));
+    assert((h2.ops() == std::vector<std::string>{"move", "backspace"}));
+    assert(h2.field().doc == L"你好世");
+}
 
 // 基本删除：选区 → 读回 → 一次 Backspace → 恢复末尾 → 终验 → 记录更新；
 // 命令轮不 Paste 指令本身；第二次 targeted 命令基于更新后的 remaining 继续执行。
@@ -1539,14 +1817,15 @@ void TestTargetedPlanner() {
     auto p9 = PlanVoiceTargeted(TargetedReplace("北京", "上海", VoiceTargetedPosition::kLast),
                                 "北京和北京", false, true, "北京和北京", true, true);
     assert(p9.ok && p9.new_remaining_text == "北京和上海" && p9.occurrence.index == 1);
-    // notFound / 光标 / 选区 / 不可读（targeted 恒 verified，无 verify_mode 分支）。
+    // notFound / 不可读（targeted 恒 verified，无 verify_mode 分支）。
     auto p10 = PlanVoiceTargeted(TargetedDelete("上海"), "我去北京上班", false, true,
                                  "我去北京上班", true, true);
     assert(!p10.ok && p10.failure == VoiceTargetedFailure::kNotFound);
+    // 光标/选区不拦截（2026-10-31 放宽：双击核对目标词是常态动作）→ 计划成功。
     auto p11 = PlanVoiceTargeted(del, "我去北京上班", false, true, "我去北京上班", false, true);
-    assert(!p11.ok && p11.failure == VoiceTargetedFailure::kCaretNotEnd);
+    assert(p11.ok && p11.new_remaining_text == "我去上班");
     auto p12 = PlanVoiceTargeted(del, "我去北京上班", false, true, "我去北京上班", true, false);
-    assert(!p12.ok && p12.failure == VoiceTargetedFailure::kSelectionPresent);
+    assert(p12.ok && p12.new_remaining_text == "我去上班");
     auto p13 = PlanVoiceTargeted(del, "我去北京上班", false, false, "", true, true);
     assert(!p13.ok && p13.failure == VoiceTargetedFailure::kVerifyUnavailable);
     // 连续两次编辑（计划级）。
@@ -1580,6 +1859,9 @@ void RunVoiceEditTests() {
     TestVoiceEditPlannerVerified();
     TestVoiceEditPlannerUnverified();
     TestVoiceEditVerifyModeNames();
+    TestVoiceEditAnchorLocator();
+    TestVoiceEditAnchorPlanner();
+    TestTargetedAnchorPlanner();
     TestTargetedParserPositive();
     TestTargetedParserNegative();
     TestTargetedMatcher();
@@ -1601,6 +1883,7 @@ void RunVoiceEditTests() {
     TestTargetedCoordinatorOffModeUnreadableRejects();
     TestTargetedCoordinatorStaleGeneration();
     TestTargetedCoordinatorOldParserPriority();
+    TestVoiceEditCoordinatorCaretMove();
     TestTargetedCoordinatorScopeAndInvalid();
     TestTargetedCoordinatorUnscopedReplace();
     TestTargetedCoordinatorLongDocLengtheningReplace();

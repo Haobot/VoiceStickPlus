@@ -88,6 +88,8 @@ public struct OutputConfigFile: Decodable {
     public var target: String?
     public var transform: String?
     public var translation_target: String?
+    /// 句中插入去句末句号（批次 1；默认 true）。双端同名字段（Windows [output] 表）。
+    public var midline_strip_period: Bool?
 }
 
 public struct DeviceConfigFile: Decodable {

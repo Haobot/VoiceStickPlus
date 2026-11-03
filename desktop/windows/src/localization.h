@@ -560,6 +560,10 @@ enum class StringId {
     kVoiceTargetedInvalid,        // 指令不完整（空目标/空替换/多分隔符/否定）
     kVoiceTargetedTextChanged,    // 字段尾部与记录不符（含手工改动/选区读回不符）
     kVoiceTargetedUnconfirmed,    // 修改已发出但终验不符（记录已失效）
+    // 语音编辑批次 1（字段内定位）：新失败码文案（只能在末尾追加，
+    // LocalizationTablesAreComplete 断言双表逐项非空）。
+    kVoiceEditAnchorAmbiguous,   // anchored 段出现多次（零容错拒绝）
+    kVoiceEditCaretMoveFailed,   // 尾删前置光标移动失败（零退格）
 };
 
 // 返回 UTF-8 本地化文本

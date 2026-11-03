@@ -170,6 +170,13 @@ public final class VoiceStickCoordinator {
     /// targeted 编辑平台出口（App 侧 AX 实现）：读回当前实际选中文本；nil = 不可验证。
     /// 隐私约束：读回内容只与目标词逐字比对，不落库、不写日志。
     public var readTargetedSelectedText: (() -> String?)?
+    /// Electron/Chromium 手动无障碍兜底（App 侧 AX 实现，批次 1 交付 D）：对前台
+    /// 应用设 AXManualAccessibility=true（读 attr → false/不可读才设，3 参
+    /// AXUIElementSetAttributeValue 直调），成功返回 true。nil = 平台不支持。
+    public var enableFocusedAppManualAccessibility: (() -> Bool)?
+    /// 语音编辑失败日志钩子（默认 NSLog；测试注入收集断言 fail_stage/bundle 字段）。
+    /// 内容纪律：只记长度/锚点种类/UTF-16 偏移/结果码，不记文本内容。
+    public var voiceEditLog: ((String) -> Void)?
     /// 前台应用 bundle id 闭包（App 场景分域用，App 侧 NSWorkspace 实现；nil=不分工
     /// 桶，全部落全局桶）。只取 bundle id，不读窗口内容。
     public var frontmostAppBundleID: (() -> String?)?
@@ -224,7 +231,12 @@ public final class VoiceStickCoordinator {
     /// 误判「读回不符」放弃；原生应用同步生效，首次读回即中、零重试）。轮询只追加
     /// 读操作，不改字段状态；耗尽才走拒绝路径。
     private let kVoiceTargetedReadbackPollDelays: [TimeInterval] = [0.03, 0.06, 0.12, 0.2]
-    private let kVoiceTargetedVerifyPollDelays: [TimeInterval] = [0.05, 0.1, 0.2]
+    /// 终验轮询节拍（在 kVoiceTargetedVerifyDelay 之后）：动作本体（Cmd+V 粘贴/退格）
+    /// 在 Chromium 系目标同样异步落地，2026-10-31 实测 0.6s 窗仍读到动作前旧文本
+    /// （同长替换误判「结果未确认」并连锁失效记录）——总窗加长到 ≈2.7s 覆盖粘贴
+    /// 落地时延；窗末按内容分类：仍是动作前文本（未落地）→ 记录保留只提示，
+    /// 真不符才失效记录。
+    private let kVoiceTargetedVerifyPollDelays: [TimeInterval] = [0.1, 0.2, 0.4, 0.8, 1.0]
     /// 语音编辑退格注入串行队列（方案 §7.1：后台注入 + 约 12ms 节拍，不阻塞主线程）。
     private let voiceEditInjectionQueue = DispatchQueue(label: "com.voicestick.voice-edit.backspace")
     // N1 闸9：FSM 只读快照（runner 断言用；状态枚举保持 private 不外泄）。
@@ -2821,9 +2833,18 @@ public final class VoiceStickCoordinator {
         onAccessibilityPermissionMissing?()
     }
 
-    private func completePendingPaste(text: String, manual: Bool) {
-        NSLog("Complete pending paste text_len=%d auto_enter=%d accessibility_trusted=%d",
-              text.utf8.count, config.autoEnter ? 1 : 0, (isProcessTrusted?() ?? false) ? 1 : 0)
+    private func completePendingPaste(text rawText: String, manual: Bool) {
+        // 批次 1（句中插入去句末句号，[output].midline_strip_period）：仅
+        // focused_app 且配置开；读一次焦点字段，可读且光标后同一逻辑行还有非空白
+        // 字符（句中插入）时去掉注入文本末尾一个句号。读不到字段（不可验证应用）
+        // 原样注入，零行为变化。处理点在本入口 = 送 paste / lastInjection /
+        // beginEditTracking 之前，历史库 injected 回填在后——三处记录一致，避免
+        // 「记录的文本和字段里的不一致」重新制造 field_mismatch。翻译模式产物以
+        // 句号结尾是正常语义，本逻辑同样适用（判定只看插入位置，不看模式）。
+        let text = applyMidlinePeriodStrip(rawText)
+        NSLog("Complete pending paste text_len=%d auto_enter=%d accessibility_trusted=%d midline_stripped=%d",
+              text.utf8.count, config.autoEnter ? 1 : 0, (isProcessTrusted?() ?? false) ? 1 : 0,
+              text != rawText ? 1 : 0)
         let shouldPressEnter = config.autoEnter
         // P3 反馈环保留信号（用户数据飞轮）：精确应用的对被用户确认保留 → recall+1。
         if let pair = appliedCorrectionPair {
@@ -2856,6 +2877,26 @@ public final class VoiceStickCoordinator {
             voiceEditGeneration += 1
         }
         beginEditTracking(injectedText: text)
+    }
+
+    /// 句中句号剥离（交付 C 入口纯逻辑编排）：先做零成本预检（文本不以可剥离
+    /// 句号结尾 → 不读字段，普通注入零额外开销）；候选才读一次焦点字段（含
+    /// Electron 三级回退）判定句中插入并剥句号；剥了则回填会话历史 injected 文本
+    ///（历史库/编辑追踪/lastInjection 三处一致）。读不到字段/非句中/配置关 → 原文。
+    private func applyMidlinePeriodStrip(_ text: String) -> String {
+        guard config.midlineStripPeriod,
+              outputProfile(for: activeDeviceID).target == .focusedApp,
+              VoiceEditAnchor.midlinePeriodStrippable(text) else { return text }
+        guard let state = readFocusedFieldStateForVoiceEdit(),
+              let caret = state.caretUTF16,
+              state.selectionLength == 0,
+              VoiceEditAnchor.isMidlineInsertion(fieldText: state.text, caretUTF16: caret)
+        else { return text }
+        let stripped = VoiceEditAnchor.stripMidlinePeriod(text: text, isMidline: true)
+        if stripped != text, let historyID = lastSessionHistoryID {
+            sessionHistoryStore?.updateInjectedText(id: historyID, text: stripped)
+        }
+        return stripped
     }
 
     // MARK: - 语音编辑指令（Voice Edit Commands；Doc/Plan/voice-edit-commands.md §4/§6/§8.1）
@@ -2897,11 +2938,20 @@ public final class VoiceStickCoordinator {
         switch result {
         case .failure(let code):
             NSLog("voice_edit command=%@ result=failure code=%@", commandDescription, code.rawValue)
+            logVoiceEditFailure(stage: voiceEditFailureStage(for: code), code: code.rawValue)
             showVoiceEditFailureToast(code)
         case .plan(let plan):
-            NSLog("voice_edit command=%@ result=plan count=%d chars=%d newline=%d verification=%@",
+            NSLog("voice_edit command=%@ result=plan count=%d chars=%d newline=%d verification=%@ move=%d",
                   commandDescription, plan.count, plan.charCount, plan.newlineCount,
-                  plan.verification.rawValue)
+                  plan.verification.rawValue, plan.needsCaretMove ? 1 : 0)
+            guard lastInjection != nil else { return true }
+            // 批次 1：光标不在 anchorEnd 时先把光标移过去（选区写 + 轮询确认），
+            // 移动失败零退格、记录保留；unverified 计划无锚（盲退格窗口照旧）。
+            if plan.needsCaretMove {
+                moveCaretForVoiceEditDeletion(
+                    plan: plan, command: command, generation: voiceEditGeneration, attempt: 0)
+                return true
+            }
             injectVoiceEditBackspaces(plan.count) { [weak self] in
                 guard let self else { return }
                 self.lastInjection?.remainingText = plan.newRemainingText
@@ -2910,6 +2960,49 @@ public final class VoiceStickCoordinator {
             }
         }
         return true
+    }
+
+    /// 尾删前置光标移动（批次 1）：writeTargetedSelection(anchorEnd, 0) + 按
+    /// kVoiceTargetedReadbackPollDelays 轮询 readFocusedFieldState 确认
+    /// caretUTF16 == anchorEnd && selectionLength == 0；到位后退格路径照旧；
+    /// 耗尽 → caret_move_failed，零退格、记录保留（用户可手动移过去再试）。
+    /// 每次重试重写同一目标（幂等；Chromium 系目标选区写异步落地）。
+    private func moveCaretForVoiceEditDeletion(
+        plan: VoiceEditDeletionPlan, command: VoiceEditCommand,
+        generation: Int, attempt: Int
+    ) {
+        guard generation == voiceEditGeneration else { return }
+        let anchorEnd = plan.anchorEndUTF16
+        guard let writer = writeTargetedSelection, anchorEnd >= 0 else {
+            NSLog("voice_edit caret_move failed writer_absent anchor_end=%d", anchorEnd)
+            logVoiceEditFailure(stage: "caret_move", code: VoiceEditFailureCode.caretMoveFailed.rawValue)
+            showVoiceEditFailureToast(.caretMoveFailed)
+            return
+        }
+        writer(anchorEnd, 0)
+        if let state = readFocusedFieldStateForVoiceEdit(),
+           state.caretUTF16 == anchorEnd, state.selectionLength == 0 {
+            NSLog("voice_edit caret_move ok anchor_end=%d", anchorEnd)
+            injectVoiceEditBackspaces(plan.count) { [weak self] in
+                guard let self else { return }
+                self.lastInjection?.remainingText = plan.newRemainingText
+                self.lastInjection?.pressedEnter = plan.newPressedEnter
+                self.showVoiceEditSuccessToast(command: command, plan: plan)
+            }
+            return
+        }
+        guard attempt < kVoiceTargetedReadbackPollDelays.count else {
+            NSLog("voice_edit caret_move unconfirmed anchor_end=%d", anchorEnd)
+            logVoiceEditFailure(stage: "caret_move", code: VoiceEditFailureCode.caretMoveFailed.rawValue)
+            showVoiceEditFailureToast(.caretMoveFailed)
+            return
+        }
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + kVoiceTargetedReadbackPollDelays[attempt]
+        ) { [weak self] in
+            self?.moveCaretForVoiceEditDeletion(
+                plan: plan, command: command, generation: generation, attempt: attempt + 1)
+        }
     }
 
     /// L0 作用域闸 + L1 目标校验（方案 §6.2/§6.3）：返回删除计划或拒绝码；
@@ -2928,7 +3021,7 @@ public final class VoiceStickCoordinator {
         // 辅助功能权限与 CGEvent 注入同源：权限被收回后注入会被静默丢弃。
         guard isProcessTrusted?() ?? false else { return .failure(.accessibilityDenied) }
         // L1：可验证→必须通过；不可验证→由 verify_mode + unverified 窗口决定（§6.5）。
-        let fieldState = readFocusedFieldState?()
+        let fieldState = readFocusedFieldStateForVoiceEdit()
         return VoiceEditPlanner.plan(
             remainingText: record.remainingText,
             pressedEnter: record.pressedEnter,
@@ -2940,6 +3033,67 @@ public final class VoiceStickCoordinator {
             verifyMode: settings.verifyMode,
             unverifiedWindowOpen: elapsed <= TimeInterval(settings.unverifiedSeconds)
         )
+    }
+
+    // ---- 批次 1 交付 D：可观测性（fail_stage 日志）+ Electron AX 三级回退 ----
+
+    /// 语音编辑读链统一入口：FocusedFieldAXReader 两级聚焦（system-wide → 前台应用）
+    /// 都失败时，对前台 Electron/Chromium 应用设 AXManualAccessibility=true 后重试
+    /// 一次（第三级）。每 bundle 至多重试一次（内存缓存，不落盘）；重试结果打
+    /// `voice_edit ax_manual=0/1 bundle=…`。闭包未装配/无 bundle id = 无第三级。
+    private var manualAccessibilityRetriedBundles: Set<String> = []
+
+    private func readFocusedFieldStateForVoiceEdit() -> FocusedFieldState? {
+        if let state = readFocusedFieldState?() { return state }
+        guard let enable = enableFocusedAppManualAccessibility,
+              let bundle = frontmostAppBundleID?(), !bundle.isEmpty,
+              !manualAccessibilityRetriedBundles.contains(bundle) else { return nil }
+        manualAccessibilityRetriedBundles.insert(bundle)
+        let enabled = enable()
+        NSLog("voice_edit ax_manual=%d bundle=%@", enabled ? 1 : 0, bundle)
+        guard enabled else { return nil }
+        return readFocusedFieldState?()
+    }
+
+    /// 失败日志（一行，只在失败路径打）：fail_stage 对应读取链失败环节；L0 类
+    /// 拒绝发生在任何读取之前，归 first 环节 focused_element。bundle 用
+    /// frontmostAppBundleID?()，nil → unknown。不记文本内容。
+    private func logVoiceEditFailure(stage: String, code: String) {
+        let line = "voice_edit fail_stage=\(stage) bundle=\(frontmostAppBundleID?() ?? "unknown") code=\(code)"
+        if let voiceEditLog {
+            voiceEditLog(line)
+        } else {
+            NSLog("%@", line)
+        }
+    }
+
+    /// 尾删通道失败码 → 读取链环节（stage ∈ focused_element/field_text/
+    /// selected_range/selected_text/anchor/caret_move）。
+    private func voiceEditFailureStage(for code: VoiceEditFailureCode) -> String {
+        switch code {
+        case .verifyUnavailable: return "focused_element"   // 字段/光标读不到
+        case .selectionPresent: return "selected_range"
+        case .fieldMismatch, .anchorAmbiguous: return "anchor"  // 定位器语义失败
+        case .caretMoveFailed: return "caret_move"
+        case .caretNotEnd: return "selected_range"  // 枚举位保留（planner 已不再返回）
+        // L0 拒绝（读取链未启动）与注入失败：归首环节。
+        case .noInjection, .scopeExpired, .appChanged,
+             .accessibilityDenied, .foregroundElevated, .injectFailed:
+            return "focused_element"
+        }
+    }
+
+    /// targeted 通道失败码 → 读取链环节（语义同 voiceEditFailureStage）。
+    private func voiceTargetedFailureStage(for code: VoiceTargetedFailureCode) -> String {
+        switch code {
+        case .notFound, .ambiguous, .invalid: return "anchor"  // 匹配/解析层语义失败
+        case .fieldMismatch, .anchorAmbiguous: return "anchor"
+        case .verifyUnavailable: return "focused_element"
+        case .caretNotEnd, .selectionPresent: return "selected_range"
+        case .resultUnconfirmed: return "field_text"
+        case .noInjection, .scopeExpired, .appChanged, .accessibilityDenied:
+            return "focused_element"
+        }
     }
 
     /// 异步退格注入（方案 §7.1）：后台串行队列 + 约 12ms 节拍；完成后回主线程收尾。
@@ -2990,6 +3144,8 @@ public final class VoiceStickCoordinator {
         case .foregroundElevated: key = "voiceEditForegroundElevated"
         case .accessibilityDenied: key = "voiceEditAccessibilityDenied"
         case .injectFailed: key = "voiceEditInjectFailed"
+        case .anchorAmbiguous: key = "voiceEditAnchorAmbiguous"
+        case .caretMoveFailed: key = "voiceEditCaretMoveFailed"
         }
         statusController.showTimedMessage(
             voiceEditText(key), duration: 2.5, deviceID: activeDeviceID
@@ -3121,6 +3277,7 @@ public final class VoiceStickCoordinator {
         switch outcome {
         case .failure(let code):
             NSLog("voice_targeted result=failure code=%@", code.rawValue)
+            logVoiceEditFailure(stage: voiceTargetedFailureStage(for: code), code: code.rawValue)
             showVoiceTargetedFailureToast(code)
         case .context(let command, let plan, let context):
             NSLog("voice_targeted action=%@ target_len=%d occ=%d/%d",
@@ -3137,17 +3294,36 @@ public final class VoiceStickCoordinator {
     }
 
     /// targeted 执行上下文：计划时刻从 LastInjection + 字段状态确定性拆解出的
-    /// 后缀结构（值类型快照，供异步终验计算期望文本/光标，不引用可变记录）。
+    /// 锚定结构（值类型快照，供异步终验计算期望文本/光标，不引用可变记录）。
+    /// 批次 1 起扩展锚点字段：fieldPrefix = anchored 段之前的字段内容（P1c 路径
+    /// 与旧后缀拆解逐字节一致——回归底线）；textAfterAnchor = anchored 段之后的
+    /// 字段内容（P1c 恒 ""，P1a/P1b/P2 为实际段后文本）。
     private struct VoiceTargetedEditContext {
         let remainingText: String
         let pressedEnter: Bool
-        /// 字段末尾是否存在已记录的 auto_enter 换行（planner 后缀校验保证确定性）。
+        /// anchored 段是否覆盖 remaining+1（= 旧 hasRecordedNewline：字段末尾存在
+        /// 已记录 auto_enter 换行；P1c 裸回落时 false）。
         let hasRecordedNewline: Bool
-        /// 字段中 remainingText 之前的前缀（用户既有内容，可空）。
+        /// anchored 段之前的字段内容（用户既有内容，可空）。
         let fieldPrefix: String
+        // ---- 批次 1（字段内定位）扩展 ----
+        let anchorKind: VoiceEditAnchor.Kind
+        /// anchored 段起点（字段绝对 UTF-16 偏移 = fieldPrefix.utf16.count）。
+        let anchorStartUTF16: Int
+        /// anchored 段终点（UTF-16 偏移）。
+        let anchorEndUTF16: Int
+        /// anchored 段之后的字段内容（终验期望文本 = fieldPrefix + newRemaining +
+        /// (hasRecordedNewline ? "\n" : "") + textAfterAnchor；P1c 恒 ""）。
+        let textAfterAnchor: String
+
+        /// 动作前字段全文（终验窗末区分「动作未落地」与「真不符」用）。
+        var preActionText: String {
+            fieldPrefix + remainingText + (hasRecordedNewline ? "\n" : "") + textAfterAnchor
+        }
     }
 
     /// L0 作用域闸 + L1 目标校验（targeted 恒 verified）→ 执行上下文或拒绝码。
+    /// 批次 1 起 L1 定位走字段内多级锚定（VoiceEditAnchor），失败码透传。
     private func evaluateVoiceTargetedCommand(
         _ command: VoiceTargetedCommand
     ) -> VoiceTargetedOutcome {
@@ -3162,39 +3338,56 @@ public final class VoiceStickCoordinator {
             return .failure(.appChanged)
         }
         guard isProcessTrusted?() ?? false else { return .failure(.accessibilityDenied) }
-        guard let fieldState = readFocusedFieldState?() else {
+        guard let fieldState = readFocusedFieldStateForVoiceEdit(),
+              let caret = fieldState.caretUTF16, let selection = fieldState.selectionLength,
+              fieldState.text.utf16.count <= kVoiceEditMaxVerifiableFieldUTF16 else {
             return .failure(.verifyUnavailable)
+        }
+        NSLog("voice_targeted field len=\(fieldState.text.utf16.count) caret=\(caret) sel=\(selection)")
+        // 字段内多级锚定（P1a 光标前缀 → P1b 光标后缀 → P1c 字段末尾 → P2 唯一
+        // 出现；零容错）。失败码透传（anchor_ambiguous / field_mismatch）。
+        let anchorResult = VoiceEditAnchor.locate(
+            remaining: record.remainingText,
+            pressedEnter: record.pressedEnter,
+            fieldText: fieldState.text,
+            caretUTF16: caret,
+            selectionLength: selection
+        )
+        guard case .anchored(let anchor) = anchorResult else {
+            if case .failure(let code) = anchorResult {
+                return .failure(code == .anchorAmbiguous ? .anchorAmbiguous : .fieldMismatch)
+            }
+            return .failure(.fieldMismatch)
         }
         let planResult = VoiceTargetedPlanner.plan(
             command: command,
             remainingText: record.remainingText,
             pressedEnter: record.pressedEnter,
+            anchor: anchor,
             fieldText: fieldState.text,
-            caretUTF16: fieldState.caretUTF16,
-            selectionLength: fieldState.selectionLength
+            caretUTF16: caret,
+            selectionLength: selection
         )
         guard case .plan(let plan) = planResult else {
             if case .failure(let code) = planResult { return .failure(code) }
             return .failure(.verifyUnavailable)
         }
-        // 后缀结构拆解（planner 已验证后缀成立；与 planner 同顺序：pressedEnter 时
-        // 优先按「remaining+\n」判定，避免 remaining 自身以换行结尾时把 auto_enter
-        // 换行误并入前缀）。
-        let remaining = record.remainingText
-        let hasNewline: Bool
-        let fieldPrefix: String
-        if record.pressedEnter && fieldState.text.hasSuffix(remaining + "\n") {
-            hasNewline = true
-            fieldPrefix = String(fieldState.text.dropLast(remaining.count + 1))
-        } else {
-            hasNewline = false
-            fieldPrefix = String(fieldState.text.dropLast(remaining.count))
-        }
+        // 锚定结构拆解（快照；UTF-16 码元切片 → String，与选区 API 同口径）。
+        let fieldUnits = Array(fieldState.text.utf16)
+        let fieldPrefix = String(decoding: fieldUnits[..<anchor.anchorStart], as: UTF16.self)
+        let textAfterAnchor = String(decoding: fieldUnits[anchor.anchorEnd...], as: UTF16.self)
+        // 已记录换行：锚段长度 = remaining+1（P1c 裸回落/无换行时 = remaining）。
+        let hasNewline = record.pressedEnter
+            && anchor.anchorEnd - anchor.anchorStart == record.remainingText.utf16.count + 1
         let context = VoiceTargetedEditContext(
-            remainingText: remaining,
+            remainingText: record.remainingText,
             pressedEnter: record.pressedEnter,
             hasRecordedNewline: hasNewline,
-            fieldPrefix: fieldPrefix
+            fieldPrefix: fieldPrefix,
+            anchorKind: anchor.kind,
+            anchorStartUTF16: anchor.anchorStart,
+            anchorEndUTF16: anchor.anchorEnd,
+            textAfterAnchor: textAfterAnchor
         )
         return .context(command, plan, context)
     }
@@ -3214,18 +3407,20 @@ public final class VoiceStickCoordinator {
         let generation = voiceEditGeneration
         guard let writer = writeTargetedSelection, readTargetedSelectedText != nil else {
             // 平台能力缺失 = 不可验证：targeted 恒 verified → 拒绝（不修改）。
+            logVoiceEditFailure(stage: "selected_range", code: VoiceTargetedFailureCode.verifyUnavailable.rawValue)
             showVoiceTargetedFailureToast(.verifyUnavailable)
             return
         }
         let fieldUTF16 = context.remainingText.utf16.count + context.fieldPrefix.utf16.count
-            + (context.hasRecordedNewline ? 1 : 0)
-        // 绝对选区起点 = 前缀 UTF-16 长度 + remaining 内偏移（前缀/换行已在计划时刻
-        // 确定性拆解，天然覆盖 auto_enter 换行在尾部的布局）。
-        let selectionLocation = context.fieldPrefix.utf16.count + plan.occurrence.utf16Start
+            + (context.hasRecordedNewline ? 1 : 0) + context.textAfterAnchor.utf16.count
+        // 绝对选区起点 = anchored 段起点 + remaining 内偏移（锚段/换行已在计划时刻
+        // 确定性拆解，天然覆盖 auto_enter 换行在段内与段后的布局）。
+        let selectionLocation = context.anchorStartUTF16 + plan.occurrence.utf16Start
 
         // 1. 设置精确选区（只写选区，不写整个字段 Value）；失败尽力恢复安全光标。
         guard selectionLocation >= 0, writer(selectionLocation, plan.occurrence.utf16Length) else {
             _ = writer(fieldUTF16, 0)
+            logVoiceEditFailure(stage: "selected_range", code: VoiceTargetedFailureCode.verifyUnavailable.rawValue)
             showVoiceTargetedFailureToast(.verifyUnavailable)
             return
         }
@@ -3245,6 +3440,7 @@ public final class VoiceStickCoordinator {
     ) {
         guard generation == voiceEditGeneration else { return }
         guard let writer = writeTargetedSelection, readTargetedSelectedText != nil else {
+            logVoiceEditFailure(stage: "selected_range", code: VoiceTargetedFailureCode.verifyUnavailable.rawValue)
             showVoiceTargetedFailureToast(.verifyUnavailable)
             return
         }
@@ -3268,6 +3464,7 @@ public final class VoiceStickCoordinator {
             NSLog("voice_targeted readback mismatch expected_len=%d got_len=%d",
                   command.target.utf8.count, selectedText?.utf8.count ?? -1)
             _ = writer(fieldUTF16, 0)
+            logVoiceEditFailure(stage: "selected_text", code: VoiceTargetedFailureCode.fieldMismatch.rawValue)
             showVoiceTargetedFailureToast(.fieldMismatch)
             return
         }
@@ -3278,6 +3475,7 @@ public final class VoiceStickCoordinator {
                 // 修改前失败（key_spec 白名单恒支持 backspace，防御路径）：恢复安全
                 // 光标、记录保留有效，不按「结果未确认」失效记录。
                 _ = writer(fieldUTF16, 0)
+                logVoiceEditFailure(stage: "selected_range", code: VoiceTargetedFailureCode.verifyUnavailable.rawValue)
                 showVoiceTargetedFailureToast(.verifyUnavailable)
                 return
             }
@@ -3285,32 +3483,45 @@ public final class VoiceStickCoordinator {
         case .replace(let replacement):
             inputInjector.paste(text: replacement, pressEnter: false)
         }
-        // 4/5. 延时恢复末尾光标 + 终验（stale generation 直接丢弃，不覆盖新记录）。
+        // 4/5. 延时恢复光标 + 终验（stale generation 直接丢弃，不覆盖新记录）。
+        // 批次 1：终验期望文本按锚定结构（P1c 时 textAfterAnchor=""，与旧公式
+        // 逐字节一致）；恢复光标到「编辑后 anchored 段末尾」（P1c = 字段末尾，
+        // 与旧行为一致；P1a/P1b/P2 = 段后内容之前）。
         let expectedFinalText = context.fieldPrefix + plan.newRemainingText
-            + (context.hasRecordedNewline ? "\n" : "")
+            + (context.hasRecordedNewline ? "\n" : "") + context.textAfterAnchor
+        let preActionText = context.preActionText
+        let restoreCaretUTF16 = expectedFinalText.utf16.count - context.textAfterAnchor.utf16.count
         DispatchQueue.main.asyncAfter(deadline: .now() + kVoiceTargetedVerifyDelay) { [weak self] in
             self?.finalizeTargetedEdit(
-                expectedFinalText: expectedFinalText, plan: plan,
+                expectedFinalText: expectedFinalText, preActionText: preActionText, plan: plan,
+                restoreCaretUTF16: restoreCaretUTF16,
                 generation: generation, attempt: 0)
         }
     }
 
     /// 步骤 4/5（终验，可重试）：光标恢复写与 Backspace/粘贴一样在部分目标应用
-    /// 异步落地，立即读可能仍见写入前状态；重试耗尽才判未确认——不自动重试修改、
-    /// 不宣称成功、不盲目撤销，记录失效防陈旧偏移继续编辑。
+    /// 异步落地，立即读可能仍见写入前状态；**成功判据是字段文本终验**——光标/
+    /// 选区只作 best-effort 恢复（2026-10-31 起不再作为失败条件，未落地只记日志）。
+    /// 文本不符重试耗尽才判未确认——不自动重试修改、不宣称成功、不盲目撤销。
+    /// 窗末按内容分类（2026-10-31）：文本仍是动作前原样＝动作未落地（粘贴迟到/
+    /// 丢失）→ **记录保留**只提示——后缀不变量仍成立，重试命令要么直接生效、要么
+    /// 被锚定/planner 校验拦下，均不污染字段；文本变成第三种内容＝真不符 → 记录
+    /// 失效防陈旧偏移继续编辑。
     private func finalizeTargetedEdit(
-        expectedFinalText: String, plan: VoiceTargetedPlan,
-        generation: Int, attempt: Int
+        expectedFinalText: String, preActionText: String, plan: VoiceTargetedPlan,
+        restoreCaretUTF16: Int, generation: Int, attempt: Int
     ) {
         guard generation == voiceEditGeneration else { return }
-        _ = writeTargetedSelection?(expectedFinalText.utf16.count, 0)
-        let state = readFocusedFieldState?()
-        if let state,
-           state.text == expectedFinalText,
-           state.caretUTF16 == expectedFinalText.utf16.count,
-           state.selectionLength == 0 {
+        // 光标恢复到编辑后 anchored 段末尾 best-effort（P1c = 字段末尾，保持
+        // 「听写追加到末尾」不变量；P1a/P1b/P2 = 段末，即用户原光标锚位）。
+        _ = writeTargetedSelection?(restoreCaretUTF16, 0)
+        let state = readFocusedFieldStateForVoiceEdit()
+        let textMatches = state?.text == expectedFinalText
+        if textMatches,
+           state?.caretUTF16 == restoreCaretUTF16,
+           state?.selectionLength == 0 {
             lastInjection?.remainingText = plan.newRemainingText
-            NSLog("voice_targeted result=ok target_len=%d", plan.targetLength)
+            NSLog("voice_targeted result=ok target_len=\(plan.targetLength)")
             showVoiceTargetedSuccessToast(plan: plan)
             return
         }
@@ -3319,14 +3530,32 @@ public final class VoiceStickCoordinator {
                 deadline: .now() + kVoiceTargetedVerifyPollDelays[attempt]
             ) { [weak self] in
                 self?.finalizeTargetedEdit(
-                    expectedFinalText: expectedFinalText, plan: plan,
+                    expectedFinalText: expectedFinalText, preActionText: preActionText,
+                    plan: plan, restoreCaretUTF16: restoreCaretUTF16,
                     generation: generation, attempt: attempt + 1)
             }
             return
         }
-        NSLog("voice_targeted verify unconfirmed expected_len=%d actual_len=%d",
-              expectedFinalText.utf8.count, state?.text.utf8.count ?? -1)
+        if textMatches {
+            // 文本已确认但光标恢复写未落地：修改本身已验证完成，不再判「结果未
+            // 确认」，只记日志；记录照常更新，允许连续编辑。
+            NSLog("voice_targeted caret restore unconfirmed caret=\(state?.caretUTF16 ?? -1) sel=\(state?.selectionLength ?? -1) count=\(restoreCaretUTF16)")
+            lastInjection?.remainingText = plan.newRemainingText
+            NSLog("voice_targeted result=ok target_len=\(plan.targetLength)")
+            showVoiceTargetedSuccessToast(plan: plan)
+            return
+        }
+        let stillOld = state?.text == preActionText
+        NSLog("voice_targeted verify unconfirmed expected_len=\(expectedFinalText.utf8.count) actual_len=\(state?.text.utf8.count ?? -1) still_old=\(stillOld ? 1 : 0)")
+        if stillOld {
+            // 动作未落地（粘贴迟到/丢失）：记录保留，允许同命令直接重试。
+            logVoiceEditFailure(stage: "field_text", code: VoiceTargetedFailureCode.resultUnconfirmed.rawValue)
+            showVoiceTargetedFailureToast(.resultUnconfirmed)
+            return
+        }
+        // 真不符：记录失效防陈旧偏移继续编辑。
         invalidateVoiceTargetedRecord(generation: generation)
+        logVoiceEditFailure(stage: "field_text", code: VoiceTargetedFailureCode.resultUnconfirmed.rawValue)
         showVoiceTargetedFailureToast(.resultUnconfirmed)
     }
 
@@ -3357,6 +3586,7 @@ public final class VoiceStickCoordinator {
         case .scopeExpired: key = "voiceEditScopeExpired"
         case .appChanged: key = "voiceEditAppChanged"
         case .accessibilityDenied: key = "voiceEditAccessibilityDenied"
+        case .anchorAmbiguous: key = "voiceEditAnchorAmbiguous"
         }
         statusController.showTimedMessage(
             voiceEditText(key), duration: 2.5, deviceID: activeDeviceID

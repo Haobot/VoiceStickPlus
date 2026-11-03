@@ -363,6 +363,7 @@ std::string_view VoiceTargetedFailureName(VoiceTargetedFailure failure) {
         case VoiceTargetedFailure::kAppChanged: return "app_changed";
         case VoiceTargetedFailure::kAccessibilityDenied: return "accessibility_denied";
         case VoiceTargetedFailure::kForegroundElevated: return "foreground_elevated";
+        case VoiceTargetedFailure::kAnchorAmbiguous: return "anchor_ambiguous";
     }
     return "unknown";
 }
@@ -418,76 +419,62 @@ std::vector<VoiceTargetedOccurrence> FindTargetedOccurrences(std::string_view ta
 
 // ============================ 公开 API：计划器 ============================
 
-VoiceTargetedPlan PlanVoiceTargeted(const VoiceTargetedCommand& command,
-                                    std::string_view remaining_text, bool pressed_enter,
-                                    bool field_readable, std::string_view field_tail,
-                                    bool caret_at_end, bool selection_collapsed) {
-    VoiceTargetedPlan plan;
-    plan.action = command.action;
+namespace {
 
+// UTF-8 文本中 UTF-16 偏移 target 处的字节偏移（解码前进累计；target 越界返回
+// text.size()）。
+std::size_t ByteOffsetAtUtf16(std::string_view text, std::size_t target_utf16) {
+    std::size_t utf16_offset = 0;
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        if (utf16_offset >= target_utf16) return pos;
+        const auto decoded = utf8::DecodeUtf8(text, pos);
+        utf16_offset += decoded.value <= 0xFFFF ? 1 : 2;
+        pos += decoded.length;
+    }
+    return text.size();
+}
+
+// 匹配 + 计划主体（两个签名共用）：occurrence 选择失败/可读性拒绝各自回填 plan。
+bool BuildTargetedPlan(const VoiceTargetedCommand& command,
+                       std::string_view remaining_text, bool field_readable,
+                       VoiceTargetedPlan* plan, VoiceTargetedOccurrence* selected) {
     const auto matches = FindTargetedOccurrences(command.target, remaining_text);
     if (matches.empty()) {
-        plan.failure = VoiceTargetedFailure::kNotFound;
-        return plan;
+        plan->failure = VoiceTargetedFailure::kNotFound;
+        return false;
     }
-    VoiceTargetedOccurrence selected;
     switch (command.position) {
         case VoiceTargetedPosition::kFirst:
-            selected = matches.front();
+            *selected = matches.front();
             break;
         case VoiceTargetedPosition::kLast:
-            selected = matches.back();
+            *selected = matches.back();
             break;
         case VoiceTargetedPosition::kUnspecified:
             if (matches.size() != 1) {
-                plan.failure = VoiceTargetedFailure::kAmbiguous;
-                return plan;
+                plan->failure = VoiceTargetedFailure::kAmbiguous;
+                return false;
             }
-            selected = matches.front();
+            *selected = matches.front();
             break;
     }
-
-    // L1：targeted 恒 verified——任何 verify_mode 下都强制字段/光标校验。
+    // L1：targeted 恒 verified——任何 verify_mode 下都强制字段可读校验。
     if (!field_readable) {
-        plan.failure = VoiceTargetedFailure::kVerifyUnavailable;
-        return plan;
+        plan->failure = VoiceTargetedFailure::kVerifyUnavailable;
+        return false;
     }
-    if (!selection_collapsed) {
-        plan.failure = VoiceTargetedFailure::kSelectionPresent;
-        return plan;
-    }
-    if (!caret_at_end) {
-        plan.failure = VoiceTargetedFailure::kCaretNotEnd;
-        return plan;
-    }
-    // 完整 remainingText 后缀校验（允许末尾一个**已记录** auto_enter 换行）；
-    // 不使用旧「最长前缀」容错。UIA 尾部窗口比 remaining 短时后缀必然不成立 →
-    // field_mismatch（安全方向，不误改）。
-    bool has_newline = false;
-    std::string_view body = field_tail;
-    if (pressed_enter && !body.empty() && body.back() == '\n') {
-        // 先按「remaining+\n」判定（body 已知以 \n 结尾），避免 remaining 自身以
-        // \n 结尾时的歧义。
-        const std::string_view body_no_nl = body.substr(0, body.size() - 1);
-        if (body_no_nl.size() >= remaining_text.size() &&
-            body_no_nl.substr(body_no_nl.size() - remaining_text.size()) == remaining_text) {
-            has_newline = true;
-            body = body_no_nl.substr(0, body_no_nl.size() - remaining_text.size());
-        } else if (body.size() >= remaining_text.size() &&
-                   body.substr(body.size() - remaining_text.size()) == remaining_text) {
-            body.remove_suffix(remaining_text.size());
-        } else {
-            plan.failure = VoiceTargetedFailure::kFieldMismatch;
-            return plan;
-        }
-    } else if (body.size() >= remaining_text.size() &&
-               body.substr(body.size() - remaining_text.size()) == remaining_text) {
-        body.remove_suffix(remaining_text.size());
-    } else {
-        plan.failure = VoiceTargetedFailure::kFieldMismatch;
-        return plan;
-    }
+    return true;
+}
 
+// 锚定结构 → 计划字段填充（执行后的 remainingText + tail 窗口内锚定拆解）。
+// anchor 为 tail 窗口内 UTF-16 偏移（P1c 由调用方以字段末尾锚传入，语义与旧
+// 后缀拆解逐字节一致）。
+void FillTargetedPlanFromAnchor(const VoiceTargetedCommand& command,
+                                std::string_view remaining_text, bool pressed_enter,
+                                std::string_view field_tail, const VoiceEditAnchor& anchor,
+                                const VoiceTargetedOccurrence& selected,
+                                VoiceTargetedPlan* plan) {
     // 执行后的 remainingText：grapheme 区间替换（delete=摘除；replace=插入）。
     const auto remaining_spans = SplitGraphemes(remaining_text);
     std::string new_remaining;
@@ -503,13 +490,68 @@ VoiceTargetedPlan PlanVoiceTargeted(const VoiceTargetedCommand& command,
         }
     }
 
-    plan.ok = true;
-    plan.target_graphemes = selected.grapheme_end - selected.grapheme_start;
-    plan.occurrence = selected;
-    plan.new_remaining_text = std::move(new_remaining);
-    plan.tail_prefix = std::string(body);
-    plan.has_recorded_newline = has_newline;
-    plan.remaining_utf16_length = Utf16Length(remaining_text);
+    const std::size_t remaining_utf16 = Utf16Length(remaining_text);
+    const std::size_t anchor_bytes_start = ByteOffsetAtUtf16(field_tail, anchor.anchor_start);
+    const std::size_t anchor_bytes_end = ByteOffsetAtUtf16(field_tail, anchor.anchor_end);
+    plan->ok = true;
+    plan->target_graphemes = selected.grapheme_end - selected.grapheme_start;
+    plan->occurrence = selected;
+    plan->new_remaining_text = std::move(new_remaining);
+    plan->tail_prefix = std::string(field_tail.substr(0, anchor_bytes_start));
+    plan->has_recorded_newline =
+        pressed_enter && anchor.anchor_end - anchor.anchor_start == remaining_utf16 + 1;
+    plan->remaining_utf16_length = remaining_utf16;
+    plan->anchor_start_utf16 = anchor.anchor_start;
+    plan->anchor_end_utf16 = anchor.anchor_end;
+    plan->anchor_after_text = std::string(field_tail.substr(anchor_bytes_end));
+}
+
+}  // namespace
+
+VoiceTargetedPlan PlanVoiceTargeted(const VoiceTargetedCommand& command,
+                                    std::string_view remaining_text, bool pressed_enter,
+                                    bool field_readable, std::string_view field_tail,
+                                    bool /*caret_at_end*/, bool /*selection_collapsed*/) {
+    VoiceTargetedPlan plan;
+    plan.action = command.action;
+
+    VoiceTargetedOccurrence selected;
+    if (!BuildTargetedPlan(command, remaining_text, field_readable, &plan, &selected)) {
+        return plan;
+    }
+    // 完整 remainingText 后缀校验（= 定位器 P1c 字段末尾锚的等价实现：允许末尾
+    // 一个**已记录** auto_enter 换行，回落裸 remaining）；不使用「最长前缀」容错。
+    // UIA 尾部窗口比 remaining 短时后缀必然不成立 → field_mismatch（安全方向）。
+    const auto anchor = LocateVoiceEditFieldEndAnchor(field_tail, remaining_text, pressed_enter);
+    if (anchor.anchor_start == anchor.anchor_end) {
+        plan.failure = VoiceTargetedFailure::kFieldMismatch;
+        return plan;
+    }
+    FillTargetedPlanFromAnchor(command, remaining_text, pressed_enter, field_tail, anchor,
+                               selected, &plan);
+    return plan;
+}
+
+VoiceTargetedPlan PlanVoiceTargetedAnchored(const VoiceTargetedCommand& command,
+                                            std::string_view remaining_text,
+                                            bool pressed_enter, bool field_readable,
+                                            std::string_view field_tail,
+                                            const VoiceEditAnchor& anchor) {
+    VoiceTargetedPlan plan;
+    plan.action = command.action;
+
+    VoiceTargetedOccurrence selected;
+    if (!BuildTargetedPlan(command, remaining_text, field_readable, &plan, &selected)) {
+        return plan;
+    }
+    // 锚已由调用方经 LocateVoiceEditAnchor 定出（anchored 段在字段中精确成立），
+    // 这里只填计划字段（防御：锚区间退化视为不可用）。
+    if (anchor.anchor_start >= anchor.anchor_end) {
+        plan.failure = VoiceTargetedFailure::kFieldMismatch;
+        return plan;
+    }
+    FillTargetedPlanFromAnchor(command, remaining_text, pressed_enter, field_tail, anchor,
+                               selected, &plan);
     return plan;
 }
 

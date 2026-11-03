@@ -66,6 +66,7 @@ public enum VoiceEditVerifyMode: String, CaseIterable, Equatable {
 }
 
 /// 失败码（方案附录 B，raw = 日志用 code；用户提示文案由 App 层 L10nKey 映射）。
+/// 批次 1（字段内定位）尾部追加两个新码（双端同构，别插中间）。
 public enum VoiceEditFailureCode: String, CaseIterable, Equatable {
     case noInjection = "no_injection"
     case scopeExpired = "scope_expired"
@@ -77,6 +78,11 @@ public enum VoiceEditFailureCode: String, CaseIterable, Equatable {
     case foregroundElevated = "foreground_elevated"
     case accessibilityDenied = "accessibility_denied"
     case injectFailed = "inject_failed"
+    /// anchored 段在字段中出现 ≥2 次且 P1 全 miss（VoiceEditAnchor 零容错拒绝）。
+    case anchorAmbiguous = "anchor_ambiguous"
+    /// 尾删前置光标移动（writeTargetedSelection(anchorEnd, 0) + 轮询确认）失败：
+    /// 零退格、记录保留，由协调器产生（planner 只产出 needsCaretMove）。
+    case caretMoveFailed = "caret_move_failed"
 }
 
 /// 焦点字段状态（App 层 AX 读取 → 协调器 L1 校验 → planner）。
@@ -105,7 +111,8 @@ public enum VoiceEditVerification: String, Equatable {
 }
 
 /// 删除计划（方案 §6.3 输出）：count = 退格次数（含尾随换行），执行后写回
-/// LastInjection.remainingText / pressedEnter。
+/// LastInjection.remainingText / pressedEnter。批次 1 起 verified 计划附带
+/// anchorEndUTF16/needsCaretMove（anchored 段终点 + 光标是否需先移过去）。
 public struct VoiceEditDeletionPlan: Equatable {
     /// 退格注入次数（charCount + newlineCount）。
     public let count: Int
@@ -118,16 +125,25 @@ public struct VoiceEditDeletionPlan: Equatable {
     /// 执行后的 LastInjection.pressedEnter。
     public let newPressedEnter: Bool
     public let verification: VoiceEditVerification
+    /// anchored 段终点（UTF-16 偏移；退格从该位置向后删）。unverified 计划读不到
+    /// 字段无从定位 → -1。
+    public let anchorEndUTF16: Int
+    /// 光标不在 anchorEnd 时为 true：协调器须先移光标（移动失败零退格）。
+    /// unverified 计划恒 false（盲退格窗口语义不变）。
+    public let needsCaretMove: Bool
 
     public init(count: Int, charCount: Int, newlineCount: Int,
                 newRemainingText: String, newPressedEnter: Bool,
-                verification: VoiceEditVerification) {
+                verification: VoiceEditVerification,
+                anchorEndUTF16: Int = -1, needsCaretMove: Bool = false) {
         self.count = count
         self.charCount = charCount
         self.newlineCount = newlineCount
         self.newRemainingText = newRemainingText
         self.newPressedEnter = newPressedEnter
         self.verification = verification
+        self.anchorEndUTF16 = anchorEndUTF16
+        self.needsCaretMove = needsCaretMove
     }
 }
 
@@ -478,30 +494,30 @@ public enum VoiceEditPlanner {
 
         // 选区非空先拒绝（方案 §6.4：避免「删 N 字」变成删除选区）。
         if selection > 0 { return .failure(.selectionPresent) }
-        // 光标必须折叠且位于字段末尾（UTF-16 偏移口径）。
-        guard caret == field.utf16.count else { return .failure(.caretNotEnd) }
 
-        // auto_enter 的换行不假设「一定有」：字段实际以换行结尾时，前缀匹配在
-        // 「去掉一个尾随换行」的字段内容上做（方案 §6.3 示例的隐含前提——
-        // 字段「你好世界\n」/ remaining「你好世界」必须得到 eff=4、newline=1）。
-        let newlinePresent = pressedEnter && field.hasSuffix("\n")
-        let contentField = newlinePresent ? String(field.dropLast()) : field
-        // 允许用户手动删过尾部：取 remainingText 的最长前缀，使其是字段内容的后缀。
-        let minLength = min(remaining.count, contentField.count)
-        var effectiveLength = 0
-        if minLength >= 1 {
-            for length in stride(from: minLength, through: 1, by: -1) {
-                if contentField.hasSuffix(String(remaining[0..<length])) {
-                    effectiveLength = length
-                    break
-                }
+        // 批次 1（字段内定位）：旧「caret==字段末尾 + 最长前缀容错」升级为多级
+        // 锚定（VoiceEditAnchor，零容错——用户改动后偏移不可靠，宁拒勿错）。
+        // anchored = remaining（+ 已记录换行）；锚定成功 → 退格基准点 = anchorEnd，
+        // 光标不在该点时由协调器先移过去（needsCaretMove）。
+        let anchorResult = VoiceEditAnchor.locate(
+            remaining: remainingText, pressedEnter: pressedEnter,
+            fieldText: field, caretUTF16: caret, selectionLength: selection
+        )
+        guard case .anchored(let anchor) = anchorResult else {
+            if case .failure(let code) = anchorResult {
+                return .failure(code == .anchorAmbiguous ? .anchorAmbiguous : .fieldMismatch)
             }
+            return .failure(.fieldMismatch)
         }
-        guard effectiveLength > 0 else { return .failure(.fieldMismatch) }
-        let effectiveChars = Array(remaining[0..<effectiveLength])
-        let effectiveText = String(effectiveChars)
+        // 已记录换行以「锚段实际覆盖 remaining+1」判定（P1c 裸回落 = 用户已手删
+        // 换行 → 0；等价旧「pressedEnter && 字段以 \n 结尾」在锚定成立时的结论）。
+        let newlinePresent =
+            pressedEnter && anchor.anchorEnd - anchor.anchorStart == remaining.count + 1
+        // 零容错：effectiveText 恒为完整 remaining（旧最长前缀容错已移除）。
+        let effectiveChars = remaining
+        let effectiveText = remainingText
 
-        // eff>0 已保证字段内容以 effectiveText 结尾；尾随换行存在即需多删 1 次。
+        // 尾随换行存在即需多删 1 次。
         let newlineCount = newlinePresent ? 1 : 0
         let charCap = max(1, maxChars)
         let targetChars: Int
@@ -521,15 +537,19 @@ public enum VoiceEditPlanner {
         guard deleteChars > 0, deleteChars + newlineCount > 0 else {
             return .failure(.fieldMismatch)
         }
-        // L1 已验证字段末尾：字段里没有尾随换行（或已本次删掉），记录一律置 false，
+        // L1 已验证锚定成立：字段里没有尾随换行（或已本次删掉），记录一律置 false，
         // 防止之后降级到 unverified 时重复多发退格（比方案伪码更保守）。
+        // P1c 且 caret==anchorEnd 时（= 旧 caret 在字段末尾 + 完整后缀）本计划与
+        // 批次 1 之前逐字段等价（回归底线，见 VoiceEditCommandTests T10 向量）。
         return .plan(VoiceEditDeletionPlan(
             count: deleteChars + newlineCount,
             charCount: deleteChars,
             newlineCount: newlineCount,
             newRemainingText: String(effectiveChars.dropLast(deleteChars)),
             newPressedEnter: false,
-            verification: .verified
+            verification: .verified,
+            anchorEndUTF16: anchor.anchorEnd,
+            needsCaretMove: caret != anchor.anchorEnd
         ))
     }
 

@@ -568,7 +568,9 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kVoiceEditDefaultChars)] =
         "Characters deleted when you say \"delete\" alone";
     table[Index(StringId::kVoiceEditHintRuntime)] =
-        "Works only on the most recent dictation, with the cursor still at its end.";
+        "Works only on the most recent dictation, with its text unchanged; deleting "
+        "trailing words now moves the cursor back to the end of that dictation "
+        "automatically.";
     table[Index(StringId::kVoiceEditHintMode)] =
         "Not available in subtitle or third-party input-method modes.";
     table[Index(StringId::kVoiceEditDeletedChars)] = "Deleted %d characters";
@@ -601,6 +603,11 @@ constexpr StringTable EnglishStrings() {
         "The dictated text changed; nothing modified";
     table[Index(StringId::kVoiceTargetedUnconfirmed)] =
         "The edit could not be confirmed; please check the text field";
+    table[Index(StringId::kVoiceEditAnchorAmbiguous)] =
+        "That dictation appears multiple times; move the cursor next to it and try again";
+    table[Index(StringId::kVoiceEditCaretMoveFailed)] =
+        "Couldn't move the cursor to the end of that dictation; move it there manually "
+        "and try again";
     return table;
 }
 
@@ -1124,7 +1131,7 @@ constexpr StringTable ChineseStrings() {
         "启用语音编辑指令（说\"删除最后两个字\"、\"撤销\"等直接编辑刚输入的文本）";
     table[Index(StringId::kVoiceEditDefaultChars)] = "单独说\"删除\"时删除的字数";
     table[Index(StringId::kVoiceEditHintRuntime)] =
-        "仅对最近一次语音输入生效；光标须仍在该文本末尾。";
+        "仅对最近一次语音输入、文本未被改动时生效；「删掉最后几个字」会自动把光标移回刚才输入的末尾。";
     table[Index(StringId::kVoiceEditHintMode)] = "字幕 / 第三方输入法模式不支持。";
     table[Index(StringId::kVoiceEditDeletedChars)] = "已删除 %d 个字";
     table[Index(StringId::kVoiceEditDeletedSentence)] = "已删除最后一句";
@@ -1146,6 +1153,10 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kVoiceTargetedInvalid)] = "指令不完整，未修改";
     table[Index(StringId::kVoiceTargetedTextChanged)] = "语音输入内容已变化，未修改";
     table[Index(StringId::kVoiceTargetedUnconfirmed)] = "修改结果未能确认，请检查输入框";
+    table[Index(StringId::kVoiceEditAnchorAmbiguous)] =
+        "刚才的输入在文本里出现多次，请把光标移到它旁边再试";
+    table[Index(StringId::kVoiceEditCaretMoveFailed)] =
+        "无法把光标移到刚才输入的末尾，请手动移过去再试";
     return table;
 }
 

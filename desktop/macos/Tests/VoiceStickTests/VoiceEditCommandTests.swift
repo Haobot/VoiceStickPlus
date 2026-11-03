@@ -22,7 +22,9 @@ private func expectNoEditCommand(_ text: String, defaultChars: Int = 1, maxChars
 
 private func expectDeletionPlan(_ result: VoiceEditPlanResult, count: Int, charCount: Int,
                                 newlineCount: Int, remaining: String,
-                                verification: VoiceEditVerification, _ name: String) {
+                                verification: VoiceEditVerification,
+                                anchorEndUTF16: Int? = nil, needsCaretMove: Bool = false,
+                                _ name: String) {
     guard case .plan(let plan) = result else {
         check(false, "\(name)（期望删除计划，实际 \(result)）")
         return
@@ -33,6 +35,11 @@ private func expectDeletionPlan(_ result: VoiceEditPlanResult, count: Int, charC
     checkEqual(plan.newRemainingText, remaining, "\(name)：新 remainingText")
     checkEqual(plan.verification, verification, "\(name)：verified/unverified")
     checkEqual(plan.newPressedEnter, false, "\(name)：新 pressedEnter")
+    // 批次 1 锚点字段（显式传入 anchorEndUTF16 才断言；unverified 计划 = -1/false）。
+    if let anchorEndUTF16 {
+        checkEqual(plan.anchorEndUTF16, anchorEndUTF16, "\(name)：anchorEndUTF16")
+        checkEqual(plan.needsCaretMove, needsCaretMove, "\(name)：needsCaretMove")
+    }
 }
 
 private func expectDeletionFailure(_ result: VoiceEditPlanResult,
@@ -194,12 +201,15 @@ private func runVoiceEditParserNegativeTests() {
 
 private func runVoiceEditPlannerTests() {
     // V1：U1 基准——字段完整 + auto_enter 换行 + 光标在末尾 → 3 次退格。
+    // T10 回归底线：P1c 且 caret==anchorEnd 时计划与批次 1 之前逐字段等价
+    //（anchorEndUTF16=字段末尾、needsCaretMove=false）。
     let u1Field = "你好世界\n"
     expectDeletionPlan(
         VoiceEditPlanner.plan(
             remainingText: "你好世界", pressedEnter: true, action: .deleteLastChars(2),
             fieldText: u1Field, caretUTF16: u1Field.utf16.count, selectionLength: 0),
         count: 3, charCount: 2, newlineCount: 1, remaining: "你好", verification: .verified,
+        anchorEndUTF16: 5, needsCaretMove: false,
         "计划：U1 删最后两个字含换行")
 
     // V2：有换行但只删 1 字。
@@ -210,35 +220,44 @@ private func runVoiceEditPlannerTests() {
         count: 2, charCount: 1, newlineCount: 1, remaining: "你好世", verification: .verified,
         "计划：删 1 字含换行")
 
-    // V3：pressedEnter=true 但字段没有换行（单行输入框吞掉 Return）→ 不多发退格。
+    // V3：pressedEnter=true 但字段没有换行（单行输入框吞掉 Return / 用户已手删
+    // 换行）→ P1c 裸回落命中，不多发退格。
     expectDeletionPlan(
         VoiceEditPlanner.plan(
             remainingText: "你好世界", pressedEnter: true, action: .deleteLastChars(2),
             fieldText: "你好世界", caretUTF16: 4, selectionLength: 0),
         count: 2, charCount: 2, newlineCount: 0, remaining: "你好", verification: .verified,
+        anchorEndUTF16: 4, needsCaretMove: false,
         "计划：字段无换行则不删换行")
 
-    // V4：用户手动删过尾部——eff 截断为字段实际内容。
-    expectDeletionPlan(
+    // V4（批次 1 语义更新）：用户手动删过段内尾部（字段只剩前缀）——零容错拒绝。
+    // 旧「最长前缀」容错已移除：偏移不可靠宁拒勿错（T6 家族）。
+    expectDeletionFailure(
         VoiceEditPlanner.plan(
             remainingText: "你好世界", pressedEnter: true, action: .deleteLastChars(2),
             fieldText: "你好世\n", caretUTF16: 4, selectionLength: 0),
-        count: 3, charCount: 2, newlineCount: 1, remaining: "你", verification: .verified,
-        "计划：用户已手动删 1 字 → eff 截断")
+        .fieldMismatch, "计划：用户已手动删 1 字 → 零容错拒绝")
 
-    // V5：用户继续手打内容 → 字段尾部不匹配，拒绝。
-    expectDeletionFailure(
+    // V5（批次 1 语义更新）：句中插入后继续手打（段后有「吗」、光标在「吗」后）
+    // ——P1a/P1b/P1c 全 miss（光标不紧邻段、字段不以段结尾），P2 唯一出现锚命中，
+    // anchorEnd=5、needsCaretMove=true（协调器先移光标再退格）。
+    expectDeletionPlan(
         VoiceEditPlanner.plan(
             remainingText: "你好世界", pressedEnter: true, action: .deleteLastChars(2),
             fieldText: "你好世界\n吗", caretUTF16: 6, selectionLength: 0),
-        .fieldMismatch, "计划：用户追加手打内容 → field_mismatch")
+        count: 3, charCount: 2, newlineCount: 1, remaining: "你好", verification: .verified,
+        anchorEndUTF16: 5, needsCaretMove: true,
+        "计划：段后手打内容 P2 唯一出现锚命中")
 
-    // V6：光标移到中间 → 拒绝（即使字段文本完整）。
-    expectDeletionFailure(
+    // V6（批次 1 语义更新）：光标移到中间——P1c 字段末尾锚命中，产出
+    // needsCaretMove=true（协调器先移光标再退格），不再 caret_not_end。
+    expectDeletionPlan(
         VoiceEditPlanner.plan(
             remainingText: "你好世界", pressedEnter: false, action: .deleteLastChars(1),
             fieldText: "你好世界", caretUTF16: 2, selectionLength: 0),
-        .caretNotEnd, "计划：光标在中间 → caret_not_end")
+        count: 1, charCount: 1, newlineCount: 0, remaining: "你好世", verification: .verified,
+        anchorEndUTF16: 4, needsCaretMove: true,
+        "计划：光标在中间 → P1c + needsCaretMove")
 
     // V7：存在选区 → 拒绝（提示先取消选中）。
     expectDeletionFailure(
@@ -277,12 +296,13 @@ private func runVoiceEditPlannerTests() {
         count: 2, charCount: 2, newlineCount: 0, remaining: "你好", verification: .unverified,
         "计划：verify_mode=off 不校验")
 
-    // V12：整段删除 + 换行（撤销/撤回语义）。
+    // V12：整段删除 + 换行（撤销/撤回语义）。T10：caret==anchorEnd 计划等价。
     expectDeletionPlan(
         VoiceEditPlanner.plan(
             remainingText: "你好世界", pressedEnter: true, action: .deleteAll,
             fieldText: u1Field, caretUTF16: u1Field.utf16.count, selectionLength: 0),
         count: 5, charCount: 4, newlineCount: 1, remaining: "", verification: .verified,
+        anchorEndUTF16: 5, needsCaretMove: false,
         "计划：整段删除含换行")
 
     // V13：整段删除不可验证（off）。
@@ -301,13 +321,12 @@ private func runVoiceEditPlannerTests() {
         count: 1, charCount: 1, newlineCount: 0, remaining: "", verification: .verified,
         "计划：N 超过剩余 → clamp")
 
-    // V15：用户已删到只剩 1 字，仍按可见最后 N 字 clamp。
-    expectDeletionPlan(
+    // V15（批次 1 语义更新）：用户已删到只剩 1 字——零容错拒绝（旧 eff 截断已移除）。
+    expectDeletionFailure(
         VoiceEditPlanner.plan(
             remainingText: "你好世界", pressedEnter: true, action: .deleteLastChars(2),
             fieldText: "你\n", caretUTF16: 2, selectionLength: 0),
-        count: 2, charCount: 1, newlineCount: 1, remaining: "", verification: .verified,
-        "计划：仅剩 1 字时 clamp")
+        .fieldMismatch, "计划：段内已删剩 1 字 → 零容错拒绝")
 
     // V16：句子切分——最后 1 句（含句末标点）。
     let sentencesText = "第一句。第二句！第三句？"
@@ -420,20 +439,22 @@ private func runVoiceEditPlannerTests() {
         count: 4, charCount: 4, newlineCount: 0, remaining: "第一句。",
         verification: .unverified, "计划：不可验证句子删除")
 
-    // V29：整段删除但用户已手动删掉一部分（eff 截断后整段清空实际剩余）。
-    expectDeletionPlan(
+    // V29（批次 1 语义更新）：整段删除但用户已手动删掉一部分——零容错拒绝。
+    expectDeletionFailure(
         VoiceEditPlanner.plan(
             remainingText: "你好世界", pressedEnter: true, action: .deleteAll,
             fieldText: "你好\n", caretUTF16: 3, selectionLength: 0),
-        count: 3, charCount: 2, newlineCount: 1, remaining: "", verification: .verified,
-        "计划：整段删除按 eff 截断")
+        .fieldMismatch, "计划：段内已删剩部分 → 整段删除零容错拒绝")
 
-    // V30：字段尾部恰为 remaining 前缀、但光标不在 UTF-16 末尾 → caret_not_end。
-    expectDeletionFailure(
+    // V30（批次 1 语义更新）：光标越出字段末尾（平台理论不产生；防御向量）——
+    // P1c 命中，needsCaretMove=true（协调器移光标），不再 caret_not_end。
+    expectDeletionPlan(
         VoiceEditPlanner.plan(
             remainingText: "你好", pressedEnter: false, action: .deleteLastChars(1),
             fieldText: "你好", caretUTF16: 3, selectionLength: 0),
-        .caretNotEnd, "计划：caretUTF16 非法 → caret_not_end")
+        count: 1, charCount: 1, newlineCount: 0, remaining: "你", verification: .verified,
+        anchorEndUTF16: 2, needsCaretMove: true,
+        "计划：光标越界 → P1c + needsCaretMove")
 
     // V31：planner 的 max_chars 纵深防御——字动作请求量被上限收紧（解析器侧本应
     // 先拒绝越界指令，planner 再兜一层，保证任何调用方单条字指令不超配置上限）。

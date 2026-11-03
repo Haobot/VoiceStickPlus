@@ -37,6 +37,10 @@ public struct AppConfig {
     public var defaultOutputProfile: OutputProfile
     public var deviceOutputProfiles: [String: OutputProfile]
     public var autoEnter: Bool
+    /// 句中插入去句末句号（[output].midline_strip_period，批次 1；默认 true）：
+    /// 光标后同一逻辑行还有非空白字符时，去掉注入文本末尾一个句号
+    ///（。／．／.（前字符非 ASCII 字母数字）；！？不去）。读不到字段不处理。
+    public var midlineStripPeriod: Bool
     public var debugAudioCache: Bool
     public var debugAudioDirectory: URL
     /// ASR 前桌面端人声增强/降噪（RNNoise，对齐 Windows 侧规划中的同名能力）：
@@ -187,6 +191,7 @@ public struct AppConfig {
             defaultOutputProfile: .default,
             deviceOutputProfiles: [:],
             autoEnter: true,
+            midlineStripPeriod: true,
             debugAudioCache: false,
             debugAudioDirectory: defaultDebugAudioDirectory,
             audioNoiseSuppression: false,
@@ -268,6 +273,7 @@ public struct AppConfig {
                 )
             ),
             autoEnter: file.auto_enter ?? defaults.autoEnter,
+            midlineStripPeriod: file.output?.midline_strip_period ?? defaults.midlineStripPeriod,
             debugAudioCache: file.debug_audio_cache ?? defaults.debugAudioCache,
             debugAudioDirectory: directoryValue(file.debug_audio_dir, default: defaults.debugAudioDirectory),
             audioNoiseSuppression: file.audio_noise_suppression ?? defaults.audioNoiseSuppression,
@@ -412,6 +418,7 @@ public struct AppConfig {
         target = "\(defaultOutputProfile.target.rawValue)"
         transform = "\(defaultOutputProfile.transform.rawValue)"
         translation_target = "\(defaultOutputProfile.translationTarget.tomlEscaped)"
+        midline_strip_period = \(midlineStripPeriod.tomlValue)
         """
         return text + voiceEditText + localAsrText + globalButtonsText
             + deviceOutputProfileText + deviceXiaomiSettingsText
@@ -489,6 +496,8 @@ public struct AppConfig {
             ),
             deviceOutputProfiles: [:],
             autoEnter: boolValue(values["auto_enter"], default: defaults.autoEnter),
+            // legacy 逐行解析不跟踪表头：[output] 段裸键与顶层键同桶（既有行为）。
+            midlineStripPeriod: boolValue(values["midline_strip_period"], default: defaults.midlineStripPeriod),
             debugAudioCache: boolValue(values["debug_audio_cache"], default: defaults.debugAudioCache),
             debugAudioDirectory: directoryValue(values["debug_audio_dir"], default: defaults.debugAudioDirectory),
             audioNoiseSuppression: boolValue(values["audio_noise_suppression"], default: defaults.audioNoiseSuppression),

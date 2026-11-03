@@ -668,6 +668,9 @@ private:
     // P3 反馈环锚点：本会话精确命中应用的改写对（确认保留 → recall+1，取消清空）。
     std::optional<CorrectionPair> applied_correction_pair_;
     void CompletePendingPaste(const std::string& text, bool manual);
+    // 批次 1（字段内定位）：句中句号剥离（CompletePendingPaste 入口；须在 UI 线程
+    // 调用——内部经 focus_text_reader_ 读 UIA）。返回 possibly-stripped 文本。
+    std::string ApplyMidlinePeriodStrip(const std::string& text);
     bool RestoreLastInputConfirmation(std::optional<std::string> device_id);
     bool HandleFrontButtonDuringPendingPaste(const std::string& device_id);
     void CancelPendingPaste(const std::string& device_id);
@@ -691,18 +694,34 @@ private:
     // 同样只在 finalizing 内接受；命中（含结构非法）即吞掉本轮并接管。
     bool HandleVoiceTargetedEditIfMatched(const std::string& text);
     // targeted 执行（UI 线程内同步完成选区+读回+单次动作；延时终验经 worker +
-    // RunOnUiThread 回收，generation 防 stale 回调覆盖新记录）。
+    // RunOnUiThread 回收，generation 防 stale 回调覆盖新记录）。终验小步轮询重试
+    // （动作在部分目标异步落地），窗末按「未落地→记录保留 / 真不符→记录失效」分类。
     void ExecuteVoiceTargetedEdit(const VoiceTargetedCommand& command,
                                   const VoiceTargetedPlan& plan,
                                   std::size_t tail_utf16_length);
     void FinalizeVoiceTargetedEdit(std::uint64_t generation, const VoiceTargetedPlan& plan,
-                                   std::string expected_tail);
+                                   std::string expected_tail, std::string pre_action_tail,
+                                   int attempt);
     // 唯一粘贴 chokepoint 记录本次注入（Paste 之后调用；无回执仍记录，靠 L1 兜底）。
     void RecordLastInjection(const std::string& text, bool pressed_enter);
     // 异步退格执行：std::thread 逐次 SendKeyCombo(backspace)（约 12ms 节拍），完成后
     // RunOnUiThread 更新记录并提示；不得阻塞 UI 线程。
     void StartVoiceEditBackspaces(int count, std::uint64_t generation, std::string message,
                                   std::string new_remaining_text, bool new_pressed_enter);
+    // 批次 1（字段内定位）：尾删前置光标移动——MoveCaretTo(anchor_end) + 按读回
+    // 节拍轮询确认（UIA 读取须在 UI 线程，经 RunOnUiThread 重入）；到位后转正常
+    // 退格；耗尽 → caret_move_failed（零退格、记录保留）。须在 UI 线程调用。
+    // TODO(win): 待 Windows 机编译+CTest 验证。
+    void MoveCaretForVoiceEditDeletion(const VoiceEditPlan& plan,
+                                       const VoiceEditCommand& command,
+                                       std::uint64_t generation, int attempt);
+    // 语音编辑失败日志（一行，只在失败路径打）：fail_stage 对应读取链失败环节；
+    // bundle 用前台进程名（无 bundle id 概念，nil → unknown）。
+    void LogVoiceEditFailure(std::string_view stage, std::string_view code);
+    // 失败码 → 读取链环节（stage ∈ focused_element/field_text/selected_range/
+    // selected_text/anchor/caret_move）。
+    static std::string_view VoiceEditFailureStage(VoiceEditRejectReason reason);
+    static std::string_view VoiceTargetedFailureStage(VoiceTargetedFailure failure);
     void UpdateDeviceFirmwareInfo(const StateEvent& event, const std::string& device_id);
     void CheckFirmwareUpdatesIfNeeded(bool force, bool show_errors);
     void RefreshFirmwareAvailability();

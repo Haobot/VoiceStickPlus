@@ -91,7 +91,14 @@ struct VoiceEditFieldState {
     std::size_t tail_utf16_length = 0;
     // 尾部读取被截断（字段内容比 tail_text 长），仅供日志/排障。
     bool truncated = false;
+    // ---- 批次 1（字段内定位）：光标在 tail_text 内的 UTF-16 相对偏移 ----
+    // 旧布尔（caret_at_end/selection_collapsed）保留（派生诊断）；P1a/P1b 锚定
+    // 与句中句号判定用本偏移。窗口外/不可得 = kCaretOutsideTail。
+    std::size_t caret_tail_utf16 = static_cast<std::size_t>(-1);
 };
+
+// caret_tail_utf16 的「不可得」哨兵（窗口外/平台未实现偏移读取）。
+inline constexpr std::size_t kCaretOutsideTail = static_cast<std::size_t>(-1);
 
 enum class VoiceEditRejectReason {
     kNone,
@@ -99,10 +106,14 @@ enum class VoiceEditRejectReason {
     kFieldUnreadable,       // strict：字段/光标不可读（或未注入 reader）
     kPasswordField,         // 密码框：永不执行
     kSelectionActive,       // 选区非空（要求用户先取消选中）
-    kCaretNotAtEnd,         // 光标不在字段末尾
+    kCaretNotAtEnd,         // 光标不在字段末尾（批次 1 起 planner 不再返回；枚举位
+                            // 与失败名表保留，双端对齐）
     kTextMismatch,          // 字段尾部与注入记录对不上（已发送/被改动/继续手打）
     kUnverifiedNotAllowed,  // auto：不可验证且超出 unverified 时间窗
     kNothingToDelete,       // 计算后无可删除内容
+    // ---- 批次 1（字段内定位）尾部追加（双端同构，别插中间）----
+    kAnchorAmbiguous,       // anchored 段在字段中出现 ≥2 次且 P1 全 miss（零容错拒绝）
+    kCaretMoveFailed,       // 尾删前置光标移动失败：零退格、记录保留（协调器产生）
 };
 
 std::string_view VoiceEditRejectReasonName(VoiceEditRejectReason reason);
@@ -125,15 +136,24 @@ struct VoiceEditPlan {
     bool new_pressed_enter = false;
     // true = 经过 L1 校验；false = auto 不可验证分支 / off。
     bool verified = false;
+    // ---- 批次 1（字段内定位）：anchored 段终点（tail 窗口内 UTF-16 偏移）与
+    // 光标是否需先移过去。unverified 计划读不到字段无从定位 → kCaretOutsideTail
+    // 且 needs_caret_move=false（盲退格窗口语义不变）。----
+    std::size_t anchor_end_utf16 = kCaretOutsideTail;
+    bool needs_caret_move = false;
 };
 
-// L1 校验 + 删除计划（纯逻辑，算法见 Doc/Plan/voice-edit-commands.md §6.3）：
-//  - 可验证（readable && !password）：要求光标折叠在文末，且字段尾部仍以注入文本
-//    的最长前缀结尾（允许用户手动删掉尾部）；auto_enter 换行按实际字段末尾判定；
+// L1 校验 + 删除计划（纯逻辑，算法见 Doc/Plan/voice-edit-commands.md §6.3 与
+// §17 批次 1 实施记录）：
+//  - 可验证（readable && !password）：选区非空先拒绝；字段内多级锚定
+//    （voice_edit_anchor.h：P1a 光标前缀/P1b 光标后缀/P1c 字段末尾/P2 唯一出现，
+//    零容错——旧 caret_at_end 门槛与最长前缀容错已移除），产出
+//    anchor_end_utf16 + needs_caret_move（协调器先移光标再退格）；
 //  - strict：不可验证一律拒绝；
 //  - auto：不可验证时仅当 unverified_allowed（协调器按 unverified_seconds 判定）
 //    才按不可验证分支执行；
 //  - off：不校验，按不可验证分支执行（密码框仍拒绝）。
+//  - caret_tail_utf16 == kCaretOutsideTail 时 P1a/P1b 不可判，仅 P1c/P2 可命中。
 VoiceEditPlan PlanVoiceEdit(std::string_view remaining_text, bool pressed_enter,
                             const VoiceEditCommand& command,
                             const VoiceEditFieldState& field,

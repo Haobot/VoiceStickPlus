@@ -148,6 +148,8 @@ enum L10nKey: String, CaseIterable {
     case voiceTargetedDeleted, voiceTargetedReplaced
     case voiceTargetedNotFound, voiceTargetedAmbiguous, voiceTargetedInvalid
     case voiceTargetedTextChanged, voiceTargetedUnconfirmed
+    // 语音编辑批次 1（字段内定位）：新失败码文案。
+    case voiceEditAnchorAmbiguous, voiceEditCaretMoveFailed
 }
 
 /// 界面文案查表。当前语言由 AppDelegate 在启动与配置变更时写入 `Localization.current`
@@ -510,7 +512,7 @@ enum Localization {
         .settingsSectionVoiceEdit: "Voice Editing",
         .settingsVoiceEditEnabled: "Enable voice edit commands (say e.g. “delete the last two characters”)",
         .settingsVoiceEditDefaultChars: "Characters deleted by “delete” alone",
-        .settingsVoiceEditHint: "Applies only to the most recent dictation, and only while the cursor is still at the end of that text. Subtitle and WeChat input-method modes are not supported.",
+        .settingsVoiceEditHint: "Applies only to the most recent dictation and only while its text is unchanged; \"delete the last few words\" now moves the cursor back to the end of that dictation automatically. Subtitle and WeChat input-method modes are not supported.",
         .voiceEditDeletedChars: "Deleted %d characters",
         .voiceEditDeletedSentences: "Deleted the last %d sentences",
         .voiceEditDeletedSentenceOne: "Deleted the last sentence",
@@ -533,6 +535,8 @@ enum Localization {
         .voiceTargetedInvalid: "The command is incomplete; nothing changed",
         .voiceTargetedTextChanged: "The dictated text changed; nothing modified",
         .voiceTargetedUnconfirmed: "The edit could not be confirmed; please check the text field",
+        .voiceEditAnchorAmbiguous: "That dictation appears multiple times; move the cursor next to it and try again",
+        .voiceEditCaretMoveFailed: "Couldn't move the cursor to the end of that dictation; move it there manually and try again",
     ]
 
     private static let chinese: [L10nKey: String] = [
@@ -837,7 +841,7 @@ enum Localization {
         .settingsSectionVoiceEdit: "语音编辑",
         .settingsVoiceEditEnabled: "启用语音编辑指令（说“删除最后两个字”等）",
         .settingsVoiceEditDefaultChars: "单独说“删除”时删除字数",
-        .settingsVoiceEditHint: "仅对最近一次语音输入、且光标仍在该文本末尾时生效；字幕/微信输入法模式不支持。",
+        .settingsVoiceEditHint: "仅对最近一次语音输入、且文本未被改动时生效；「删掉最后几个字」会自动把光标移回刚才输入的末尾；字幕/微信输入法模式不支持。",
         .voiceEditDeletedChars: "已删除 %d 个字",
         .voiceEditDeletedSentences: "已删除最后 %d 句",
         .voiceEditDeletedSentenceOne: "已删除最后一句",
@@ -860,6 +864,8 @@ enum Localization {
         .voiceTargetedInvalid: "指令不完整，未修改",
         .voiceTargetedTextChanged: "语音输入内容已变化，未修改",
         .voiceTargetedUnconfirmed: "修改结果未能确认，请检查输入框",
+        .voiceEditAnchorAmbiguous: "刚才的输入在文本里出现多次，请把光标移到它旁边再试",
+        .voiceEditCaretMoveFailed: "无法把光标移到刚才输入的末尾，请手动移过去再试",
     ]
 }
 
