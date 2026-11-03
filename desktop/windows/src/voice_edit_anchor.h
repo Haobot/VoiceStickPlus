@@ -13,6 +13,7 @@
 // IsMidlineInsertion（句中判定）。
 
 #include <cstddef>
+#include <string>
 #include <string_view>
 
 namespace voicestick {

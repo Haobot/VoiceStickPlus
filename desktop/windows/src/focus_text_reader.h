@@ -31,7 +31,7 @@ public:
     // 只能在 UI 线程（COM STA）调用。
     virtual bool ReadFocusedField(VoiceEditFieldState* out) = 0;
 
-    // 批次 2（整框搜索域）：读取字段**全文**（GetDocumentRange → GetText，上限
+    // 批次 2（整框搜索域）：读取字段**全文**（get_DocumentRange → GetText，上限
     // kFieldScopeFullTextMaxUtf16 码元）写入 out->full_text / full_utf16_length；
     // 超上限置 full_truncated=true 且 full_text 为空（调用方按 field_too_long
     // 拒绝）；尾窗/选区/光标字段与 ReadFocusedField 同步填充（一次 UIA 往返内

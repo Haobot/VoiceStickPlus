@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kVoiceTargetedUnconfirmed) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kVoiceTargetedUndoChanged) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -626,8 +626,8 @@ constexpr StringTable EnglishStrings() {
     table[Index(StringId::kVoiceEditDefaultChars)] =
         "Characters deleted when you say \"delete\" alone";
     table[Index(StringId::kVoiceEditHintRuntime)] =
-        "By default "replace/delete X" searches the whole text field (the last "
-        "dictation first); multiple matches will ask which one; say "undo" to revert "
+        "By default \"replace/delete X\" searches the whole text field (the last "
+        "dictation first); multiple matches will ask which one; say \"undo\" to revert "
         "the last voice edit.";
     table[Index(StringId::kVoiceEditHintMode)] =
         "Not available in subtitle or third-party input-method modes.";
