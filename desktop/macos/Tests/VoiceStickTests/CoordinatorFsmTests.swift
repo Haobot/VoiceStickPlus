@@ -1369,6 +1369,160 @@ func runVoiceTargetedClarifyCoordinatorTests() {
     checkEqual(h.sink.timedMessages.last, "voiceTargetedDeleted", "clarify: 倒数应答成功 toast")
 }
 
+// ---- 语音编辑批次 2 交付 E：上下文撤销（「撤销」优先还原上一次语音修改）----
+
+func runVoiceEditUndoCoordinatorTests() {
+    var noEnter = AppConfig.defaults
+    noEnter.autoEnter = false
+
+    // 1) targeted 替换后撤销：还原区间粘贴原词 + remainingText 恢复 + 后续编辑可用。
+    var h = makeTargetedHarness()
+    h.coordinator.updateConfig(noEnter)
+    h.asr.onFinal?("我去北京上班")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我去北京上班"
+    h.field.selectionLocation = 6
+    h.field.selectionLength = 0
+    h.asr.onFinal?("把刚才的北京改成上海")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "我去上海上班", "undo 前置：替换完成")
+    h.ops.clear()
+    h.asr.onFinal?("撤销")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "我去北京上班", "undo: 撤销还原字段全文")
+    checkEqual(h.input.pastedTexts.last, "北京", "undo: 粘贴原目标词")
+    checkEqual(h.input.pastedEnterFlags.last, false, "undo: pressEnter=false")
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedUndoOk", "undo: 成功 toast")
+    checkEqual(h.ops.list,
+               ["state", "select(2,2)", "selected", "paste", "select(4,0)", "state"],
+               "undo: 还原调用顺序（选中编辑后区间→读回→粘贴原文本→终验）")
+    // remainingText 已恢复：显式作用域删除「北京」可用（该删除成功又记新撤销锚点）。
+    h.asr.onFinal?("删除刚才的北京")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "我去上班", "undo: 记录恢复后续编辑可用")
+    // 删除本身可被撤销（一级撤销链条：最近一次成功编辑）。
+    h.asr.onFinal?("撤销")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "我去北京上班", "undo: 撤销上一次删除")
+    // 撤销本身不可再撤销：第三次「撤销」无记录 → 走原 deleteAll 语义（删刚才整句）。
+    h.field.text = "我去北京上班"
+    h.field.selectionLocation = 6
+    h.field.selectionLength = 0
+    h.input.sentKeyCombos.removeAll()
+    h.asr.onFinal?("撤销")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.input.sentKeyCombos, voiceEditBackspaces(6),
+               "undo: 无记录时走原 deleteAll 语义（6 字退格）")
+
+    // 2) 尾删后撤销：退格完成回调读字段记 postEdit；撤销重插被删文本 + 记录恢复。
+    var he = makeVoiceEditHarness()
+    he.coordinator.updateConfig(noEnter)
+    he.asr.onFinal?("你好世界")
+    pumpMainRunLoop(0.1)
+    let tailField = he.field
+    he.field.state = FocusedFieldState(text: "你好世界", caretUTF16: 4, selectionLength: 0)
+    // 模拟退格副作用：字段实际删掉尾部 2 字。
+    he.input.onSendKeyCombo = { spec in
+        if spec.displayText == "Backspace" || spec.displayText == "backspace" {
+            if let state = tailField.state {
+                tailField.state = FocusedFieldState(
+                    text: String(state.text.dropLast()),
+                    caretUTF16: max(0, (state.caretUTF16 ?? 0) - 1),
+                    selectionLength: 0)
+            }
+        }
+    }
+    he.input.sentKeyCombos.removeAll()
+    he.asr.onFinal?("删除最后两个字")
+    pumpMainRunLoop(0.5)
+    checkEqual(he.input.sentKeyCombos, voiceEditBackspaces(2), "undo 前置：尾删 2 字")
+    checkEqual(he.field.state?.text, "你好", "undo 前置：字段已删 2 字")
+    // 撤销：折叠光标(2,0) → 无读回 → 粘贴「世界」→ 终验「你好世界」。
+    he.input.onPaste = { text, _ in
+        if let state = tailField.state, let caret = state.caretUTF16 {
+            let units = Array(state.text.utf16)
+            let head = String(decoding: units[0..<min(caret, units.count)], as: UTF16.self)
+            let rest = String(decoding: units[min(caret, units.count)...], as: UTF16.self)
+            tailField.state = FocusedFieldState(
+                text: head + text + rest,
+                caretUTF16: caret + text.utf16.count,
+                selectionLength: 0)
+        }
+    }
+    he.input.pastedTexts.removeAll()
+    he.asr.onFinal?("撤销")
+    pumpMainRunLoop(0.6)
+    checkEqual(he.input.pastedTexts.last, "世界", "undo: 尾删撤销重插被删文本")
+    checkEqual(he.field.state?.text, "你好世界", "undo: 尾删撤销字段还原")
+    checkEqual(he.sink.timedMessages.last, "voiceTargetedUndoOk", "undo: 尾删撤销成功 toast")
+    // 记录已恢复（remaining=你好世界）：尾删 1 字可用。
+    he.input.sentKeyCombos.removeAll()
+    he.asr.onFinal?("删除")
+    pumpMainRunLoop(0.5)
+    checkEqual(he.input.sentKeyCombos, voiceEditBackspaces(1), "undo: 尾删后记录恢复可续删")
+
+    // 3) 字段已变化：提示无法撤销、零执行、记录作废（再「撤销」走原语义）。
+    h = makeTargetedHarness()
+    h.coordinator.updateConfig(noEnter)
+    h.asr.onFinal?("我去北京上班")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我去北京上班"
+    h.field.selectionLocation = 6
+    h.field.selectionLength = 0
+    h.asr.onFinal?("把刚才的北京改成上海")
+    pumpMainRunLoop(0.6)
+    h.field.text = "我去上海上班！"   // 用户手动追加了标点
+    h.ops.clear()
+    h.asr.onFinal?("撤销")
+    pumpMainRunLoop(0.3)
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedUndoChanged",
+               "undo: 字段变化 toast")
+    checkEqual(h.ops.list, ["state"], "undo: 字段变化零执行（仅判定读）")
+    checkEqual(h.field.text, "我去上海上班！", "undo: 字段变化零修改")
+
+    // 4) 超时（测试注入 0.05s 窗）：撤销走原 deleteAll 语义（删掉刚才整句）。
+    h = makeTargetedHarness()
+    h.coordinator.updateConfig(noEnter)
+    h.coordinator.undoWindowOverride = 0.05
+    h.asr.onFinal?("我去北京上班")
+    pumpMainRunLoop(0.1)
+    h.field.text = "我去北京上班"
+    h.field.selectionLocation = 6
+    h.field.selectionLength = 0
+    h.asr.onFinal?("把刚才的北京改成上海")
+    pumpMainRunLoop(0.6)
+    h.input.sentKeyCombos.removeAll()
+    h.asr.onFinal?("撤销")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.input.sentKeyCombos, voiceEditBackspaces(6),
+               "undo: 超时走原 deleteAll 语义（删刚才整句 6 字）")
+
+    // 5) 整框域编辑撤销：字段还原、lastInjection 不动（preEditRemaining nil）。
+    h = makeTargetedHarness()
+    h.coordinator.updateConfig(noEnter)
+    h.asr.onFinal?("我去北京上班")
+    pumpMainRunLoop(0.1)
+    h.field.text = "手打开头我去背景上班"
+    h.field.selectionLocation = 10
+    h.field.selectionLength = 0
+    h.asr.onFinal?("把背景改成北京")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "手打开头我去北京上班", "undo 前置：整框替换完成")
+    h.ops.clear()
+    h.asr.onFinal?("撤销")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "手打开头我去背景上班", "undo: 整框撤销字段还原")
+    checkEqual(h.sink.timedMessages.last, "voiceTargetedUndoOk", "undo: 整框撤销成功 toast")
+    // lastInjection 未被撤销路径触碰：remaining 仍为原始注入（记录未恢复语义，保持不变）。
+    h.input.sentKeyCombos.removeAll()
+    h.field.text = "手打开头我去背景上班"
+    h.field.selectionLocation = 10
+    h.field.selectionLength = 0
+    h.asr.onFinal?("删除刚才的上班")
+    pumpMainRunLoop(0.6)
+    checkEqual(h.field.text, "手打开头我去背景", "undo: 整框撤销后原记录仍可用")
+}
+
 // ---- 语音编辑批次 2 交付 C：整框搜索域 + 记录维护三情形 + 光标平移 ----
 // 批次 1 验收 C2（注入被手改后替换失败）修复、手打文字可编辑、注入记录
 // update/keep/invalidate 三情形、整框追问应答、field_too_long、光标原位平移。

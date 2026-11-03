@@ -214,8 +214,7 @@ public enum VoiceEditParser {
     ///   - text: ASR final 原文（可含尾部标点/首尾空白/全角数字）。
     ///   - defaultChars: 单独说「删除」时删几个字（配置 default_chars）。
     ///   - maxChars: 显式数量上限（配置 max_chars），越界一律不识别。
-    public static func parse(_ text: String, defaultChars: Int = 1, maxChars: Int = 20) -> VoiceEditCommand? {
-        let limit = max(1, maxChars)
+    public static func parse(_ text: String, defaultChars: Int = 1, maxChars: Int = 20) -> VoiceEditCommand? {        let limit = max(1, maxChars)
         let defaultCount = min(max(1, defaultChars), limit)
         let normalized = normalize(text)
         guard !normalized.isEmpty, normalized.count <= kVoiceEditMaxCommandChars else { return nil }
@@ -245,6 +244,16 @@ public enum VoiceEditParser {
         // 4) 把字句/后置动词式：把最后两个字删掉 / 最后两个字删掉 / 把最后一句删掉。
         if let command = matchTrailingVerb(chars, limit: limit) { return command }
         return nil
+    }
+
+    /// 批次 2 交付 E：上下文撤销短语白名单（现属 deleteAllForms 子集）——协调器
+    /// 据此在原「删掉刚才整句」语义之前优先尝试还原上一次语音修改（30 秒内、
+    /// 同应用、字段与编辑后状态严格一致才执行；不满足则回落原语义）。
+    /// 归一化口径与 parse 相同（首尾空白/尾部标点/全角数字/内部空白）。
+    public static func isUndoPhrase(_ text: String) -> Bool {
+        let normalized = normalize(text)
+        return normalized == "撤销" || normalized == "撤回"
+            || normalized == "撤销刚才的" || normalized == "撤回刚才的"
     }
 
     /// 句尾最后 N 句的 grapheme 数（供计划算法使用；无标点时整段算一句）。

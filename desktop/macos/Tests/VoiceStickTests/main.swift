@@ -61,6 +61,7 @@ runVoiceEditAnchorCoordinatorTests()
 runVoiceTargetedClarifyCoordinatorTests()
 runVoiceTargetedFieldScopeCoordinatorTests()
 runVoiceEditCaretFallbackCoordinatorTests()
+runVoiceEditUndoCoordinatorTests()
 
 let passed = totalChecks - failedChecks
 print("PASSED \(passed)/\(totalChecks) (golden fixtures: \(goldenChecked) session(s))")

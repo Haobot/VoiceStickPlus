@@ -488,6 +488,20 @@ private func runVoiceEditPlannerTests() {
     }
 }
 
+// ---- 批次 2 交付 E：上下文撤销短语白名单 ----
+
+private func runVoiceEditUndoPhraseTests() {
+    check(VoiceEditParser.isUndoPhrase("撤销"), "undoPhrase: 撤销")
+    check(VoiceEditParser.isUndoPhrase("撤回"), "undoPhrase: 撤回")
+    check(VoiceEditParser.isUndoPhrase("撤销刚才的"), "undoPhrase: 撤销刚才的")
+    check(VoiceEditParser.isUndoPhrase("撤回刚才的"), "undoPhrase: 撤回刚才的")
+    check(VoiceEditParser.isUndoPhrase(" 撤销。"), "undoPhrase: 尾部标点+空白")
+    check(!VoiceEditParser.isUndoPhrase("删除刚才的"), "undoPhrase: 删除刚才的非撤销短语")
+    check(!VoiceEditParser.isUndoPhrase("清空"), "undoPhrase: 清空非撤销短语")
+    check(!VoiceEditParser.isUndoPhrase("撤销一下"), "undoPhrase: 撤销一下非白名单")
+    check(!VoiceEditParser.isUndoPhrase("全部删除"), "undoPhrase: 全部删除非白名单")
+}
+
 // ---- 批次 2 交付 D：定位失败降级为删光标前 N 字/句 ----
 
 private func runVoiceEditCaretFallbackTests() {
@@ -589,5 +603,6 @@ func runVoiceEditCommandTests() {
     runVoiceEditParserPositiveTests()
     runVoiceEditParserNegativeTests()
     runVoiceEditPlannerTests()
+    runVoiceEditUndoPhraseTests()
     runVoiceEditCaretFallbackTests()
 }

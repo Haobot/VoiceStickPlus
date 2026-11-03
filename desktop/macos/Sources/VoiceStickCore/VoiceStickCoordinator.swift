@@ -242,6 +242,30 @@ public final class VoiceStickCoordinator {
     private var pendingClarification: PendingVoiceEditClarification?
     /// 追问有效窗（秒）：用户看到提示后开口说「第二个」的余量。
     private let kVoiceEditClarificationTimeout: TimeInterval = 20
+    /// 批次 2 交付 E：上下文撤销记录——最近一次成功语音编辑（targeted 替换/删除、
+    /// 尾删）的编辑后字段快照与还原区间。「撤销/撤回(刚才的)」在 30 秒内、同前台
+    /// 应用、且当前字段全文 == postEditFieldText（严格相等，宁拒勿错）时执行还原；
+    /// 不满足则走原 deleteAll 语义。只支持一级撤销；撤销本身不可再撤销。
+    private struct LastVoiceEdit {
+        /// 编辑终验通过时的字段全文（严格相等比对基准）。
+        let postEditFieldText: String
+        /// 编辑后区间起点（UTF-16；删除类为折叠点）。
+        let editStartUTF16: Int
+        /// 编辑后区间长度（= 插入文本长度；删除类 0）。
+        let editLengthUTF16: Int
+        /// 编辑写入的文本（替换类=替换词；删除类=""——读回确认用）。
+        let insertedText: String
+        /// 还原时粘贴的原文本（targeted=目标词；尾删=被删文本）。
+        let originalText: String
+        /// 还原成功后恢复的 lastInjection.remainingText（nil=不恢复）。
+        let preEditRemainingText: String?
+        let appBundleID: String?
+        let createdAt: Date
+        let generation: Int
+    }
+    private var lastVoiceEdit: LastVoiceEdit?
+    /// 上下文撤销时间窗（秒）。
+    private let kVoiceEditUndoWindow: TimeInterval = 30
     /// targeted 编辑终验等待时长：给目标应用消化 一次 Backspace / 一次粘贴 的时间
     /// （InputInjector.paste 剪贴板恢复窗口同为 0.2s 量级）。
     private let kVoiceTargetedVerifyDelay: TimeInterval = 0.2
@@ -530,8 +554,10 @@ public final class VoiceStickCoordinator {
         }
 
         self.config = config
-        // 配置变化清追问 pending（批次 2 交付 B：任何 updateConfig 都使等待失效）。
+        // 配置变化清追问 pending 与撤销锚点（批次 2 交付 B/E：任何 updateConfig 都
+        // 使等待/撤销上下文失效）。
         pendingClarification = nil
+        lastVoiceEdit = nil
         // 语音编辑记录清理（方案 §6.1）：关闭功能或当前输出目标不是 focused_app 时
         // 旧注入记录不再有安全作用域，清掉避免误删。清理同时递增代际：在途 targeted
         // 终验回调（0.2s 窗口）只认同代，避免对已被配置清掉的记录弹旧成功 toast。
@@ -2901,8 +2927,10 @@ public final class VoiceStickCoordinator {
             )
             voiceEditGeneration += 1
         }
-        // 新注入清追问 pending（批次 2 交付 B：pending 只等待对上一条指令的应答）。
+        // 新注入清追问 pending 与撤销锚点（批次 2：pending 只等待对上一条指令的
+        // 应答；新注入后字段必不等于编辑后状态，撤销记录一并作废）。
         pendingClarification = nil
+        lastVoiceEdit = nil
         beginEditTracking(injectedText: text)
     }
 
@@ -2944,6 +2972,33 @@ public final class VoiceStickCoordinator {
             text, defaultChars: settings.defaultChars, maxChars: settings.maxChars
         ) else { return false }
 
+        // 批次 2 交付 E：「撤销/撤回(刚才的)」按上下文分流——有可用撤销记录时优先
+        // 还原上一次语音修改（吞轮执行）；不满足（无记录/超时/换应用/字段不可读）
+        // 返回 nil 落回下方原 deleteAll 语义（行为不变）。
+        if command.action == .deleteAll, VoiceEditParser.isUndoPhrase(text),
+           let undoEvaluation = evaluateVoiceEditUndo() {
+            pastedFinalText = true
+            pendingClarification = nil
+            finishEditTracking(status: EditTrackingStatus.skipped, editedSpan: nil)
+            cancelStreamingRefinement()
+            finishRecognitionCycle()
+            statusController.hideOverlay()
+            statusController.setStatus("Ready")
+            sendUIStateForActiveDevice("ready")
+            mainInputState = .ready
+            switch undoEvaluation {
+            case .fieldChanged:
+                lastVoiceEdit = nil   // 一次性尝试：字段已变化即放弃该撤销锚点
+                NSLog("voice_edit undo result=failure code=field_changed")
+                statusController.showTimedMessage(
+                    voiceEditText("voiceTargetedUndoChanged"), duration: 2.5,
+                    deviceID: activeDeviceID)
+            case .ready(let record):
+                executeVoiceEditUndo(record)
+            }
+            return true
+        }
+
         // 命中即吞掉本轮：置 pastedFinalText 阻止迟到回调二次粘贴。
         pastedFinalText = true
         // 其他语音编辑指令清追问 pending（批次 2 交付 B）。
@@ -2978,17 +3033,22 @@ public final class VoiceStickCoordinator {
                 NSLog("voice_edit tail_caret_fallback=1 count=%d", plan.count)
             }
             guard lastInjection != nil else { return true }
+            // 批次 2 交付 E：尾删撤销素材（计划时刻算好；unverified 计划返回 nil 不记）。
+            let undoIngredients = tailDeletionUndoIngredients(
+                plan: plan, remainingText: lastInjection?.remainingText ?? "")
             // 批次 1：光标不在 anchorEnd 时先把光标移过去（选区写 + 轮询确认），
             // 移动失败零退格、记录保留；unverified 计划无锚（盲退格窗口照旧）。
             if plan.needsCaretMove {
                 moveCaretForVoiceEditDeletion(
-                    plan: plan, command: command, generation: voiceEditGeneration, attempt: 0)
+                    plan: plan, command: command, undoIngredients: undoIngredients,
+                    generation: voiceEditGeneration, attempt: 0)
                 return true
             }
             injectVoiceEditBackspaces(plan.count) { [weak self] in
                 guard let self else { return }
                 self.lastInjection?.remainingText = plan.newRemainingText
                 self.lastInjection?.pressedEnter = plan.newPressedEnter
+                self.recordTailDeletionUndo(ingredients: undoIngredients)
                 self.showVoiceEditSuccessToast(command: command, plan: plan)
             }
         }
@@ -3002,7 +3062,7 @@ public final class VoiceStickCoordinator {
     /// 每次重试重写同一目标（幂等；Chromium 系目标选区写异步落地）。
     private func moveCaretForVoiceEditDeletion(
         plan: VoiceEditDeletionPlan, command: VoiceEditCommand,
-        generation: Int, attempt: Int
+        undoIngredients: TailUndoIngredients?, generation: Int, attempt: Int
     ) {
         guard generation == voiceEditGeneration else { return }
         let anchorEnd = plan.anchorEndUTF16
@@ -3020,6 +3080,7 @@ public final class VoiceStickCoordinator {
                 guard let self else { return }
                 self.lastInjection?.remainingText = plan.newRemainingText
                 self.lastInjection?.pressedEnter = plan.newPressedEnter
+                self.recordTailDeletionUndo(ingredients: undoIngredients)
                 self.showVoiceEditSuccessToast(command: command, plan: plan)
             }
             return
@@ -3034,7 +3095,8 @@ public final class VoiceStickCoordinator {
             deadline: .now() + kVoiceTargetedReadbackPollDelays[attempt]
         ) { [weak self] in
             self?.moveCaretForVoiceEditDeletion(
-                plan: plan, command: command, generation: generation, attempt: attempt + 1)
+                plan: plan, command: command, undoIngredients: undoIngredients,
+                generation: generation, attempt: attempt + 1)
         }
     }
 
@@ -3552,6 +3614,8 @@ public final class VoiceStickCoordinator {
         let originalCaretUTF16: Int
         /// 整框域编辑后的注入记录维护决定（lastInjection 域恒 .none）。
         let recordAction: VoiceTargetedRecordAction
+        /// 编辑前最近注入的 remainingText（撤销还原用；计划时刻不可定位 = nil）。
+        let preEditRemainingText: String?
 
         /// 动作前字段全文（终验窗末区分「动作未落地」与「真不符」用）。
         var preActionText: String {
@@ -3739,7 +3803,9 @@ public final class VoiceStickCoordinator {
         let context = makeTargetedEditContext(
             remainingText: domainText, pressedEnter: pressedEnter,
             fieldText: fieldState.text, caretUTF16: caret, anchor: anchor,
-            domain: domain, recordAction: recordAction)
+            domain: domain, recordAction: recordAction,
+            preEditRemainingText: domain == .wholeField
+                ? recentContext?.recent.remainingText : nil)
         return .context(command, plan, context)
     }
 
@@ -3749,7 +3815,8 @@ public final class VoiceStickCoordinator {
         remainingText: String, pressedEnter: Bool, fieldText: String,
         caretUTF16: Int, anchor: VoiceEditAnchor,
         domain: VoiceTargetedDomainKind = .lastInjection,
-        recordAction: VoiceTargetedRecordAction = .none
+        recordAction: VoiceTargetedRecordAction = .none,
+        preEditRemainingText: String? = nil
     ) -> VoiceTargetedEditContext {
         let fieldUnits = Array(fieldText.utf16)
         let fieldPrefix = String(decoding: fieldUnits[..<anchor.anchorStart], as: UTF16.self)
@@ -3768,7 +3835,8 @@ public final class VoiceStickCoordinator {
             textAfterAnchor: textAfterAnchor,
             domain: domain,
             originalCaretUTF16: caretUTF16,
-            recordAction: recordAction
+            recordAction: recordAction,
+            preEditRemainingText: preEditRemainingText ?? remainingText
         )
     }
 
@@ -3886,7 +3954,7 @@ public final class VoiceStickCoordinator {
         DispatchQueue.main.asyncAfter(deadline: .now() + kVoiceTargetedVerifyDelay) { [weak self] in
             self?.finalizeTargetedEdit(
                 expectedFinalText: expectedFinalText, preActionText: preActionText, plan: plan,
-                restoreCaretUTF16: restoreCaretUTF16, context: context,
+                restoreCaretUTF16: restoreCaretUTF16, context: context, command: command,
                 generation: generation, attempt: 0)
         }
     }
@@ -3902,7 +3970,7 @@ public final class VoiceStickCoordinator {
     private func finalizeTargetedEdit(
         expectedFinalText: String, preActionText: String, plan: VoiceTargetedPlan,
         restoreCaretUTF16: Int, context: VoiceTargetedEditContext,
-        generation: Int, attempt: Int
+        command: VoiceTargetedCommand, generation: Int, attempt: Int
     ) {
         guard generation == voiceEditGeneration else { return }
         // 光标恢复 best-effort（批次 2 交付 C：原位置+平移；末尾追加情形与批次 1
@@ -3914,6 +3982,8 @@ public final class VoiceStickCoordinator {
            state?.caretUTF16 == restoreCaretUTF16,
            state?.selectionLength == 0 {
             applyTargetedRecordMaintenance(context: context, plan: plan)
+            recordTargetedUndo(command: command, plan: plan, context: context,
+                               postEditFieldText: expectedFinalText)
             NSLog("voice_targeted result=ok target_len=\(plan.targetLength)")
             showVoiceTargetedSuccessToast(plan: plan)
             return
@@ -3925,7 +3995,7 @@ public final class VoiceStickCoordinator {
                 self?.finalizeTargetedEdit(
                     expectedFinalText: expectedFinalText, preActionText: preActionText,
                     plan: plan, restoreCaretUTF16: restoreCaretUTF16, context: context,
-                    generation: generation, attempt: attempt + 1)
+                    command: command, generation: generation, attempt: attempt + 1)
             }
             return
         }
@@ -3934,6 +4004,8 @@ public final class VoiceStickCoordinator {
             // 确认」，只记日志；记录照常更新，允许连续编辑。
             NSLog("voice_targeted caret restore unconfirmed caret=\(state?.caretUTF16 ?? -1) sel=\(state?.selectionLength ?? -1) count=\(restoreCaretUTF16)")
             applyTargetedRecordMaintenance(context: context, plan: plan)
+            recordTargetedUndo(command: command, plan: plan, context: context,
+                               postEditFieldText: expectedFinalText)
             NSLog("voice_targeted result=ok target_len=\(plan.targetLength)")
             showVoiceTargetedSuccessToast(plan: plan)
             return
@@ -3980,6 +4052,207 @@ public final class VoiceStickCoordinator {
                 lastInjection = nil
             }
         }
+    }
+
+    // ---- 批次 2 交付 E：上下文撤销 ----
+
+    /// targeted 成功后记撤销锚点：编辑后区间 = [选区起点, 插入长度)，原文本 = 目标词。
+    private func recordTargetedUndo(
+        command: VoiceTargetedCommand, plan: VoiceTargetedPlan,
+        context: VoiceTargetedEditContext, postEditFieldText: String
+    ) {
+        let insertedText: String
+        switch plan.action {
+        case .delete: insertedText = ""
+        case .replace(let replacement): insertedText = replacement
+        }
+        lastVoiceEdit = LastVoiceEdit(
+            postEditFieldText: postEditFieldText,
+            editStartUTF16: context.anchorStartUTF16 + plan.occurrence.utf16Start,
+            editLengthUTF16: insertedText.utf16.count,
+            insertedText: insertedText,
+            originalText: command.target,
+            preEditRemainingText: context.preEditRemainingText,
+            appBundleID: frontmostAppBundleID?(),
+            createdAt: Date(),
+            generation: voiceEditGeneration)
+    }
+
+    /// 尾删撤销素材（计划时刻算好，退格完成回调里配合读回的字段全文落记录）：
+    /// 正常计划 = remaining 尾部 charCount 个 grapheme（+ 已记录换行）；降级计划 =
+    /// 光标前 charCount 个 grapheme（字段前缀）。unverified 计划不记（无从定位）。
+    private struct TailUndoIngredients {
+        let deletedText: String
+        let editStartUTF16: Int
+        let preEditRemainingText: String
+    }
+
+    private func tailDeletionUndoIngredients(
+        plan: VoiceEditDeletionPlan, remainingText: String
+    ) -> TailUndoIngredients? {
+        guard plan.verification == .verified, plan.anchorEndUTF16 >= 0 else { return nil }
+        if plan.caretFallback {
+            guard let fieldText = readFocusedFieldStateForVoiceEdit()?.text else { return nil }
+            let units = Array(fieldText.utf16)
+            let prefix = String(
+                decoding: units[0..<min(plan.anchorEndUTF16, units.count)], as: UTF16.self)
+            let chars = Array(prefix)
+            let count = min(plan.charCount, chars.count)
+            guard count > 0 else { return nil }
+            let deleted = String(chars[(chars.count - count)...])
+            return TailUndoIngredients(
+                deletedText: deleted,
+                editStartUTF16: plan.anchorEndUTF16 - deleted.utf16.count,
+                preEditRemainingText: remainingText)
+        }
+        let chars = Array(remainingText)
+        let count = min(plan.charCount, chars.count)
+        guard count > 0 || plan.newlineCount > 0 else { return nil }
+        var deleted = count > 0 ? String(chars[(chars.count - count)...]) : ""
+        if plan.newlineCount > 0 { deleted += "\n" }
+        return TailUndoIngredients(
+            deletedText: deleted,
+            editStartUTF16: plan.anchorEndUTF16 - deleted.utf16.count,
+            preEditRemainingText: remainingText)
+    }
+
+    /// 退格完成回调：读一次字段得到 postEditFieldText 落撤销记录；读不到则不记
+    ///（撤销不可用）。
+    private func recordTailDeletionUndo(ingredients: TailUndoIngredients?) {
+        guard let ingredients,
+              let state = readFocusedFieldStateForVoiceEdit() else { return }
+        lastVoiceEdit = LastVoiceEdit(
+            postEditFieldText: state.text,
+            editStartUTF16: ingredients.editStartUTF16,
+            editLengthUTF16: 0,
+            insertedText: "",
+            originalText: ingredients.deletedText,
+            preEditRemainingText: ingredients.preEditRemainingText,
+            appBundleID: frontmostAppBundleID?(),
+            createdAt: Date(),
+            generation: voiceEditGeneration)
+    }
+
+    private enum VoiceEditUndoEvaluation {
+        case ready(LastVoiceEdit)
+        case fieldChanged
+    }
+
+    /// 撤销可用性判定：记录存在、≤30 秒、同前台应用、AX 权限、字段可读 → 字段全文
+    /// 严格等于 postEditFieldText 为 ready，否则 fieldChanged；其余条件不满足返回
+    /// nil（走原 deleteAll 语义）。
+    private func evaluateVoiceEditUndo() -> VoiceEditUndoEvaluation? {
+        guard let record = lastVoiceEdit else { return nil }
+        let window = undoWindowOverride ?? kVoiceEditUndoWindow
+        guard Date().timeIntervalSince(record.createdAt) <= window else { return nil }
+        guard frontmostAppBundleID?() == record.appBundleID else { return nil }
+        guard isProcessTrusted?() ?? false else { return nil }
+        guard let fieldState = readFocusedFieldStateForVoiceEdit(),
+              fieldState.text.utf16.count <= kVoiceEditMaxVerifiableFieldUTF16 else {
+            return nil
+        }
+        return fieldState.text == record.postEditFieldText ? .ready(record) : .fieldChanged
+    }
+
+    /// 撤销执行（沿用 targeted verified 链形态）：选中编辑后区间（删除类折叠）→
+    /// 读回确认（替换类逐字 == 插入文本）→ 粘贴原文本 → 终验 == 编辑前全文 →
+    /// 恢复 remainingText。记录在进入时即清除（一级撤销，撤销本身不可再撤销）。
+    private func executeVoiceEditUndo(_ record: LastVoiceEdit) {
+        lastVoiceEdit = nil
+        // 平台能力：写选区必需；读回仅替换类（编辑后区间非折叠）需要。
+        guard let writer = writeTargetedSelection,
+              record.editLengthUTF16 == 0 || readTargetedSelectedText != nil else {
+            NSLog("voice_edit undo result=failure code=%@",
+                  VoiceTargetedFailureCode.verifyUnavailable.rawValue)
+            logVoiceEditFailure(stage: "selected_range",
+                                code: VoiceTargetedFailureCode.verifyUnavailable.rawValue)
+            showVoiceTargetedFailureToast(.verifyUnavailable)
+            return
+        }
+        guard writer(record.editStartUTF16, record.editLengthUTF16) else {
+            NSLog("voice_edit undo result=failure code=%@",
+                  VoiceTargetedFailureCode.verifyUnavailable.rawValue)
+            logVoiceEditFailure(stage: "selected_range",
+                                code: VoiceTargetedFailureCode.verifyUnavailable.rawValue)
+            showVoiceTargetedFailureToast(.verifyUnavailable)
+            return
+        }
+        verifyUndoSelectionThenPaste(record: record, generation: voiceEditGeneration, attempt: 0)
+    }
+
+    private func verifyUndoSelectionThenPaste(record: LastVoiceEdit, generation: Int, attempt: Int) {
+        guard generation == voiceEditGeneration else { return }
+        if record.editLengthUTF16 > 0 {
+            let selected = readTargetedSelectedText?()
+            guard selected == record.insertedText else {
+                if attempt < kVoiceTargetedReadbackPollDelays.count {
+                    DispatchQueue.main.asyncAfter(
+                        deadline: .now() + kVoiceTargetedReadbackPollDelays[attempt]
+                    ) { [weak self] in
+                        self?.verifyUndoSelectionThenPaste(
+                            record: record, generation: generation, attempt: attempt + 1)
+                    }
+                    return
+                }
+                _ = writeTargetedSelection?(record.editStartUTF16, 0)
+                NSLog("voice_edit undo result=failure code=%@",
+                      VoiceTargetedFailureCode.fieldMismatch.rawValue)
+                logVoiceEditFailure(stage: "selected_text",
+                                    code: VoiceTargetedFailureCode.fieldMismatch.rawValue)
+                statusController.showTimedMessage(
+                    voiceEditText("voiceTargetedUndoChanged"), duration: 2.5,
+                    deviceID: activeDeviceID)
+                return
+            }
+        }
+        // 单次动作：粘贴原文本（删除类在折叠光标处插入；替换类覆盖选区）。
+        inputInjector.paste(text: record.originalText, pressEnter: false)
+        let postUnits = Array(record.postEditFieldText.utf16)
+        let editEnd = min(record.editStartUTF16 + record.editLengthUTF16, postUnits.count)
+        let expectedText = String(decoding: postUnits[0..<min(record.editStartUTF16, postUnits.count)], as: UTF16.self)
+            + record.originalText
+            + String(decoding: postUnits[editEnd...], as: UTF16.self)
+        let restoreCaret = record.editStartUTF16 + record.originalText.utf16.count
+        DispatchQueue.main.asyncAfter(deadline: .now() + kVoiceTargetedVerifyDelay) { [weak self] in
+            self?.finalizeVoiceEditUndo(
+                record: record, expectedText: expectedText, restoreCaretUTF16: restoreCaret,
+                generation: generation, attempt: 0)
+        }
+    }
+
+    private func finalizeVoiceEditUndo(
+        record: LastVoiceEdit, expectedText: String, restoreCaretUTF16: Int,
+        generation: Int, attempt: Int
+    ) {
+        guard generation == voiceEditGeneration else { return }
+        _ = writeTargetedSelection?(restoreCaretUTF16, 0)
+        let state = readFocusedFieldStateForVoiceEdit()
+        if state?.text == expectedText {
+            if let pre = record.preEditRemainingText, lastInjection != nil {
+                lastInjection?.remainingText = pre
+            }
+            NSLog("voice_edit undo result=ok len=%d", record.originalText.utf16.count)
+            statusController.showTimedMessage(
+                voiceEditText("voiceTargetedUndoOk"), duration: 2.0, deviceID: activeDeviceID)
+            return
+        }
+        if attempt < kVoiceTargetedVerifyPollDelays.count {
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + kVoiceTargetedVerifyPollDelays[attempt]
+            ) { [weak self] in
+                self?.finalizeVoiceEditUndo(
+                    record: record, expectedText: expectedText,
+                    restoreCaretUTF16: restoreCaretUTF16,
+                    generation: generation, attempt: attempt + 1)
+            }
+            return
+        }
+        let stillOld = state?.text == record.postEditFieldText
+        NSLog("voice_edit undo result=failure code=%@ still_old=%d",
+              VoiceTargetedFailureCode.resultUnconfirmed.rawValue, stillOld ? 1 : 0)
+        logVoiceEditFailure(stage: "field_text",
+                            code: VoiceTargetedFailureCode.resultUnconfirmed.rawValue)
+        showVoiceTargetedFailureToast(.resultUnconfirmed)
     }
 
     private func describeVoiceTargetedAction(_ action: VoiceTargetedAction) -> String {
