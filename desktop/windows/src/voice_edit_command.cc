@@ -519,19 +519,6 @@ DeleteAmount ComputeDeleteAmount(const VoiceEditCommand& command, std::string_vi
     return {static_cast<int>(chars), static_cast<int>(take)};
 }
 
-// 字段尾部内容是否以 remainingText 的某个前缀结尾（取最长 k，单位=字节；两侧均为
-// 合法 UTF-8 时 k 必然落在码点边界）。返回 0 = 不匹配。
-std::size_t LongestRemainingPrefixSuffix(std::string_view field_body,
-                                         std::string_view remaining) {
-    const std::size_t max_k = std::min(field_body.size(), remaining.size());
-    for (std::size_t k = max_k; k > 0; --k) {
-        if (field_body.compare(field_body.size() - k, k, remaining.substr(0, k)) == 0) {
-            return k;
-        }
-    }
-    return 0;
-}
-
 }  // namespace
 
 VoiceEditPlan PlanVoiceEdit(std::string_view remaining_text, bool pressed_enter,
