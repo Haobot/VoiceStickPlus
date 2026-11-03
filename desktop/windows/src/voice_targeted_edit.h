@@ -94,7 +94,7 @@ enum class VoiceTargetedFailure {
                          // 保留枚举位与双端失败名表/日志码对齐
     kSelectionPresent,   // 同上（选区门槛一并放宽）
     kVerifyUnavailable,  // 读不到字段/光标（targeted 恒 verified，一律拒绝）
-    kResultUnconfirmed,  // 修改已发出但终验不符（记录应失效）
+    kResultUnconfirmed,  // 修改已发出但终验不符（窗末按内容分类：未落地→记录保留允许重试；真不符→记录失效）
     // L0 作用域层（与旧 VoiceEditRejectReason 同语义；toast 复用旧 StringId）。
     kNoInjection,
     kScopeExpired,

@@ -1357,7 +1357,12 @@ void TestVoiceEditCoordinatorCaretMove() {
     harness.field().sel_len = 0;
     harness.ops().clear();
     assert(harness.RunCommand("删除", 172));
-    assert((harness.ops() == std::vector<std::string>{"move", "backspace"}));
+    // Fake 的 MoveCaretTo 记录规则：目标==字段末尾归一化为 "end"（anchor_end=4
+    // == doc.size()），故期望 {"end","backspace"}；终态光标 4 == anchorEnd（与
+    // macOS CoordinatorFsmTests T9 断言的 caretUTF16==4 同语义）。
+    assert((harness.ops() == std::vector<std::string>{"end", "backspace"}));
+    assert(harness.field().doc == L"你好世");
+    assert(harness.field().sel_start == 4 && harness.field().sel_len == 0);
     assert(harness.field().doc == L"你好世");
     assert(harness.input().sent_key_combos.size() == 1);
 
@@ -1378,7 +1383,8 @@ void TestVoiceEditCoordinatorCaretMove() {
     h2.editor().move_fails = false;
     h2.ops().clear();
     assert(h2.RunCommand("删除", 175));
-    assert((h2.ops() == std::vector<std::string>{"move", "backspace"}));
+    // 同上：anchor_end=4 == doc.size() → Fake 归一化记录 "end"。
+    assert((h2.ops() == std::vector<std::string>{"end", "backspace"}));
     assert(h2.field().doc == L"你好世");
 }
 
@@ -1461,7 +1467,10 @@ void TestTargetedCoordinatorSelectionReadbackMismatch() {
     assert(harness.field().doc == L"我去上班");
 }
 
-// 终验失败（应用吞掉退格）：不重试、记录失效、提示检查。
+// 终验不符（应用吞掉退格）：不重试、提示检查；动作未落地（字段仍为动作前
+// 原样 → still_old）按 §17.2-7 2026-10-31 修订**记录保留**，允许同命令直接
+// 重试（与 macOS 同构：VoiceStickCoordinator.swift "记录保留，允许同命令直接
+// 重试"；Mac 侧批次 2 已按此语义更新对应用例「未落地重试 select(2,0)」）。
 void TestTargetedCoordinatorFinalVerifyFailsInvalidates() {
     AppConfig config = AppConfig::Defaults();
     config.refine_enabled = false;
@@ -1472,11 +1481,14 @@ void TestTargetedCoordinatorFinalVerifyFailsInvalidates() {
     assert(harness.RunCommand("删除刚才的北京", 162));
     assert(harness.ui().timed_messages.back() ==
            TargetedToast(Tr(StringId::kVoiceTargetedUnconfirmed, harness.language()).c_str()));
-    // 记录已失效：再发 targeted 命令 → 没有可删除的语音输入。
+    // 记录保留（动作未落地）：swallow 关闭后同命令重试直接生效（批次 2 整框域
+    // 绝对坐标路径：绝对选区 → 退格 → 光标平移回编辑点，对应 Mac「未落地重试
+    // select(2,0)」同款语义）。
     harness.input().swallow_backspace = false;
+    harness.ops().clear();
     assert(harness.RunCommand("删除刚才的北京", 163));
-    assert(harness.ui().timed_messages.back() ==
-           TargetedToast(Tr(StringId::kVoiceEditNoTarget, harness.language()).c_str()));
+    assert((harness.ops() == std::vector<std::string>{"select", "backspace", "abs"}));
+    assert(harness.field().doc == L"我去上班");
 }
 
 // verify_mode=off 且 UIA 不可读：targeted 恒 verified → 拒绝（严禁盲改）。
