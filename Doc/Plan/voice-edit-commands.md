@@ -999,3 +999,15 @@ MoveCaretTo UIA）、`app_config.cc/.h`、`localization.cc/.h`、`CMakeLists.txt
 `voice_stick_coordinator.h`、`core_tests_voice_edit.cc` WIN32 段；纯逻辑
 `voice_edit_anchor.{h,cc}`/`voice_edit_command.cc`/`voice_targeted_edit.cc` 已过
 clang `-std=c++20` 且本地链接运行全绿。
+
+**交叉修复（2026-11-03，C × main「标点独词输入」）**：main 新合入的标点独词输入
+（`SpokenPunctuation`：句中单独说「句号」→ 经 finishWithRefinedText →
+completePendingPaste 注入「。」）与 C 交叉——注入文本恰为「。」且句中插入时被剥成
+空串、什么都没插进去。修法：剥离只在「句号之前还有实际内容」时发生——
+`text.dropLast()` 去首尾空白后为空（裸 `。`/`．`/`.` 或仅空白+句号）恒不剥（必然是
+刻意注入的标点），预检 `midlinePeriodStrippable` 同口径（裸句号不读字段）；双端同构
+（Swift `hasContentBeforeLast` 码点全 White_Space / C++ `IsBlankUtf8` 走
+`IsWhitespaceCodePoint`）。T13 双端同向量补裸句号表（「。」「．」「.」「 。」「\n.」
+保留、「今天很好。」照剥）+ macOS 协调器级「单字「。」句中注入不剥」；
+`swift run VoiceStickTests` PASSED 1850/1850，Windows 纯逻辑本机 clang 链接运行全绿
+（另过 ASan/UBSan），MSVC/CTest 同上待 Windows 机。

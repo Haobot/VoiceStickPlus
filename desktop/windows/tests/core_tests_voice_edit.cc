@@ -309,6 +309,21 @@ void TestTargetedAnchorPlanner() {
     assert(MidlinePeriodStrippable("不错。"));
     assert(!MidlinePeriodStrippable("3."));
     assert(!MidlinePeriodStrippable("不错！"));
+    // 裸句号守卫（与标点独词输入的交叉修复：单独说「句号」→ 注入文本恰为「。」）：
+    // 句号之前去掉首尾空白后为空 → 刻意注入的标点，句中也永不剥；句号前有内容
+    // 照剥。预检同口径（与 macOS 同表）。
+    assert(StripMidlinePeriod("。", true) == "。");
+    assert(StripMidlinePeriod("．", true) == "．");
+    assert(StripMidlinePeriod(".", true) == ".");
+    assert(StripMidlinePeriod(" 。", true) == " 。");
+    assert(StripMidlinePeriod("\n.", true) == "\n.");
+    assert(StripMidlinePeriod("今天很好。", true) == "今天很好");
+    assert(!MidlinePeriodStrippable("。"));
+    assert(!MidlinePeriodStrippable("．"));
+    assert(!MidlinePeriodStrippable("."));
+    assert(!MidlinePeriodStrippable(" 。"));
+    assert(!MidlinePeriodStrippable("\n."));
+    assert(MidlinePeriodStrippable("今天很好。"));
     // isMidlineInsertion：光标后同一逻辑行还有非空白字符。
     assert(IsMidlineInsertion("你好世界", 2));
     assert(!IsMidlineInsertion("你好世界", 4));

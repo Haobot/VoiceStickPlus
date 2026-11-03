@@ -69,6 +69,19 @@ utf8::CodePoint LastCodePoint(std::string_view text, std::size_t* start_out) {
     return utf8::DecodeUtf8(text, start);
 }
 
+// 裸句号守卫：末尾码点之前的部分（head）去掉首尾空白后为空 ⇔ head 全为空白码点
+// 或空串（「。」「．」「.」或仅空白+句号）——此时该句号必然是刻意注入的标点
+//（标点独词输入单独说「句号」→ 注入文本恰为「。」，句中剥离会把它剥成空串），
+// 永不剥。与 macOS hasContentBeforeLast 同构（空白口径 IsWhitespaceCodePoint）。
+bool IsBlankUtf8(std::string_view text) {
+    for (std::size_t pos = 0; pos < text.size();) {
+        const auto decoded = utf8::DecodeUtf8(text, pos);
+        if (!IsWhitespaceCodePoint(decoded.value)) return false;
+        pos += decoded.length;
+    }
+    return true;
+}
+
 }  // namespace
 
 VoiceEditAnchorResult LocateVoiceEditAnchor(std::string_view field_utf8,
@@ -204,6 +217,8 @@ bool MidlinePeriodStrippable(std::string_view text_utf8) {
     if (text_utf8.empty()) return false;
     std::size_t last_start = 0;
     const auto last = LastCodePoint(text_utf8, &last_start);
+    // 裸句号（句号前无实际内容）恒非候选，与 macOS 同口径。
+    if (IsBlankUtf8(text_utf8.substr(0, last_start))) return false;
     if (last.value == U'。' || last.value == U'．') return true;
     if (last.value == U'.') {
         const auto head = text_utf8.substr(0, last_start);
@@ -221,6 +236,8 @@ std::string StripMidlinePeriod(std::string_view text_utf8, bool is_midline) {
     if (!is_midline || text_utf8.empty()) return std::string(text_utf8);
     std::size_t last_start = 0;
     const auto last = LastCodePoint(text_utf8, &last_start);
+    // 裸句号（句号前无实际内容）原样保留，与 macOS 同口径。
+    if (IsBlankUtf8(text_utf8.substr(0, last_start))) return std::string(text_utf8);
     if (last.value == U'。' || last.value == U'．') {
         return std::string(text_utf8.substr(0, last_start));
     }

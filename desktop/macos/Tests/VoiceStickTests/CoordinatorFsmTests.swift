@@ -1325,6 +1325,17 @@ func runVoiceEditAnchorCoordinatorTests() {
     pumpMainRunLoop(0.3)
     checkEqual(he.input.pastedTexts.last, "今天很好。", "midline: 配置关闭不剥")
 
+    // 裸句号句中注入不剥（与标点独词输入的交叉修复：单独说「句号」→ 注入文本恰为
+    // 「。」）：句中位置（光标后同一逻辑行还有「尾」）、配置开，句号之前无实际内容
+    // → 必然是刻意注入的标点，原样注入（旧行为剥成空串，什么都没插进去）。
+    he = makeVoiceEditHarness()
+    he.coordinator.updateConfig(noEnter)
+    he.field.state = FocusedFieldState(text: "序尾", caretUTF16: 1, selectionLength: 0)
+    he.asr.onFinal?("。")
+    pumpMainRunLoop(0.3)
+    checkEqual(he.input.pastedTexts.last, "。", "midline: 裸句号句中注入不剥（标点独词「句号」）")
+    checkEqual(he.input.pastedTexts.count, 1, "midline: 裸句号恰注入一次")
+
     // T14 Electron 三级回退：首读 nil → 设置 AXManualAccessibility 后二次读成功 →
     // 功能恢复；同一 bundle 第二轮不再设置（缓存生效）。
     he = makeVoiceEditHarness()

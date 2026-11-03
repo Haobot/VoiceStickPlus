@@ -205,6 +205,34 @@ func runVoiceEditAnchorTests() {
     checkEqual(VoiceEditAnchor.midlinePeriodStrippable("不错！"), false,
                "T13 预检：！非候选")
 
+    // 裸句号守卫（与标点独词输入的交叉修复：单独说「句号」→ 注入文本恰为「。」）：
+    // 句号之前去掉首尾空白后为空 → 必然是刻意注入的标点，句中也永不剥（否则剥成
+    // 空串、什么都没插进去）；句号前有实际内容照剥。预检同口径（裸句号不读字段）。
+    checkEqual(VoiceEditAnchor.stripMidlinePeriod(text: "。", isMidline: true),
+               "。", "T13 裸句号：「。」句中原样保留")
+    checkEqual(VoiceEditAnchor.stripMidlinePeriod(text: "．", isMidline: true),
+               "．", "T13 裸句号：「．」句中原样保留")
+    checkEqual(VoiceEditAnchor.stripMidlinePeriod(text: ".", isMidline: true),
+               ".", "T13 裸句号：「.」句中原样保留")
+    checkEqual(VoiceEditAnchor.stripMidlinePeriod(text: " 。", isMidline: true),
+               " 。", "T13 裸句号：仅空白+「。」原样保留")
+    checkEqual(VoiceEditAnchor.stripMidlinePeriod(text: "\n.", isMidline: true),
+               "\n.", "T13 裸句号：仅换行+「.」原样保留")
+    checkEqual(VoiceEditAnchor.stripMidlinePeriod(text: "今天很好。", isMidline: true),
+               "今天很好", "T13 裸句号守卫：句号前有内容照剥")
+    checkEqual(VoiceEditAnchor.midlinePeriodStrippable("。"), false,
+               "T13 预检：裸「。」非候选")
+    checkEqual(VoiceEditAnchor.midlinePeriodStrippable("．"), false,
+               "T13 预检：裸「．」非候选")
+    checkEqual(VoiceEditAnchor.midlinePeriodStrippable("."), false,
+               "T13 预检：裸「.」非候选")
+    checkEqual(VoiceEditAnchor.midlinePeriodStrippable(" 。"), false,
+               "T13 预检：仅空白+「。」非候选")
+    checkEqual(VoiceEditAnchor.midlinePeriodStrippable("\n."), false,
+               "T13 预检：仅换行+「.」非候选")
+    checkEqual(VoiceEditAnchor.midlinePeriodStrippable("今天很好。"), true,
+               "T13 预检：句号前有内容仍是候选")
+
     // isMidlineInsertion：光标后同一逻辑行还有非空白字符。
     check(VoiceEditAnchor.isMidlineInsertion(fieldText: "你好|世界", caretUTF16: 2),
           "T13 句中判定：光标后有非空白字符")

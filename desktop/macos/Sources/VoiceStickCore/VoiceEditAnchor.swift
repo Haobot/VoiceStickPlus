@@ -182,8 +182,9 @@ extension VoiceEditAnchor {
 
     /// 快速预检：文本以可剥离候选句号结尾（协调器据此避免不必要的字段读取）。
     /// 语义与 stripMidlinePeriod 的「会不会剥」判定一致（非句中时调用方不进入）。
+    /// 裸句号（句号前无实际内容）恒非候选，见 hasContentBeforeLast。
     public static func midlinePeriodStrippable(_ text: String) -> Bool {
-        guard let last = text.last else { return false }
+        guard let last = text.last, hasContentBeforeLast(text) else { return false }
         if last == "。" || last == "．" { return true }
         if last == "." {
             if let before = text.dropLast().last,
@@ -198,9 +199,10 @@ extension VoiceEditAnchor {
     /// 句中插入且注入文本以一个句号结尾 → 去掉末尾一个字符。句号集合：
     /// 。(U+3002)、．(U+FF0E) 直接剥；.(U+002E) 仅当前一字符不是 ASCII 字母/数字
     ///（保「3.」「v1.」这类数字/版本号）；！？等语气标点不去。auto_enter 换行不受
-    /// 影响（本函数只剥句号字符，换行由调用方在 paste 通道处理）。
+    /// 影响（本函数只剥句号字符，换行由调用方在 paste 通道处理）。裸句号（句号前
+    /// 无实际内容）原样保留，见 hasContentBeforeLast。
     public static func stripMidlinePeriod(text: String, isMidline: Bool) -> String {
-        guard isMidline, let last = text.last else { return text }
+        guard isMidline, let last = text.last, hasContentBeforeLast(text) else { return text }
         if last == "。" || last == "．" {
             return String(text.dropLast())
         }
@@ -212,5 +214,14 @@ extension VoiceEditAnchor {
             return String(text.dropLast())
         }
         return text
+    }
+
+    /// 裸句号守卫：末尾字符之前（text.dropLast()）去掉首尾空白后非空 = 句号之前
+    /// 还有实际内容，才允许剥。为空（「。」「．」「.」或仅空白+句号）时该句号必然是
+    /// 刻意注入的标点——标点独词输入单独说「句号」→ 注入文本恰为「。」，句中剥离
+    /// 会把它剥成空串、什么都没插进去——永不剥。「去首尾空白后为空」⇔ 码点全为
+    /// Unicode White_Space，与 C++ IsBlankUtf8（IsWhitespaceCodePoint）同口径。
+    private static func hasContentBeforeLast(_ text: String) -> Bool {
+        !text.dropLast().unicodeScalars.allSatisfy { $0.properties.isWhitespace }
     }
 }
