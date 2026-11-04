@@ -175,6 +175,24 @@ VoiceTargetedPlan PlanVoiceTargeted(const VoiceTargetedCommand& command,
                                     bool field_readable, std::string_view field_tail,
                                     bool caret_at_end, bool selection_collapsed);
 
+// ---- 键盘选区兜底（Chromium 系目标 UIA Select() 写不落地时的二期方案；
+// 对齐 macOS 遗留项「AX 写彻底不可用目标的最后手段」）----
+// 方向键按 **grapheme 口径**计数（emoji surrogate/组合字符/CRLF 偏移不漂——
+// 方向键按字素簇移动，UTF-16 码元口径会漂移）。兜底路径同样必须过读回验证
+//（调用方负责），验证不过零改动拒绝。
+struct KeyboardSelectionPlan {
+    bool ok = false;
+    bool from_end = true;   // true: Ctrl+End 锚；false: Ctrl+Home 锚（事件数少者）
+    int plain_moves = 0;    // 无 Shift 方向键次数（from_end=Left / from_home=Right）
+    int shifted_moves = 0;  // Shift+方向键次数（from_end=Shift+Left / from_home=Shift+Right）
+};
+
+// 从归一化全文（UTF-8）+ 目标区间（UTF-16 码元口径）规划键盘选区序列。
+// 区间越界 / 不落在 grapheme 边界 / 总事件数超上限 → ok=false（兜底拒绝）。
+KeyboardSelectionPlan PlanKeyboardSelection(std::string_view field_full_utf8,
+                                            std::size_t target_start_utf16,
+                                            std::size_t target_end_utf16);
+
 // 批次 1 新签名（字段内锚定）：协调器先用 LocateVoiceEditAnchor 定出锚点（tail
 // 窗口内 UTF-16 偏移）再带锚进计划——锚已保证 anchored 段在字段中精确成立，
 // 本函数只复用可读性守卫，不重复做后缀校验。field_readable=false → 拒绝。

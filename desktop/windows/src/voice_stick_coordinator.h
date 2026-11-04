@@ -767,12 +767,32 @@ private:
     // Doc/Expe/targeted-replace-chromium-ax-async-write-2026-10-29）：Chromium 系
     // 目标（Electron/浏览器）UIA 选区写经 renderer 异步生效，写后立即读回必拿旧
     // 值——按 kVoiceTargetedReadbackPollDelays 小步轮询 ReadSelectedText（只追加
-    // 读操作，绝不重写选区），命中才执行单次动作；耗尽走 fieldMismatch 拒绝
-    // （零改动、记录保留）。入口代际守卫，重入每拍再核（新注入即失效）。
+    // 读操作，绝不重写选区），命中才执行单次动作。入口代际守卫，重入每拍再核
+    // （新注入即失效）。读回耗尽：via_keyboard_fallback=false 时降级键盘选区兜底
+    // （Chromium UIA Select() S_OK 不落地形态，2026-11-04 复测 got_len=0 实锤）；
+    // =true（兜底验证轮询自身耗尽）→ Ctrl+End 恢复 + fieldMismatch 拒绝
+    // （零改动、记录保留——安全模型：验证不过绝不盲改）。
     void VerifyTargetedSelectionThenAct(const VoiceTargetedCommand& command,
                                         const VoiceTargetedPlan& plan,
                                         const TargetedExecutionContext& exec,
-                                        std::uint64_t generation, int attempt);
+                                        std::uint64_t generation, int attempt,
+                                        bool via_keyboard_fallback);
+    // 键盘选区兜底：读全文 → 目标绝对区间（整框域直通 / 尾窗换算）→
+    // PlanKeyboardSelection（grapheme 口径双锚）→ 后台线程逐键 Ctrl+End/Home +
+    // 方向键 + Shift 选区（12ms/键）→ 回 UI 线程读回轮询验证
+    //（via_keyboard_fallback=true）。
+    void TryKeyboardSelectionFallback(const VoiceTargetedCommand& command,
+                                      const VoiceTargetedPlan& plan,
+                                      const TargetedExecutionContext& exec,
+                                      std::uint64_t generation);
+    // 单次动作执行 + 延时终验（UIA 读回命中与兜底读回命中两条路共用）。
+    void ExecuteTargetedActionAndVerify(const VoiceTargetedCommand& command,
+                                        const VoiceTargetedPlan& plan,
+                                        const TargetedExecutionContext& exec,
+                                        std::uint64_t generation);
+    // 兜底失败出口：Ctrl+End 恢复安全光标 + fieldMismatch toast（零改动、记录
+    // 保留——安全模型：验证不过绝不盲改）。须 UI 线程调用。
+    void RestoreCaretAndRejectFieldMismatch();
     void FinalizeVoiceTargetedEdit(std::uint64_t generation, const VoiceTargetedPlan& plan,
                                    std::string expected_tail, std::string pre_action_tail,
                                    const VoiceTargetedCommand& command,

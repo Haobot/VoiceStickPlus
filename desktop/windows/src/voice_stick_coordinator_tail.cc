@@ -1489,20 +1489,23 @@ void VoiceStickCoordinator::ExecuteVoiceTargetedEdit(
         return;
     }
     // 2. 读回轮询确认后执行（同步生效目标首次读即中，零重试、行为不变）。
-    VerifyTargetedSelectionThenAct(command, plan, exec, generation, /*attempt=*/0);
+    VerifyTargetedSelectionThenAct(command, plan, exec, generation, /*attempt=*/0,
+                                   /*via_keyboard_fallback=*/false);
 }
 
 void VoiceStickCoordinator::VerifyTargetedSelectionThenAct(
     const VoiceTargetedCommand& command, const VoiceTargetedPlan& plan,
-    const TargetedExecutionContext& exec, std::uint64_t generation, int attempt) {
+    const TargetedExecutionContext& exec, std::uint64_t generation, int attempt,
+    bool via_keyboard_fallback) {
     if (generation != voice_edit_generation_) return;  // stale：新注入已接管
     auto* editor = targeted_field_editor_.get();
     std::string selected_text;
     const bool read_ok = editor != nullptr && editor->ReadSelectedText(&selected_text);
     if (!read_ok || selected_text != command.target) {
         // 选区写尚未在目标落地（Chromium 系目标写选区经 renderer 异步生效，写后
-        // 立即读回必拿旧值）：小步轮询只追加读操作、绝不重写选区，命中或耗尽才
-        // 落判定；重入每拍再核代际（新注入即失效）。
+        // 立即读回必拿旧值；或 UIA Select() 返回 S_OK 但选区零落地——2026-11-04
+        // ZCode 实测 got_len=0 恒定形态）：小步轮询只追加读操作、绝不重写选区，
+        // 命中或耗尽才落判定；重入每拍再核代际（新注入即失效）。
         static constexpr std::chrono::milliseconds kVoiceTargetedReadbackPollDelays[] = {
             std::chrono::milliseconds(30), std::chrono::milliseconds(60),
             std::chrono::milliseconds(120), std::chrono::milliseconds(200)};
@@ -1517,32 +1520,61 @@ void VoiceStickCoordinator::VerifyTargetedSelectionThenAct(
                                    std::to_string(got_len));
             }
             const auto alive = alive_;
-            std::thread([this, alive, generation, command, plan, exec, attempt]() {
+            std::thread([this, alive, generation, command, plan, exec, attempt,
+                         via_keyboard_fallback]() {
                 std::this_thread::sleep_for(kVoiceTargetedReadbackPollDelays[attempt]);
                 if (!alive->load()) return;
-                RunOnUiThread([this, alive, generation, command, plan, exec, attempt]() {
+                RunOnUiThread([this, alive, generation, command, plan, exec, attempt,
+                               via_keyboard_fallback]() {
                     if (!alive->load()) return;
                     VerifyTargetedSelectionThenAct(command, plan, exec, generation,
-                                                   attempt + 1);
+                                                   attempt + 1, via_keyboard_fallback);
                 });
             }).detach();
             return;
         }
-        // 耗尽：选区读回不符——恢复安全光标（末尾），零删除/零粘贴；字段文本
-        // 未被改动 → 记录保留有效。
+        if (!via_keyboard_fallback) {
+            // UIA 写路径耗尽 → 降级键盘选区兜底（Chromium UIA Select() S_OK 不
+            // 落地目标上唯一可靠的选区手段；一次机会，兜底验证再失败即拒绝）。
+            TryKeyboardSelectionFallback(command, plan, exec, generation);
+            return;
+        }
+        // 兜底验证也耗尽：Ctrl+End 恢复安全光标，零删除/零粘贴；字段文本未被
+        // 改动 → 记录保留有效（安全模型：验证不过绝不盲改）。
         const auto got_len =
             read_ok ? static_cast<std::ptrdiff_t>(selected_text.size()) : -1;
-        LogCoordinatorLine("voice targeted readback mismatch expected_len=" +
+        LogCoordinatorLine("voice targeted keyboard fallback verify failed expected_len=" +
                            std::to_string(command.target.size()) +
                            " got_len=" + std::to_string(got_len));
         LogVoiceEditFailure("selected_text", "field_mismatch");
-        if (editor != nullptr) editor->MoveCaretToEnd();
-        ui_->ShowTimedMessage(
-            Tr(VoiceTargetedFailureMessageId(VoiceTargetedFailure::kFieldMismatch),
-               EffectiveUiLanguage(ConfigSnapshot()->ui_language)),
-            kVoiceEditToastMs);
+        RestoreCaretAndRejectFieldMismatch();
         return;
     }
+    if (via_keyboard_fallback) {
+        LogCoordinatorLine("voice targeted keyboard fallback selected target_len=" +
+                           std::to_string(command.target.size()));
+    }
+    ExecuteTargetedActionAndVerify(command, plan, exec, generation);
+}
+
+// 兜底失败出口：Ctrl+End 恢复安全光标 + fieldMismatch toast（零改动、记录保留）。
+void VoiceStickCoordinator::RestoreCaretAndRejectFieldMismatch() {
+    if (auto restore = ParseKeySpec("ctrl+end"); restore.has_value()) {
+        input_injector_->SendKeyCombo(*restore);
+    } else if (targeted_field_editor_ != nullptr) {
+        targeted_field_editor_->MoveCaretToEnd();  // 防御：key_spec 白名单恒支持 ctrl+end
+    }
+    ui_->ShowTimedMessage(
+        Tr(VoiceTargetedFailureMessageId(VoiceTargetedFailure::kFieldMismatch),
+           EffectiveUiLanguage(ConfigSnapshot()->ui_language)),
+        kVoiceEditToastMs);
+}
+
+// 单次动作执行 + 延时终验（UIA 读回命中与键盘兜底读回命中两条路共用）。
+void VoiceStickCoordinator::ExecuteTargetedActionAndVerify(
+    const VoiceTargetedCommand& command, const VoiceTargetedPlan& plan,
+    const TargetedExecutionContext& exec, std::uint64_t generation) {
+    auto* editor = targeted_field_editor_.get();
     // 3. 执行（单次动作）：删除 = 一次 Backspace；替换 = 粘贴通道 pressEnter=false。
     if (plan.action.kind == VoiceTargetedActionKind::kDelete) {
         const auto parsed = ParseKeySpec("backspace");
@@ -1586,6 +1618,88 @@ void VoiceStickCoordinator::VerifyTargetedSelectionThenAct(
             if (!alive->load()) return;
             FinalizeVoiceTargetedEdit(generation, plan, expected_tail, pre_action_tail,
                                       command, exec, 0);
+        });
+    }).detach();
+}
+
+// 键盘选区兜底（Chromium UIA Select() 写不落地目标的唯一可靠选区手段）：
+// 读全文 → 目标绝对区间（整框域直通 / 尾窗换算）→ PlanKeyboardSelection →
+// 后台线程逐键发锚点+方向键序列（12ms/键）→ 回 UI 线程读回轮询验证。
+// 任一前置失败 → 直接走兜底拒绝路径（Ctrl+End 恢复 + fieldMismatch，零改动）。
+void VoiceStickCoordinator::TryKeyboardSelectionFallback(
+    const VoiceTargetedCommand& command, const VoiceTargetedPlan& plan,
+    const TargetedExecutionContext& exec, std::uint64_t generation) {
+    if (generation != voice_edit_generation_) return;
+    VoiceEditFieldState field;
+    const bool readable = focus_text_reader_ != nullptr &&
+                          focus_text_reader_->ReadFocusedFieldFullText(&field) &&
+                          field.readable && !field.full_truncated && !field.is_password;
+    std::size_t target_start = 0;
+    if (readable) {
+        if (exec.absolute_coords) {
+            // 整框域：计划偏移即文档绝对偏移。
+            target_start = plan.anchor_start_utf16 + plan.occurrence.utf16_start;
+        } else {
+            // 批次 1 尾窗换算：尾窗起点 = 全文长 - 期望尾窗长（与计划期防御
+            // 检查同一公式，tail.cc 计划段）。CRLF 字段上归一化偏移与 UIA 原生
+            // 偏移有漂移风险（口径假设与批次 2 绝对坐标同款）——读回验证兜底。
+            const std::size_t expected_tail_utf16 =
+                VoiceTargetedUtf16Length(plan.tail_prefix) + plan.remaining_utf16_length +
+                (plan.has_recorded_newline ? 1 : 0) +
+                VoiceTargetedUtf16Length(plan.anchor_after_text);
+            if (field.full_utf16_length >= expected_tail_utf16) {
+                target_start = field.full_utf16_length - expected_tail_utf16 +
+                               plan.anchor_start_utf16 + plan.occurrence.utf16_start;
+            } else {
+                target_start = field.full_utf16_length;  // 强制越界 → 规划拒绝
+            }
+        }
+    }
+    const std::size_t target_end =
+        target_start + (readable ? plan.occurrence.utf16_length : 0);
+    const std::string field_full =
+        readable ? NormalizeVoiceEditLineBreaks(field.full_text) : std::string();
+    const auto kb =
+        readable ? PlanKeyboardSelection(field_full, target_start, target_end)
+                 : KeyboardSelectionPlan{};
+    if (!kb.ok) {
+        LogCoordinatorLine("voice targeted keyboard fallback unavailable readable=" +
+                           std::string(readable ? "1" : "0"));
+        LogVoiceEditFailure("selected_text", "field_mismatch");
+        RestoreCaretAndRejectFieldMismatch();
+        return;
+    }
+    LogCoordinatorLine("voice targeted keyboard fallback start anchor=" +
+                       std::string(kb.from_end ? "end" : "home") +
+                       " plain=" + std::to_string(kb.plain_moves) +
+                       " shifted=" + std::to_string(kb.shifted_moves));
+    // 键序列：锚点 1 键 + 无 Shift 平移 + Shift 选区（UI 线程解析，worker 只发键）。
+    std::vector<KeySpec> sequence;
+    const auto push = [&sequence](const char* spec_text) {
+        if (auto parsed = ParseKeySpec(spec_text)) sequence.push_back(*parsed);
+    };
+    push(kb.from_end ? "ctrl+end" : "ctrl+home");
+    const char* plain = kb.from_end ? "left" : "right";
+    const char* shifted = kb.from_end ? "shift+left" : "shift+right";
+    for (int i = 0; i < kb.plain_moves; ++i) push(plain);
+    for (int i = 0; i < kb.shifted_moves; ++i) push(shifted);
+    if (sequence.empty()) {
+        LogVoiceEditFailure("selected_text", "field_mismatch");
+        RestoreCaretAndRejectFieldMismatch();
+        return;
+    }
+    const auto alive = alive_;
+    std::thread([this, alive, generation, command, plan, exec,
+                 sequence = std::move(sequence)]() {
+        for (const auto& spec : sequence) {
+            input_injector_->SendKeyCombo(spec);
+            std::this_thread::sleep_for(std::chrono::milliseconds(12));
+        }
+        if (!alive->load()) return;
+        RunOnUiThread([this, alive, generation, command, plan, exec]() {
+            if (!alive->load()) return;
+            VerifyTargetedSelectionThenAct(command, plan, exec, generation,
+                                           /*attempt=*/0, /*via_keyboard_fallback=*/true);
         });
     }).detach();
 }
