@@ -23,6 +23,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "voice_edit_anchor.h"
 #include "voice_targeted_edit.h"
@@ -66,6 +67,10 @@ struct VoiceTargetedDomainOutcome {
     Kind kind = Kind::kFailure;
     VoiceTargetedDomainKind domain = VoiceTargetedDomainKind::kLastInjection;
     VoiceTargetedOccurrence selected;         // kExecute 有效
+    // 批量（kAll / kRange 命中 ≥1 处）：按文档顺序的全部目标区间。
+    // is_batch=true 时以 batch 为准（selected 未使用）。
+    std::vector<VoiceTargetedOccurrence> batch;
+    bool is_batch = false;
     int count = 0;                            // kClarify / kOutOfRange 有效
     VoiceTargetedFailure failure = VoiceTargetedFailure::kNone;  // kFailure 有效
 };
@@ -107,9 +112,13 @@ struct VoiceEditOrdinalReply {
         kOrdinal,  // 第 N 个（1 基）
         kFromEnd,  // 倒数第 N 个（1 基）
         kCancel,
+        kAll,    // 批量：全部（Doc/Plan/voice-edit-batch-replace.md）
+        kRange,  // 批量：范围（range_start/range_end 有效）
     };
     Kind kind = Kind::kOrdinal;
     int n = 0;
+    int range_start = 0;  // kRange：>0 正序 1 基，<0 倒数
+    int range_end = 0;
 
     bool operator==(const VoiceEditOrdinalReply& other) const = default;
 };

@@ -1357,8 +1357,13 @@ bool VoiceStickCoordinator::TakeOverTargetedCommand(
     const std::string field_full = NormalizeVoiceEditLineBreaks(field.full_text);
     // 最近一次语音输入域可用性 = L0 批次 1 闸（记录/时间窗/同前台窗口与进程）+ 锚定。
     // caret 缺失时显式跳过（锚定依赖光标位置；哨兵传入会误判「光标在末尾」）。
+    // domain_mode=whole_field（默认）：不构建 recent 域 → 规则表走整框检索，
+    // scope_seconds 时间窗对 targeted 不生效（Doc/Plan/voice-edit-whole-field-scope.md）。
+    const bool whole_field_only =
+        voice_edit.domain_mode == VoiceEditDomainMode::kWholeField;
     std::optional<VoiceTargetedRecentDomain> recent;
-    if (!caret_missing && last_injection_.has_value() && !last_injection_->remaining_text.empty()) {
+    if (!whole_field_only && !caret_missing && last_injection_.has_value() &&
+        !last_injection_->remaining_text.empty()) {
         const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             now - last_injection_->injected_at);
         const std::uintptr_t foreground_window =
@@ -1434,6 +1439,37 @@ bool VoiceStickCoordinator::TakeOverTargetedCommand(
         return true;
     }
     // kExecute：按域构建计划与执行上下文。
+    // 批量（kAll/kRange）：跳过单点计划，直接走整框批量粘贴（不依赖选区/光标）。
+    if (domain_outcome.kind == VoiceTargetedDomainOutcome::Kind::kExecute &&
+        domain_outcome.is_batch) {
+        TargetedExecutionContext exec;
+        exec.absolute_coords = true;
+        exec.is_batch = true;
+        exec.batch = domain_outcome.batch;
+        exec.original_caret_utf16 = field.caret_abs_utf16;
+        // 批量改动面大：旧注入记录不可信 → 作废（ApplyTargetedRecordMaintenance）。
+        exec.domain = VoiceTargetedDomainKind::kWholeField;
+        exec.record_action = TargetedExecutionContext::RecordAction::kInvalidate;
+        if (domain_outcome.domain == VoiceTargetedDomainKind::kWholeField) {
+            exec.pre_action_text = field_full;
+        } else if (recent.has_value()) {
+            exec.pre_edit_remaining_text = recent->remaining_text;
+        }
+        LogCoordinatorLine(
+            "voice targeted action=" +
+            std::string(command.action.kind == VoiceTargetedActionKind::kDelete ? "delete"
+                                                                              : "replace") +
+            " batch=" + std::to_string(domain_outcome.batch.size()) +
+            " domain=" +
+            (domain_outcome.domain == VoiceTargetedDomainKind::kWholeField
+                 ? "whole_field"
+                 : "last_injection"));
+        FinishRecognitionCycle();
+        EnterReady("voice_targeted");
+        TryWholeFieldPasteRewrite(command, VoiceTargetedPlan{}, exec,
+                                  voice_edit_generation_);
+        return true;
+    }
     {
         std::string domain_text;
         bool pressed_enter = false;
@@ -1699,6 +1735,47 @@ void VoiceStickCoordinator::TryWholeFieldPasteRewrite(
     } else {
         readable = ReadFieldFullTextWithFallback(&field) && field.readable &&
                    !field.full_truncated && !field.is_password;
+    }
+    // 批量（kAll/kRange）：整框批量替换（按文档顺序拼接多区间）。
+    // 删空 → 拒绝（决策：不支持删除全部内容）；构建失败 → field_mismatch。
+    if (exec.is_batch) {
+        const std::string field_full =
+            readable ? NormalizeVoiceEditLineBreaks(field.full_text) : std::string();
+        const std::string replacement =
+            command.action.kind == VoiceTargetedActionKind::kDelete
+                ? std::string()
+                : command.action.replacement;
+        const auto rewritten =
+            readable ? BuildWholeFieldBatchReplacement(field_full, exec.batch, replacement)
+                     : std::optional<std::string>{};
+        if (!rewritten.has_value() || rewritten->empty() || input_injector_ == nullptr) {
+            LogCoordinatorLine(
+                "voice targeted batch paste unavailable readable=" +
+                std::string(readable ? "1" : "0") +
+                " built=" + (rewritten.has_value() ? "1" : "0") +
+                " empty=" + (rewritten.has_value() && rewritten->empty() ? "1" : "0"));
+            LogVoiceEditFailure("selected_text", "field_mismatch");
+            RestoreCaretAndRejectFieldMismatch();
+            return;
+        }
+        input_injector_->ReplaceAllWithPaste(*rewritten);
+        LogCoordinatorLine("voice targeted batch paste applied full_len=" +
+                           std::to_string(rewritten->size()) +
+                           " count=" + std::to_string(exec.batch.size()));
+        const auto alive = alive_;
+        const std::string expected = *rewritten;
+        const std::string pre_action = field_full;
+        std::thread([this, alive, generation, plan, command, exec, expected, pre_action]() {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            if (!alive->load()) return;
+            RunOnUiThread([this, alive, generation, plan, command, exec, expected,
+                           pre_action]() {
+                if (!alive->load()) return;
+                FinalizeVoiceTargetedEdit(generation, plan, expected, pre_action, command,
+                                          exec, 0);
+            });
+        }).detach();
+        return;
     }
     std::size_t target_start = 0;
     if (readable) {
@@ -1968,6 +2045,8 @@ bool VoiceStickCoordinator::HandlePendingClarificationIfMatched(const std::strin
             return true;
         case VoiceEditOrdinalReply::Kind::kOrdinal:
         case VoiceEditOrdinalReply::Kind::kFromEnd:
+        case VoiceEditOrdinalReply::Kind::kAll:
+        case VoiceEditOrdinalReply::Kind::kRange:
             ExecuteClarifiedReply(*reply, pending);
             return true;
     }
@@ -1991,6 +2070,22 @@ void VoiceStickCoordinator::ExecuteClarifiedReply(
         ui_->ShowTimedMessage(Tr(StringId::kVoiceTargetedClarifyChanged, language),
                               kVoiceEditToastMs);
     };
+    // 批量应答（全部/范围）：用 pending 原命令改位置后重入接管——批量自身做域内
+    // 匹配与 50 处上限校验，不在此重算出现次数。
+    if (reply.kind == VoiceEditOrdinalReply::Kind::kAll ||
+        reply.kind == VoiceEditOrdinalReply::Kind::kRange) {
+        VoiceTargetedCommand command = pending.command;
+        command.position = reply.kind == VoiceEditOrdinalReply::Kind::kAll
+                               ? VoiceTargetedPosition::kAll
+                               : VoiceTargetedPosition::kRange;
+        command.range_start = reply.range_start;
+        command.range_end = reply.range_end;
+        command.has_explicit_scope = true;
+        pending_clarification_.reset();
+        TakeOverTargetedCommand(/*text=*/"", VoiceTargetedParseResult{false, command},
+                                config);
+        return;
+    }
     if (pending.domain == VoiceTargetedDomainKind::kWholeField) {
         // caret_abs 缺失不再连坐拒绝（2026-11-04 微信 GetSelection 间歇失败）：
         // 「文本已变化」防篡改由下方匹配数比对判定，与光标无关。

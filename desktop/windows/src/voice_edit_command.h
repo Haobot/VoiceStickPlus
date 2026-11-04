@@ -61,6 +61,19 @@ VoiceEditVerifyMode VoiceEditVerifyModeFromName(std::string_view name,
                                                 VoiceEditVerifyMode fallback);
 std::string_view VoiceEditVerifyModeName(VoiceEditVerifyMode mode);
 
+// targeted 搜索域优先级（[voice_edit].domain_mode）：
+//   kWholeField  = 始终在光标所在文本框全文检索（默认；不构建最近注入域，
+//                  scope_seconds 时间窗对 targeted 不生效）
+//   kRecentFirst = Tier 1 优先「最近一次语音输入」（原行为，受 scope_seconds 约束）
+enum class VoiceEditDomainMode {
+    kWholeField,
+    kRecentFirst,
+};
+
+VoiceEditDomainMode VoiceEditDomainModeFromName(std::string_view name,
+                                                VoiceEditDomainMode fallback);
+std::string_view VoiceEditDomainModeName(VoiceEditDomainMode mode);
+
 // ---- UTF-8 grapheme（用户可见字符）辅助 ----
 // 覆盖 CJK / emoji / 组合字符 / ZWJ 连字 / 国旗 / 变体选择符与 emoji 肤色修饰符。
 // 说明：按 Unicode 扩展 grapheme cluster 的常见子集实现，不含完整 UAX #29

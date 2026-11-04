@@ -46,7 +46,13 @@ enum class VoiceTargetedPosition {
     kOrdinal,
     kFromEnd,
     kUnspecified,  // 仅 1 个精确匹配才允许
+    // 批量（Doc/Plan/voice-edit-batch-replace.md）：
+    kAll,    // 全部匹配（上限 kVoiceTargetedBatchMaxOccurrences，超过拒绝）
+    kRange,  // 范围（range_start/range_end 有效；>0 正序 1 基，<0 倒数）
 };
+
+// 「全部」批量操作的最大匹配数（超过拒绝并提示指定范围，防高频词误伤）。
+inline constexpr int kVoiceTargetedBatchMaxOccurrences = 50;
 
 // 位置选择结果（批次 2；对齐 macOS VoiceTargetedPositionOutcome）：选中一处 /
 // 未指定且多处（歧义，交追问）/ 序号越界。SelectTargetedOccurrence 输出。
@@ -62,6 +68,9 @@ struct VoiceTargetedCommand {
     VoiceTargetedPosition position = VoiceTargetedPosition::kUnspecified;
     // position == kOrdinal / kFromEnd 时的 N（1 基；其余位置忽略）。
     int position_n = 0;
+    // position == kRange 时的范围端点：>0 正序 1 基；<0 倒数（-1 = 倒数第 1）。
+    int range_start = 0;
+    int range_end = 0;
     // 是否显式带「刚才的/刚刚」作用域。自然简写为 false，协调器仅在最近一次
     // 注入确实存在 target 时接管，否则按普通文本处理。
     bool has_explicit_scope = true;
@@ -106,6 +115,8 @@ enum class VoiceTargetedFailure {
     // 批次 2（整框搜索域 + 位置限定扩展）尾部追加（双端同构，别插中间）：
     kFieldTooLong,        // 整框域字段超长（> 200,000 UTF-16 码元）
     kPositionOutOfRange,  // 第 N 个 / 倒数第 N 个越界（域内出现次数不足 N）
+    // 批量（Doc/Plan/voice-edit-batch-replace.md）尾部追加：
+    kBatchTooMany,  // 「全部」匹配数超过 kVoiceTargetedBatchMaxOccurrences
 };
 
 std::string_view VoiceTargetedFailureName(VoiceTargetedFailure failure);
@@ -130,6 +141,15 @@ VoiceTargetedPositionOutcome SelectTargetedOccurrence(
     const VoiceTargetedCommand& command,
     const std::vector<VoiceTargetedOccurrence>& matches,
     VoiceTargetedOccurrence* selected, int* count_out = nullptr);
+
+// 批量选择（Doc/Plan/voice-edit-batch-replace.md）：kAll → 全部匹配（超过
+// kVoiceTargetedBatchMaxOccurrences 时置 *too_many_out=true 并返回 nullopt）；
+// kRange → 范围 [range_start, range_end]（>0 正序 1 基，<0 倒数；越界/起点>终点
+// 返回 nullopt）。非批量位置返回 nullopt（调用方走 SelectTargetedOccurrence）。
+std::optional<std::vector<VoiceTargetedOccurrence>> SelectTargetedBatch(
+    const VoiceTargetedCommand& command,
+    const std::vector<VoiceTargetedOccurrence>& matches,
+    int* count_out = nullptr, bool* too_many_out = nullptr);
 
 // UTF-8 文本的 UTF-16 码元长度（协调器换算选区偏移用；转发 utf8_grapheme.h）。
 std::size_t VoiceTargetedUtf16Length(std::string_view text);
@@ -189,6 +209,15 @@ std::optional<std::string> BuildWholeFieldReplacement(std::string_view field_ful
                                                       std::size_t target_start_utf16,
                                                       std::size_t target_end_utf16,
                                                       std::string_view replacement);
+
+// 批量整框重写（Doc/Plan/voice-edit-batch-replace.md）：把 field_full 中
+// occurrences 各区间替换为 replacement（按文档顺序拼接；区间须不重叠）。
+// 任一区间越界/落在 grapheme 中间/重叠 → nullopt（防字素切坏）。
+// replacement 为空 = 批量删除。
+std::optional<std::string> BuildWholeFieldBatchReplacement(
+    std::string_view field_full_utf8,
+    const std::vector<VoiceTargetedOccurrence>& occurrences,
+    std::string_view replacement);
 
 // 批次 1 新签名（字段内锚定）：协调器先用 LocateVoiceEditAnchor 定出锚点（tail
 // 窗口内 UTF-16 偏移）再带锚进计划——锚已保证 anchored 段在字段中精确成立，

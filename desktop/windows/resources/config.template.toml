@@ -150,3 +150,9 @@ scope_seconds = 120
 verify_mode = "auto"
 # auto 模式下字段/光标不可验证时允许执行的时间窗（秒，0~30）
 unverified_seconds = 8
+# 批次 2：true = 「替换/删除X」搜索整个输入框（默认）；false = 只在最近一次语音输入里找（旧行为）
+field_scope = true
+# targeted 搜索域优先级：whole_field（默认，始终在光标所在文本框全文检索，
+# 不构建最近注入域、无 scope_seconds 时间窗）| recent_first（原行为：优先
+# 「最近一次语音输入」，受 scope_seconds 约束）
+domain_mode = "whole_field"

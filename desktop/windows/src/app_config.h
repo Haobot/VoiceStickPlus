@@ -299,6 +299,12 @@ struct VoiceEditConfig {
     // 一次语音输入唯一命中时优先改它，否则扩展到整个输入框；false = 完全回到批次 1
     // 行为（回归开关）。与 macOS [voice_edit].field_scope 同名同默认。
     bool field_scope = true;
+    // targeted 搜索域优先级：whole_field（默认，始终在光标所在文本框全文检索，
+    // 不构建最近注入域、无 scope_seconds 时间窗）/ recent_first（原行为：Tier 1
+    // 优先「最近一次语音输入」）。与 macOS [voice_edit].domain_mode 同名同默认；
+    // whole_field 时启动归一化强制 field_scope=true。见
+    // Doc/Plan/voice-edit-whole-field-scope.md。
+    VoiceEditDomainMode domain_mode = VoiceEditDomainMode::kWholeField;
 
     bool operator==(const VoiceEditConfig& other) const = default;
 };

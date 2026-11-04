@@ -466,6 +466,21 @@ std::string_view VoiceEditVerifyModeName(VoiceEditVerifyMode mode) {
     return "auto";
 }
 
+VoiceEditDomainMode VoiceEditDomainModeFromName(std::string_view name,
+                                                VoiceEditDomainMode fallback) {
+    if (name == "whole_field") return VoiceEditDomainMode::kWholeField;
+    if (name == "recent_first") return VoiceEditDomainMode::kRecentFirst;
+    return fallback;
+}
+
+std::string_view VoiceEditDomainModeName(VoiceEditDomainMode mode) {
+    switch (mode) {
+        case VoiceEditDomainMode::kWholeField: return "whole_field";
+        case VoiceEditDomainMode::kRecentFirst: return "recent_first";
+    }
+    return "whole_field";
+}
+
 std::string_view VoiceEditRejectReasonName(VoiceEditRejectReason reason) {
     switch (reason) {
         case VoiceEditRejectReason::kNone: return "none";

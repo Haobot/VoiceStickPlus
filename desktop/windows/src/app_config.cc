@@ -803,6 +803,15 @@ AppConfig AppConfig::Load(const std::filesystem::path& path) {
             if (auto value = TomlBool(*voice_edit, "field_scope")) {
                 config.voice_edit.field_scope = *value;
             }
+            if (auto value = TomlString(*voice_edit, "domain_mode")) {
+                config.voice_edit.domain_mode = VoiceEditDomainModeFromName(
+                    Trim(*value), config.voice_edit.domain_mode);
+            }
+        }
+        // whole_field 依赖整框域（批次 2）：强制启用 field_scope，避免「整框配置
+        // 却走旧批次 1 路径」的冲突。
+        if (config.voice_edit.domain_mode == VoiceEditDomainMode::kWholeField) {
+            config.voice_edit.field_scope = true;
         }
         // 顶层 [hotword_corrections]：热词纠错映射（错误文本 -> 正确文本）。
         if (const auto* corrections = table["hotword_corrections"].as_table()) {
@@ -1205,6 +1214,8 @@ void AppConfig::WriteTo(const std::filesystem::path& path) const {
            << std::string(VoiceEditVerifyModeName(voice_edit.verify_mode)) << "\"\n";
     output << "unverified_seconds = " << voice_edit.unverified_seconds << "\n";
     output << "field_scope = " << (voice_edit.field_scope ? "true" : "false") << "\n";
+    output << "domain_mode = \""
+           << std::string(VoiceEditDomainModeName(voice_edit.domain_mode)) << "\"\n";
     output << "\n[license]\n";
     output << "serial = \"" << TomlEscape(license.serial) << "\"\n";
     if (license.trial_anchor_days) {  // 未锚定（试用未开始）不落盘

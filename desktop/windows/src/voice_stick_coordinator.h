@@ -765,6 +765,10 @@ private:
     struct TargetedExecutionContext {
         VoiceTargetedDomainKind domain = VoiceTargetedDomainKind::kLastInjection;
         bool absolute_coords = false;      // 整框域/全文坐标（绝对选区 + 全文终验）
+        // 批量（kAll/kRange，Doc/Plan/voice-edit-batch-replace.md）：批量区间列表；
+        // is_batch=true 时走整框批量粘贴（单点 plan/选区无关）。
+        bool is_batch = false;
+        std::vector<VoiceTargetedOccurrence> batch;
         std::size_t original_caret_utf16 = 0;
         enum class RecordAction { kNone, kUpdate, kKeep, kInvalidate };
         RecordAction record_action = RecordAction::kNone;

@@ -479,6 +479,58 @@ void TestVoiceEditParserPositive() {
 }
 
 // 与 macOS deleteAllForms 39 条逐条对拍（Lead 独立 parity 用例）。
+// 批量替换/删除（Doc/Plan/voice-edit-batch-replace.md）：「全部」与「第A到第B」
+// 范围（端点支持正序/倒数任意组合，另收「从A到B」「头N个/前N个」「最后N个」）。
+void TestTargetedBatchParser() {
+    // 前置「全部」：把全部的北京改成上海
+    const auto all_front = ParseVoiceTargetedCommand("把全部的北京改成上海");
+    assert(all_front.has_value());
+    assert(all_front->command.position == VoiceTargetedPosition::kAll);
+    assert(all_front->command.target == "北京");
+
+    // 后置「全部」：把北京全部改成上海
+    const auto all_back = ParseVoiceTargetedCommand("把北京全部改成上海");
+    assert(all_back.has_value());
+    assert(all_back->command.position == VoiceTargetedPosition::kAll);
+    assert(all_back->command.target == "北京");
+
+    // 范围（正序）
+    const auto range = ParseVoiceTargetedCommand("把第一个到第三个北京改成上海");
+    assert(range.has_value());
+    assert(range->command.position == VoiceTargetedPosition::kRange);
+    assert(range->command.range_start == 1);
+    assert(range->command.range_end == 3);
+
+    // 范围（混合端点：正序起点 + 倒数终点）
+    const auto mixed = ParseVoiceTargetedCommand("把第二个到倒数第三个北京改成上海");
+    assert(mixed.has_value());
+    assert(mixed->command.position == VoiceTargetedPosition::kRange);
+    assert(mixed->command.range_start == 2);
+    assert(mixed->command.range_end == -3);
+
+    // 更多说法：从A到B / 头N个 / 最后N个
+    const auto from_to = ParseVoiceTargetedCommand("把从第一个到第三个北京改成上海");
+    assert(from_to.has_value());
+    assert(from_to->command.position == VoiceTargetedPosition::kRange);
+
+    const auto head = ParseVoiceTargetedCommand("把头三个北京改成上海");
+    assert(head.has_value());
+    assert(head->command.position == VoiceTargetedPosition::kRange);
+    assert(head->command.range_start == 1);
+    assert(head->command.range_end == 3);
+
+    const auto tail = ParseVoiceTargetedCommand("把最后三个北京改成上海");
+    assert(tail.has_value());
+    assert(tail->command.position == VoiceTargetedPosition::kRange);
+    assert(tail->command.range_start == -3);
+    assert(tail->command.range_end == -1);
+
+    // 负向：无「全部/范围」的普通指令保持原语义（单点/未指定）。
+    const auto plain = ParseVoiceTargetedCommand("把北京改成上海");
+    assert(plain.has_value());
+    assert(plain->command.position == VoiceTargetedPosition::kUnspecified);
+}
+
 void TestVoiceEditParserDeleteAllForms() {
     const std::vector<std::string> mac_forms = {
         "删除刚才的", "删除刚才", "删掉刚才的", "删掉刚才", "删除刚才的内容",
@@ -710,6 +762,8 @@ void TestVoiceEditConfigDefaultsAndPersistence() {
     assert(defaults.voice_edit.scope_seconds == 120);
     assert(defaults.voice_edit.verify_mode == VoiceEditVerifyMode::kAuto);
     assert(defaults.voice_edit.unverified_seconds == 8);
+    // 新默认：始终整框检索（不再优先最近注入域，无 scope_seconds 时间窗）。
+    assert(defaults.voice_edit.domain_mode == VoiceEditDomainMode::kWholeField);
 
     const auto temp =
         std::filesystem::temp_directory_path() / "voicestick_voice_edit_config_test.toml";
@@ -723,6 +777,7 @@ void TestVoiceEditConfigDefaultsAndPersistence() {
         out << "scope_seconds = 1\n";          // 越界 → 钳到 10
         out << "verify_mode = \"bogus\"\n";    // 未知 → 回落 auto
         out << "unverified_seconds = 99\n";    // 越界 → 钳到 30
+        out << "domain_mode = \"bogus\"\n";     // 未知 → 回落 whole_field
     }
     AppConfig loaded = AppConfig::Load(temp);
     assert(!loaded.voice_edit.enabled);
@@ -731,6 +786,7 @@ void TestVoiceEditConfigDefaultsAndPersistence() {
     assert(loaded.voice_edit.scope_seconds == 10);
     assert(loaded.voice_edit.verify_mode == VoiceEditVerifyMode::kAuto);
     assert(loaded.voice_edit.unverified_seconds == 30);
+    assert(loaded.voice_edit.domain_mode == VoiceEditDomainMode::kWholeField);
 
     // Save → Load 往返（WriteTo 白名单覆盖全部 6 个字段）。
     AppConfig config = AppConfig::Defaults();
@@ -740,6 +796,7 @@ void TestVoiceEditConfigDefaultsAndPersistence() {
     config.voice_edit.scope_seconds = 300;
     config.voice_edit.verify_mode = VoiceEditVerifyMode::kStrict;
     config.voice_edit.unverified_seconds = 5;
+    config.voice_edit.domain_mode = VoiceEditDomainMode::kRecentFirst;
     config.Save(temp);
     const AppConfig roundtrip = AppConfig::Load(temp);
     assert(roundtrip.voice_edit.enabled);
@@ -748,6 +805,7 @@ void TestVoiceEditConfigDefaultsAndPersistence() {
     assert(roundtrip.voice_edit.scope_seconds == 300);
     assert(roundtrip.voice_edit.verify_mode == VoiceEditVerifyMode::kStrict);
     assert(roundtrip.voice_edit.unverified_seconds == 5);
+    assert(roundtrip.voice_edit.domain_mode == VoiceEditDomainMode::kRecentFirst);
     std::filesystem::remove(temp);
 }
 
@@ -1799,6 +1857,109 @@ void TestTargetedCoordinatorClipboardFinalVerifyMismatch() {
            TargetedToast(Tr(StringId::kVoiceTargetedUnconfirmed, harness.language()).c_str()));
 }
 
+// domain_mode=whole_field（新默认）：刚说完的话也在**整个输入框**检索——即使
+// recent 域可唯一命中，整框有两处「北京」时按整框规则追问「第几个」；旧行为
+// （recent_first）会直接改 recent 那处。同时验证该模式不构建 recent 域，
+// scope_seconds 时间窗对 targeted 不再生效。
+void TestTargetedWholeFieldScopeIgnoresRecent() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    assert(config.voice_edit.domain_mode == VoiceEditDomainMode::kWholeField);
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 351));
+    // 用户手动追加第二处「北京」：整框两处，recent（remaining）仍唯一。
+    harness.field().doc = L"我去北京上班，北京很好";
+    harness.field().sel_start = harness.field().doc.size();
+    harness.field().sel_len = 0;
+    harness.ops().clear();
+    assert(harness.RunCommand("把北京改成上海", 352));
+    // 整框两处 → 追问「第几个」，零写入、字段不变。
+    assert(harness.ops().empty());
+    assert(harness.field().doc == L"我去北京上班，北京很好");
+    assert(harness.ui().timed_messages.back().find("北京") != std::string::npos);
+
+    // 对比：recent_first 同场景直接改 recent 唯一命中的那处（旧行为回归）。
+    AppConfig recent_config = AppConfig::Defaults();
+    recent_config.refine_enabled = false;
+    recent_config.auto_enter = false;
+    recent_config.voice_edit.domain_mode = VoiceEditDomainMode::kRecentFirst;
+    VoiceTargetedHarness recent_harness(recent_config);
+    assert(recent_harness.PasteText("我去北京上班", 353));
+    recent_harness.field().doc = L"我去北京上班，北京很好";
+    recent_harness.field().sel_start = recent_harness.field().doc.size();
+    recent_harness.field().sel_len = 0;
+    recent_harness.ops().clear();
+    assert(recent_harness.RunCommand("把北京改成上海", 354));
+    assert(recent_harness.field().doc == L"我去上海上班，北京很好");
+}
+
+// 批量替换「全部」：整个输入框两处「北京」都改成「上海」（一次整框粘贴）。
+void TestTargetedBatchReplaceAll() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("北京很好", 361));
+    harness.field().doc = L"北京很好，北京很美";
+    harness.field().sel_start = harness.field().doc.size();
+    harness.field().sel_len = 0;
+    harness.ops().clear();
+    assert(harness.RunCommand("把北京全部改成上海", 362));
+    assert(harness.field().doc == L"上海很好，上海很美");
+    assert(std::find(harness.ops().begin(), harness.ops().end(), "paste_all") !=
+           harness.ops().end());
+}
+
+// 批量替换范围「第一个到第二个」：只改前两处，第三处保留。
+void TestTargetedBatchReplaceRange() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("北京一", 363));
+    harness.field().doc = L"北京一，北京二，北京三";
+    harness.field().sel_start = harness.field().doc.size();
+    harness.field().sel_len = 0;
+    harness.ops().clear();
+    assert(harness.RunCommand("把第一个到第二个北京改成上海", 364));
+    assert(harness.field().doc == L"上海一，上海二，北京三");
+}
+
+// 「全部」匹配超过 50 处：拒绝（防高频词误伤），零写入。
+void TestTargetedBatchTooManyRejects() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("北京", 365));
+    std::wstring many;
+    for (int i = 0; i < 51; ++i) many += L"北京";
+    harness.field().doc = many;
+    harness.field().sel_start = harness.field().doc.size();
+    harness.field().sel_len = 0;
+    harness.ops().clear();
+    assert(harness.RunCommand("把北京全部改成上海", 366, 6000));
+    assert(harness.ops().empty());
+    assert(harness.field().doc == many);  // 字段零改动
+}
+
+// 批量删除导致字段清空：拒绝并提示（决策：不支持删除全部内容），零写入。
+void TestTargetedBatchDeleteAllRejects() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("北京北京北京", 367));
+    harness.field().doc = L"北京北京北京";
+    harness.field().sel_start = harness.field().doc.size();
+    harness.field().sel_len = 0;
+    harness.ops().clear();
+    assert(harness.RunCommand("把北京全部删掉", 368, 6000));
+    assert(harness.ops().empty());
+    assert(harness.field().doc == L"北京北京北京");  // 字段零改动
+}
+
 // 全兜底失败（全选粘贴未落地）：Ctrl+End 恢复 + fieldMismatch，
 // 零改动、记录保留（安全模型：验证不过绝不盲改）。
 void TestTargetedCoordinatorAllFallbacksFailRejects() {
@@ -1992,7 +2153,13 @@ void ExpectTargetedCommand(std::string_view text, VoiceTargetedActionKind kind,
     if (r->command.target != target || r->command.position != pos ||
         r->command.action.kind != kind ||
         r->command.has_explicit_scope != has_explicit_scope) {
-        std::printf("FAIL targeted parse: %s\n", name);
+        std::printf(
+            "FAIL targeted parse: %s target=[%s] want=[%s] pos=%d want=%d kind=%d want=%d "
+            "scope=%d want=%d\n",
+            name, r->command.target.c_str(), std::string(target).c_str(),
+            static_cast<int>(r->command.position), static_cast<int>(pos),
+            static_cast<int>(r->command.action.kind), static_cast<int>(kind),
+            r->command.has_explicit_scope ? 1 : 0, has_explicit_scope ? 1 : 0);
         assert(false && "targeted command mismatch");
     }
     if (kind == VoiceTargetedActionKind::kReplace &&
@@ -2590,6 +2757,7 @@ void TestVoiceEditUndoPhraseAndFallback() {
 
 void RunVoiceEditTests() {
     TestVoiceEditParserPositive();
+    TestTargetedBatchParser();
     TestVoiceEditParserDeleteAllForms();
     TestVoiceEditParserNegative();
     TestVoiceEditGraphemes();
@@ -2634,6 +2802,11 @@ void RunVoiceEditTests() {
     TestTargetedCoordinatorClipboardFallbackUnavailableRejects();
     TestTargetedCoordinatorClipboardFallbackMismatchRejects();
     TestTargetedCoordinatorClipboardFinalVerifyMismatch();
+    TestTargetedWholeFieldScopeIgnoresRecent();
+    TestTargetedBatchReplaceAll();
+    TestTargetedBatchReplaceRange();
+    TestTargetedBatchTooManyRejects();
+    TestTargetedBatchDeleteAllRejects();
     TestTargetedCoordinatorFinalVerifyFailsInvalidates();
     TestTargetedCoordinatorOffModeUnreadableRejects();
     TestTargetedCoordinatorStaleGeneration();

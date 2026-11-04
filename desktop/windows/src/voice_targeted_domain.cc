@@ -157,6 +157,31 @@ VoiceTargetedDomainOutcome ResolveVoiceTargetedDomain(
     const VoiceTargetedCommand& command,
     const VoiceTargetedRecentDomain* recent,
     std::string_view field_text) {
+    // 批量分支（Doc/Plan/voice-edit-batch-replace.md）：kAll / kRange 命中 ≥1 处时
+    // 返回 batch；非批量位置返回 nullopt 交单点逻辑。
+    const auto resolve_batch = [&](const std::vector<VoiceTargetedOccurrence>& matches,
+                                   VoiceTargetedDomainKind domain_kind)
+        -> std::optional<VoiceTargetedDomainOutcome> {
+        if (command.position != VoiceTargetedPosition::kAll &&
+            command.position != VoiceTargetedPosition::kRange) {
+            return std::nullopt;
+        }
+        VoiceTargetedDomainOutcome result;
+        result.domain = domain_kind;
+        bool too_many = false;
+        auto batch = SelectTargetedBatch(command, matches, &result.count, &too_many);
+        if (!batch.has_value()) {
+            result.kind = VoiceTargetedDomainOutcome::Kind::kFailure;
+            result.failure = too_many ? VoiceTargetedFailure::kBatchTooMany
+                                      : VoiceTargetedFailure::kPositionOutOfRange;
+            return result;
+        }
+        result.kind = VoiceTargetedDomainOutcome::Kind::kExecute;
+        result.is_batch = true;
+        result.batch = std::move(*batch);
+        return result;
+    };
+
     // 整框域通用分支：超长保护 → 匹配 → 按位置选择。
     const auto resolve_whole_field = [&]() -> VoiceTargetedDomainOutcome {
         if (Utf16Length(field_text) > kVoiceTargetedFieldScopeMaxUtf16) {
@@ -171,6 +196,9 @@ VoiceTargetedDomainOutcome ResolveVoiceTargetedDomain(
             failure.kind = VoiceTargetedDomainOutcome::Kind::kFailure;
             failure.failure = VoiceTargetedFailure::kNotFound;
             return failure;
+        }
+        if (auto batch = resolve_batch(matches, VoiceTargetedDomainKind::kWholeField)) {
+            return *batch;
         }
         VoiceTargetedDomainOutcome result;
         result.domain = VoiceTargetedDomainKind::kWholeField;
@@ -197,6 +225,9 @@ VoiceTargetedDomainOutcome ResolveVoiceTargetedDomain(
             failure.kind = VoiceTargetedDomainOutcome::Kind::kFailure;
             failure.failure = VoiceTargetedFailure::kNotFound;
             return failure;
+        }
+        if (auto batch = resolve_batch(matches, VoiceTargetedDomainKind::kLastInjection)) {
+            return *batch;
         }
         VoiceTargetedDomainOutcome result;
         result.domain = VoiceTargetedDomainKind::kLastInjection;
@@ -322,6 +353,28 @@ bool MatchUnitAndOptionalTarget(std::string_view rest, std::string_view target) 
     return MatchOptionalTarget(rest, target);
 }
 
+// 批量应答（Doc/Plan/voice-edit-batch-replace.md）：全部 / 范围。
+constexpr std::string_view kReplyAllForms[] = {"全部", "所有", "都"};
+constexpr std::string_view kReplyRangeSeparators[] = {"到", "至"};
+
+// 追问应答的范围端点：第N个/处 / 倒数第N个/处 → >0 正序、<0 倒数。
+std::optional<int> ParseReplyRangeEndpoint(std::string_view text, std::size_t* index) {
+    std::size_t probe = *index;
+    bool from_end = false;
+    if (ConsumeToken(text, &probe, "倒数第")) {
+        from_end = true;
+    } else if (!ConsumeToken(text, &probe, "第")) {
+        return std::nullopt;
+    }
+    const auto n = ParseVoiceEditOrdinalNumber(text, &probe, 99);
+    if (!n.has_value()) return std::nullopt;
+    if (!ConsumeToken(text, &probe, "个") && !ConsumeToken(text, &probe, "处")) {
+        return std::nullopt;
+    }
+    *index = probe;
+    return from_end ? -*n : *n;
+}
+
 }  // namespace
 
 std::optional<VoiceEditOrdinalReply> ParseVoiceEditOrdinalReply(std::string_view text,
@@ -363,6 +416,37 @@ std::optional<VoiceEditOrdinalReply> ParseVoiceEditOrdinalReply(std::string_view
     }
 
     const std::string_view view = body;
+    // 全部（整词；可带目标词后缀）。
+    for (const auto form : kReplyAllForms) {
+        if (view == form || view == std::string(form) + std::string(target)) {
+            return VoiceEditOrdinalReply{VoiceEditOrdinalReply::Kind::kAll, 0};
+        }
+    }
+    // 范围：从? 第A到第B（端点支持 第N / 倒数第N）。
+    {
+        std::size_t index = 0;
+        ConsumeToken(view, &index, "从");
+        const auto start = ParseReplyRangeEndpoint(view, &index);
+        bool consumed_separator = false;
+        if (start.has_value()) {
+            for (const auto separator : kReplyRangeSeparators) {
+                if (ConsumeToken(view, &index, separator)) {
+                    consumed_separator = true;
+                    break;
+                }
+            }
+        }
+        if (consumed_separator) {
+            const auto end = ParseReplyRangeEndpoint(view, &index);
+            if (end.has_value() && MatchUnitAndOptionalTarget(view.substr(index), target)) {
+                VoiceEditOrdinalReply reply;
+                reply.kind = VoiceEditOrdinalReply::Kind::kRange;
+                reply.range_start = *start;
+                reply.range_end = *end;
+                return reply;
+            }
+        }
+    }
     constexpr std::string_view kDi = "第";
     constexpr std::string_view kDaoShuDi = "倒数第";
     constexpr std::string_view kZuiHou = "最后";
