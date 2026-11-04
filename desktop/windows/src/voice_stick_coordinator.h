@@ -249,6 +249,9 @@ class InputInjector {
 public:
     virtual ~InputInjector() = default;
     virtual void Paste(const std::string& text, bool press_enter) = 0;
+    // 全选粘贴整框替换：写剪贴板 text → Ctrl+A → Ctrl+V → 还原剪贴板快照
+    // （targeted 整框替换兜底；Ctrl+A 语义固定=全选，无光标算术无错位）。
+    virtual void ReplaceAllWithPaste(const std::string& text) = 0;
     virtual void SendEnter() = 0;
     // 注入一次下方向键，用于敲击手势在候选/选项间向下切换。
     virtual void SendArrowDown() = 0;
@@ -768,32 +771,20 @@ private:
     // 目标（Electron/浏览器）UIA 选区写经 renderer 异步生效，写后立即读回必拿旧
     // 值——按 kVoiceTargetedReadbackPollDelays 小步轮询 ReadSelectedText（只追加
     // 读操作，绝不重写选区），命中才执行单次动作。入口代际守卫，重入每拍再核
-    // （新注入即失效）。读回耗尽：via_keyboard_fallback=false 时降级键盘选区兜底
-    // （Chromium UIA Select() S_OK 不落地形态，2026-11-04 复测 got_len=0 实锤）；
-    // =true（兜底验证轮询自身耗尽）→ Ctrl+End 恢复 + fieldMismatch 拒绝
-    // （零改动、记录保留——安全模型：验证不过绝不盲改）。
+    // （新注入即失效）。读回耗尽 → 降级全选粘贴整框替换（2026-11-04 二次实锤：
+    // ZCode 上 Select() 与 GetSelection 全死，键盘注入是唯一活着的写通道）。
     void VerifyTargetedSelectionThenAct(const VoiceTargetedCommand& command,
                                         const VoiceTargetedPlan& plan,
                                         const TargetedExecutionContext& exec,
-                                        std::uint64_t generation, int attempt,
-                                        bool via_keyboard_fallback);
-    // 键盘选区兜底：读全文 → 目标绝对区间（整框域直通 / 尾窗换算）→
-    // PlanKeyboardSelection（grapheme 口径双锚）→ 后台线程逐键 Ctrl+End/Home +
-    // 方向键 + Shift 选区（12ms/键）→ 回 UI 线程读回轮询验证
-    //（via_keyboard_fallback=true）。
-    void TryKeyboardSelectionFallback(const VoiceTargetedCommand& command,
-                                      const VoiceTargetedPlan& plan,
-                                      const TargetedExecutionContext& exec,
-                                      std::uint64_t generation);
-    // 整框重写兜底（第三层，2026-11-04 优先于键盘兜底）：Chromium 目标选区读写
-    // 通道全死（Select() S_OK 不落地 + GetSelection 恒空）时，读全文 → 全文定位
-    // 替换构造（BuildWholeFieldReplacement）→ ValuePattern.SetValue 写回 → 全文
-    // 终验——不依赖选区通道，即「对整个输入框内容进行编辑」的用户语义。
-    // SetWholeText 不可用时落键盘选区兜底。
-    void TryWholeFieldRewriteFallback(const VoiceTargetedCommand& command,
-                                      const VoiceTargetedPlan& plan,
-                                      const TargetedExecutionContext& exec,
-                                      std::uint64_t generation);
+                                        std::uint64_t generation, int attempt);
+    // 整框替换兜底（第二层）：读全文 → 全文定位替换构造（BuildWholeFieldReplacement）
+    // → ReplaceAllWithPaste（Ctrl+A 全选 + Ctrl+V 粘贴，语义固定无光标算术、失败
+    // 无损）→ 全文终验——不依赖选区通道，即「对整个输入框内容进行编辑，判断不
+    // 依赖语音输入内容变化」的用户语义。
+    void TryWholeFieldPasteRewrite(const VoiceTargetedCommand& command,
+                                   const VoiceTargetedPlan& plan,
+                                   const TargetedExecutionContext& exec,
+                                   std::uint64_t generation);
     // 单次动作执行 + 延时终验（UIA 读回命中与兜底读回命中两条路共用）。
     void ExecuteTargetedActionAndVerify(const VoiceTargetedCommand& command,
                                         const VoiceTargetedPlan& plan,

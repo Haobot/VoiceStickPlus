@@ -70,13 +70,6 @@ public:
     // 恰 1 个选区之外（0 个或多个）返回 false。
     virtual bool ReadSelectedText(std::string* selected_text) = 0;
 
-    // ---- 整框写回（ValuePattern.SetValue；2026-11-04 第三层兜底）----
-    // Chromium 目标选区读写通道全死时（Select() S_OK 不落地 + GetSelection 恒
-    // 空），以 ValuePattern.SetValue 写回整个字段——不依赖选区通道，即「对整个
-    // 输入框内容进行编辑」的用户语义。utf8 为归一化（LF）全文。目标无
-    // ValuePattern / 只读 / 写入失败 → false。须 UI 线程调用。
-    virtual bool SetWholeText(std::string_view utf8) = 0;
-
     // 光标折叠定位到文档末尾（修改后的安全光标恢复）。
     virtual bool MoveCaretToEnd() = 0;
 

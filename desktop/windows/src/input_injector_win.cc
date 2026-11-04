@@ -25,34 +25,7 @@ void InputInjectorWin::Paste(const std::string& text, bool press_enter) {
 
     // 剪贴板写入必须确认成功：旧实现忽略 OpenClipboard/SetClipboardData 返回值，
     // 失败仍发 Ctrl+V 会把用户上一次复制的内容粘进前台应用。
-    bool clipboard_updated = false;
-    if (OpenClipboard(nullptr)) {
-        EmptyClipboard();
-        const SIZE_T bytes = (wide.size() + 1) * sizeof(wchar_t);
-        HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
-        if (memory != nullptr) {
-            void* target = GlobalLock(memory);
-            if (target != nullptr) {
-                memcpy(target, wide.c_str(), bytes);
-                GlobalUnlock(memory);
-                if (SetClipboardData(CF_UNICODETEXT, memory) != nullptr) {
-                    clipboard_updated = true;
-                    memory = nullptr;  // 所有权已移交系统
-                } else {
-                    LogApp("clipboard SetClipboardData failed err=" +
-                           std::to_string(GetLastError()));
-                }
-            }
-            if (memory != nullptr) GlobalFree(memory);
-        } else {
-            LogApp("clipboard GlobalAlloc failed err=" + std::to_string(GetLastError()));
-        }
-        CloseClipboard();
-    } else {
-        LogApp("clipboard OpenClipboard failed err=" + std::to_string(GetLastError()));
-    }
-
-    if (!clipboard_updated) {
+    if (!WriteClipboard(wide)) {
         // 未写入成功就不粘贴（避免注入旧内容）；EmptyClipboard 已清空时尽量还原快照。
         if (clipboard_snapshot) {
             ClipboardVault().Restore(*clipboard_snapshot);
@@ -75,6 +48,66 @@ void InputInjectorWin::Paste(const std::string& text, bool press_enter) {
     }
 }
 
+void InputInjectorWin::ReplaceAllWithPaste(const std::string& text) {
+    if (text.empty()) return;
+    const std::wstring wide = Utf16FromUtf8(text);
+    if (wide.empty()) return;
+
+    std::optional<ClipboardSnapshot> clipboard_snapshot;
+    try {
+        clipboard_snapshot = ClipboardVault().Save();
+    } catch (const std::runtime_error& e) {
+        LogApp(std::string("clipboard snapshot failed, skip restore: ") + e.what());
+    }
+    if (!WriteClipboard(wide)) {
+        if (clipboard_snapshot) {
+            ClipboardVault().Restore(*clipboard_snapshot);
+        }
+        LogApp("replace-all aborted: clipboard not updated");
+        return;
+    }
+    // Ctrl+A 全选（语义固定=当前焦点可编辑区全文，无光标算术）→ Ctrl+V 覆盖。
+    Sleep(40);
+    SendCtrlA();
+    Sleep(40);
+    SendCtrlV();
+    if (clipboard_snapshot) {
+        // 与 Paste 同款 restore_delay：目标应用异步读剪贴板。
+        Sleep(150);
+        ClipboardVault().Restore(*clipboard_snapshot);
+    }
+}
+
+bool InputInjectorWin::WriteClipboard(const std::wstring& wide) {
+    if (!OpenClipboard(nullptr)) {
+        LogApp("clipboard OpenClipboard failed err=" + std::to_string(GetLastError()));
+        return false;
+    }
+    bool updated = false;
+    EmptyClipboard();
+    const SIZE_T bytes = (wide.size() + 1) * sizeof(wchar_t);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (memory != nullptr) {
+        void* target = GlobalLock(memory);
+        if (target != nullptr) {
+            memcpy(target, wide.c_str(), bytes);
+            GlobalUnlock(memory);
+            if (SetClipboardData(CF_UNICODETEXT, memory) != nullptr) {
+                updated = true;
+                memory = nullptr;  // 所有权已移交系统
+            } else {
+                LogApp("clipboard SetClipboardData failed err=" +
+                       std::to_string(GetLastError()));
+            }
+        }
+        if (memory != nullptr) GlobalFree(memory);
+    } else {
+        LogApp("clipboard GlobalAlloc failed err=" + std::to_string(GetLastError()));
+    }
+    CloseClipboard();
+    return updated;
+}
+
 std::wstring InputInjectorWin::Utf16FromUtf8(const std::string& text) {
     const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
     if (length <= 0) return {};
@@ -95,6 +128,13 @@ void InputInjectorWin::SendCtrlV() {
     SendKey(VK_CONTROL, true);
     SendKey('V', true);
     SendKey('V', false);
+    SendKey(VK_CONTROL, false);
+}
+
+void InputInjectorWin::SendCtrlA() {
+    SendKey(VK_CONTROL, true);
+    SendKey('A', true);
+    SendKey('A', false);
     SendKey(VK_CONTROL, false);
 }
 

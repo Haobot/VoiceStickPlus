@@ -263,6 +263,10 @@ public:
         pasted_enter = press_enter;
         pasted_ = true;
     }
+    void ReplaceAllWithPaste(const std::string& text) override {
+        std::lock_guard<std::mutex> lk(mu);
+        replace_all_text = text;
+    }
     void SendEnter() override { send_enter_called = true; }
     void SendArrowDown() override { ++arrow_down_count; }
     void SendArrowUp() override {}
@@ -287,6 +291,7 @@ public:
     mutable std::mutex mu;
     bool pasted_ = false;
     std::string pasted_text;
+    std::string replace_all_text;
     bool pasted_enter = false;
     bool send_enter_called = false;
     int arrow_down_count = 0;

@@ -444,6 +444,9 @@ public:
         pasted_text = text;
         pasted_enter = press_enter;
     }
+    void ReplaceAllWithPaste(const std::string& text) override {
+        replace_all_text = text;
+    }
     void SendEnter() override { send_enter_called = true; }
     void SendArrowDown() override { ++arrow_down_count; }
     void SendArrowUp() override { ++arrow_up_count; }
@@ -458,6 +461,7 @@ public:
     void ClickLeftButton() override { ++left_click_count; }
 
     std::string pasted_text;
+    std::string replace_all_text;
     bool pasted_enter = false;
     bool send_enter_called = false;
     int arrow_down_count = 0;

@@ -1489,14 +1489,12 @@ void VoiceStickCoordinator::ExecuteVoiceTargetedEdit(
         return;
     }
     // 2. 读回轮询确认后执行（同步生效目标首次读即中，零重试、行为不变）。
-    VerifyTargetedSelectionThenAct(command, plan, exec, generation, /*attempt=*/0,
-                                   /*via_keyboard_fallback=*/false);
+    VerifyTargetedSelectionThenAct(command, plan, exec, generation, /*attempt=*/0);
 }
 
 void VoiceStickCoordinator::VerifyTargetedSelectionThenAct(
     const VoiceTargetedCommand& command, const VoiceTargetedPlan& plan,
-    const TargetedExecutionContext& exec, std::uint64_t generation, int attempt,
-    bool via_keyboard_fallback) {
+    const TargetedExecutionContext& exec, std::uint64_t generation, int attempt) {
     if (generation != voice_edit_generation_) return;  // stale：新注入已接管
     auto* editor = targeted_field_editor_.get();
     std::string selected_text;
@@ -1520,40 +1518,21 @@ void VoiceStickCoordinator::VerifyTargetedSelectionThenAct(
                                    std::to_string(got_len));
             }
             const auto alive = alive_;
-            std::thread([this, alive, generation, command, plan, exec, attempt,
-                         via_keyboard_fallback]() {
+            std::thread([this, alive, generation, command, plan, exec, attempt]() {
                 std::this_thread::sleep_for(kVoiceTargetedReadbackPollDelays[attempt]);
                 if (!alive->load()) return;
-                RunOnUiThread([this, alive, generation, command, plan, exec, attempt,
-                               via_keyboard_fallback]() {
+                RunOnUiThread([this, alive, generation, command, plan, exec, attempt]() {
                     if (!alive->load()) return;
                     VerifyTargetedSelectionThenAct(command, plan, exec, generation,
-                                                   attempt + 1, via_keyboard_fallback);
+                                                   attempt + 1);
                 });
             }).detach();
             return;
         }
-        if (!via_keyboard_fallback) {
-            // UIA 写路径耗尽 → 降级整框重写（ValuePattern.SetValue，不依赖选区
-            // 通道）；其不可用时内部自动落键盘选区兜底（一次机会，验证再失败即
-            // 拒绝）。
-            TryWholeFieldRewriteFallback(command, plan, exec, generation);
-            return;
-        }
-        // 兜底验证也耗尽：Ctrl+End 恢复安全光标，零删除/零粘贴；字段文本未被
-        // 改动 → 记录保留有效（安全模型：验证不过绝不盲改）。
-        const auto got_len =
-            read_ok ? static_cast<std::ptrdiff_t>(selected_text.size()) : -1;
-        LogCoordinatorLine("voice targeted keyboard fallback verify failed expected_len=" +
-                           std::to_string(command.target.size()) +
-                           " got_len=" + std::to_string(got_len));
-        LogVoiceEditFailure("selected_text", "field_mismatch");
-        RestoreCaretAndRejectFieldMismatch();
+        // UIA 写路径耗尽 → 降级全选粘贴整框替换（Ctrl+A 语义固定无光标算术，
+        // 失败无损；不依赖选区通道与语音注入记录）。
+        TryWholeFieldPasteRewrite(command, plan, exec, generation);
         return;
-    }
-    if (via_keyboard_fallback) {
-        LogCoordinatorLine("voice targeted keyboard fallback selected target_len=" +
-                           std::to_string(command.target.size()));
     }
     ExecuteTargetedActionAndVerify(command, plan, exec, generation);
 }
@@ -1623,11 +1602,13 @@ void VoiceStickCoordinator::ExecuteTargetedActionAndVerify(
     }).detach();
 }
 
-// 键盘选区兜底（Chromium UIA Select() 写不落地目标的唯一可靠选区手段）：
-// 读全文 → 目标绝对区间（整框域直通 / 尾窗换算）→ PlanKeyboardSelection →
-// 后台线程逐键发锚点+方向键序列（12ms/键）→ 回 UI 线程读回轮询验证。
-// 任一前置失败 → 直接走兜底拒绝路径（Ctrl+End 恢复 + fieldMismatch，零改动）。
-void VoiceStickCoordinator::TryKeyboardSelectionFallback(
+// 整框替换兜底（第二层）：读全文 → 目标绝对区间（整框域直通 / 尾窗换算）→
+// BuildWholeFieldReplacement 全文定位替换构造 → ReplaceAllWithPaste（Ctrl+A
+// 全选 + Ctrl+V 粘贴——语义固定无光标算术，失败无损）→ 200ms 后回 UI 线程复用
+// FinalizeVoiceTargetedEdit 全文/尾窗终验。不依赖选区通道，也不依赖语音注入
+// 记录。2026-11-04 实证 ZCode 上 UIA 写 API 全线 S_OK 空转（Select/SetValue
+// applied 但字段零变化），键盘注入是唯一活着的写通道。
+void VoiceStickCoordinator::TryWholeFieldPasteRewrite(
     const VoiceTargetedCommand& command, const VoiceTargetedPlan& plan,
     const TargetedExecutionContext& exec, std::uint64_t generation) {
     if (generation != voice_edit_generation_) return;
@@ -1638,94 +1619,11 @@ void VoiceStickCoordinator::TryKeyboardSelectionFallback(
     std::size_t target_start = 0;
     if (readable) {
         if (exec.absolute_coords) {
-            // 整框域：计划偏移即文档绝对偏移。
             target_start = plan.anchor_start_utf16 + plan.occurrence.utf16_start;
         } else {
-            // 批次 1 尾窗换算：尾窗起点 = 全文长 - 期望尾窗长（与计划期防御
-            // 检查同一公式，tail.cc 计划段）。CRLF 字段上归一化偏移与 UIA 原生
-            // 偏移有漂移风险（口径假设与批次 2 绝对坐标同款）——读回验证兜底。
-            const std::size_t expected_tail_utf16 =
-                VoiceTargetedUtf16Length(plan.tail_prefix) + plan.remaining_utf16_length +
-                (plan.has_recorded_newline ? 1 : 0) +
-                VoiceTargetedUtf16Length(plan.anchor_after_text);
-            if (field.full_utf16_length >= expected_tail_utf16) {
-                target_start = field.full_utf16_length - expected_tail_utf16 +
-                               plan.anchor_start_utf16 + plan.occurrence.utf16_start;
-            } else {
-                target_start = field.full_utf16_length;  // 强制越界 → 规划拒绝
-            }
-        }
-    }
-    const std::size_t target_end =
-        target_start + (readable ? plan.occurrence.utf16_length : 0);
-    const std::string field_full =
-        readable ? NormalizeVoiceEditLineBreaks(field.full_text) : std::string();
-    const auto kb =
-        readable ? PlanKeyboardSelection(field_full, target_start, target_end)
-                 : KeyboardSelectionPlan{};
-    if (!kb.ok) {
-        LogCoordinatorLine("voice targeted keyboard fallback unavailable readable=" +
-                           std::string(readable ? "1" : "0"));
-        LogVoiceEditFailure("selected_text", "field_mismatch");
-        RestoreCaretAndRejectFieldMismatch();
-        return;
-    }
-    LogCoordinatorLine("voice targeted keyboard fallback start anchor=" +
-                       std::string(kb.from_end ? "end" : "home") +
-                       " plain=" + std::to_string(kb.plain_moves) +
-                       " shifted=" + std::to_string(kb.shifted_moves));
-    // 键序列：锚点 1 键 + 无 Shift 平移 + Shift 选区（UI 线程解析，worker 只发键）。
-    std::vector<KeySpec> sequence;
-    const auto push = [&sequence](const char* spec_text) {
-        if (auto parsed = ParseKeySpec(spec_text)) sequence.push_back(*parsed);
-    };
-    push(kb.from_end ? "ctrl+end" : "ctrl+home");
-    const char* plain = kb.from_end ? "left" : "right";
-    const char* shifted = kb.from_end ? "shift+left" : "shift+right";
-    for (int i = 0; i < kb.plain_moves; ++i) push(plain);
-    for (int i = 0; i < kb.shifted_moves; ++i) push(shifted);
-    if (sequence.empty()) {
-        LogVoiceEditFailure("selected_text", "field_mismatch");
-        RestoreCaretAndRejectFieldMismatch();
-        return;
-    }
-    const auto alive = alive_;
-    std::thread([this, alive, generation, command, plan, exec,
-                 sequence = std::move(sequence)]() {
-        for (const auto& spec : sequence) {
-            input_injector_->SendKeyCombo(spec);
-            std::this_thread::sleep_for(std::chrono::milliseconds(12));
-        }
-        if (!alive->load()) return;
-        RunOnUiThread([this, alive, generation, command, plan, exec]() {
-            if (!alive->load()) return;
-            VerifyTargetedSelectionThenAct(command, plan, exec, generation,
-                                           /*attempt=*/0, /*via_keyboard_fallback=*/true);
-        });
-    }).detach();
-}
-
-// 整框重写兜底（第三层，优先于键盘兜底）：读全文 → 目标绝对区间（与键盘兜底
-// 同一换算）→ BuildWholeFieldReplacement 全文定位替换构造 → SetWholeText
-//（ValuePattern.SetValue）→ 200ms 后回 UI 线程复用 FinalizeVoiceTargetedEdit
-// 全文/尾窗终验。不依赖选区通道；SetWholeText 不可用（无 ValuePattern/只读/
-// 写失败）→ 落键盘选区兜底。
-void VoiceStickCoordinator::TryWholeFieldRewriteFallback(
-    const VoiceTargetedCommand& command, const VoiceTargetedPlan& plan,
-    const TargetedExecutionContext& exec, std::uint64_t generation) {
-    if (generation != voice_edit_generation_) return;
-    auto* editor = targeted_field_editor_.get();
-    VoiceEditFieldState field;
-    const bool readable =
-        focus_text_reader_ != nullptr && editor != nullptr &&
-        focus_text_reader_->ReadFocusedFieldFullText(&field) && field.readable &&
-        !field.full_truncated && !field.is_password;
-    std::size_t target_start = 0;
-    if (readable) {
-        if (exec.absolute_coords) {
-            target_start = plan.anchor_start_utf16 + plan.occurrence.utf16_start;
-        } else {
-            // 批次 1 尾窗换算（与键盘兜底同一公式；CRLF 口径假设同款，终验兜底）。
+            // 批次 1 尾窗换算（与计划期防御检查同一公式）。CRLF 字段上归一化偏移
+            // 与 UIA 原生偏移有漂移风险（口径假设与批次 2 绝对坐标同款）——全文
+            // 终验兜底。
             const std::size_t expected_tail_utf16 =
                 VoiceTargetedUtf16Length(plan.tail_prefix) + plan.remaining_utf16_length +
                 (plan.has_recorded_newline ? 1 : 0) +
@@ -1747,15 +1645,18 @@ void VoiceStickCoordinator::TryWholeFieldRewriteFallback(
         readable ? BuildWholeFieldReplacement(field_full, target_start, target_end,
                                               replacement)
                  : std::optional<std::string>{};
-    if (!rewritten.has_value() || !editor->SetWholeText(*rewritten)) {
-        LogCoordinatorLine("voice targeted whole-field rewrite unavailable readable=" +
+    // F' 为空串 = 删除目标覆盖全文：粘贴空串无动作，终验必失败——直接拒绝。
+    if (!rewritten.has_value() || rewritten->empty() ||
+        input_injector_ == nullptr) {
+        LogCoordinatorLine("voice targeted whole-field paste unavailable readable=" +
                            std::string(readable ? "1" : "0") +
                            " built=" + (rewritten.has_value() ? "1" : "0"));
-        // 整框写回不可用 → 落键盘选区兜底（选区读通道活着的目标）。
-        TryKeyboardSelectionFallback(command, plan, exec, generation);
+        LogVoiceEditFailure("selected_text", "field_mismatch");
+        RestoreCaretAndRejectFieldMismatch();
         return;
     }
-    LogCoordinatorLine("voice targeted whole-field rewrite applied full_len=" +
+    input_injector_->ReplaceAllWithPaste(*rewritten);
+    LogCoordinatorLine("voice targeted whole-field paste applied full_len=" +
                        std::to_string(rewritten->size()));
     // 终验（复用 FinalizeVoiceTargetedEdit；整框域传 F' 全文精确比对，批次 1
     // 尾窗沿用现成期望尾部公式——写回后尾窗内容照常匹配）。

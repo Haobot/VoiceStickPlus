@@ -1180,17 +1180,6 @@ public:
             std::wstring_view(field->doc).substr(field->sel_start, field->sel_len));
         return true;
     }
-    // 整框写回（ValuePattern.SetValue 兜底）：直接替换 fake 字段全文 + 光标回
-    // 末尾（真实编辑器行为）；set_whole_text_fails 模拟目标无 ValuePattern /
-    // readOnly / 写入失败。
-    bool SetWholeText(std::string_view utf8) override {
-        if (field == nullptr || set_whole_text_fails) return false;
-        ops->push_back("whole_text");
-        field->doc = Utf16FromUtf8ForTest(utf8);
-        field->sel_start = field->doc.size();
-        field->sel_len = 0;
-        return true;
-    }
 
     bool MoveCaretTo(std::size_t tail_relative_utf16) override {
         if (field == nullptr) return false;
@@ -1229,9 +1218,6 @@ public:
     // swallow_select：SelectTailRange/SelectAbsoluteRange 返回 true 但不落位选区
     // （模拟 Chromium UIA「S_OK no-op」，键盘选区兜底用例的触发开关）。
     bool swallow_select = false;
-    // set_whole_text_fails：模拟目标无 ValuePattern / readOnly / SetValue 失败
-    // （强制兜底层级落到键盘选区）。
-    bool set_whole_text_fails = false;
 };
 
 class VoiceTargetedInputInjector : public FakeInputInjector {
@@ -1257,66 +1243,22 @@ public:
             } else {
                 field->ApplyBackspace();
             }
-            return;
         }
-        if (field == nullptr) return;
-        // 键盘选区兜底序列落位（真实编辑器语义：非 Shift 移动折叠光标并更新锚；
-        // Shift 在锚基础上扩展/收缩选区）。
-        if (spec.display_text == "Ctrl+End") {
-            field->sel_start = field->doc.size() - (keyboard_drift ? 1 : 0);
-            field->sel_len = 0;
-            sel_anchor_ = field->sel_start;
-        } else if (spec.display_text == "Ctrl+Home") {
-            field->sel_start = 0;
-            field->sel_len = 0;
-            sel_anchor_ = 0;
-        } else if (spec.display_text == "Left") {
-            if (field->sel_len > 0) {
-                field->sel_len = 0;  // 折叠到选区起点
-            } else if (field->sel_start > 0) {
-                field->sel_start -= 1;
-            }
-            sel_anchor_ = field->sel_start;
-        } else if (spec.display_text == "Right") {
-            if (field->sel_len > 0) {
-                field->sel_start += field->sel_len;  // 折叠到选区终点
-                field->sel_len = 0;
-            } else if (field->sel_start < field->doc.size()) {
-                field->sel_start += 1;
-            }
-            sel_anchor_ = field->sel_start;
-        } else if (spec.display_text == "Shift+Left") {
-            if (field->sel_len == 0) {
-                if (field->sel_start > 0) {
-                    field->sel_start -= 1;
-                    field->sel_len = 1;
-                }
-            } else if (field->sel_start == sel_anchor_) {
-                field->sel_len -= 1;  // 向右选区收缩右端
-            } else {
-                field->sel_start -= 1;  // 向左选区扩大左端
-                field->sel_len += 1;
-            }
-        } else if (spec.display_text == "Shift+Right") {
-            if (field->sel_len == 0) {
-                if (field->sel_start < field->doc.size()) {
-                    field->sel_len = 1;  // 向右选 1（锚在左端）
-                }
-            } else if (field->sel_start == sel_anchor_) {
-                field->sel_len += 1;  // 向右选区扩大右端
-            } else {
-                field->sel_start += 1;  // 向左选区收缩左端
-                field->sel_len -= 1;
-            }
-        }
+    }
+    // 全选粘贴整框替换（Ctrl+A 语义固定=全选，无光标算术）：fake 直接落全文。
+    void ReplaceAllWithPaste(const std::string& text) override {
+        FakeInputInjector::ReplaceAllWithPaste(text);
+        if (paste_all_fails || field == nullptr) return;
+        ops->push_back("paste_all");
+        field->doc = Utf16FromUtf8ForTest(text);
+        field->sel_start = field->doc.size();
+        field->sel_len = 0;
     }
     VoiceTargetedFakeField* field = nullptr;
     std::vector<std::string>* ops = nullptr;
     bool swallow_backspace = false;
-    // keyboard_drift：Ctrl+End 锚点定位偏 1——模拟兜底键盘序列落位漂移
-    // （grapheme 算术错位形态），读回验证必失败 → 兜底拒绝路径。
-    bool keyboard_drift = false;
-    std::size_t sel_anchor_ = 0;  // 最近一次非 Shift 光标位（Shift 选区锚）
+    // paste_all_fails：模拟全选粘贴未落地（焦点错/粘贴被忽略）——兜底拒绝路径。
+    bool paste_all_fails = false;
 };
 
 class VoiceTargetedHarness {
@@ -1394,13 +1336,14 @@ public:
         asr_->on_final(text);
         return PumpUntil([this, text] { return input_.pasted_text == text; });
     }
-    bool RunCommand(const std::string& command_text, std::uint32_t session_id) {
+    bool RunCommand(const std::string& command_text, std::uint32_t session_id,
+                    int timeout_ms = 3000) {
         const std::size_t toasts_before = ui_.timed_messages.size();
         RecordAndStop(session_id);
         asr_->on_final(command_text);
-        return PumpUntil([this, toasts_before] {
-            return ui_.timed_messages.size() > toasts_before;
-        });
+        return PumpUntil(
+            [this, toasts_before] { return ui_.timed_messages.size() > toasts_before; },
+            timeout_ms);
     }
     // 直通协调器 UpdateConfig（清注入记录 + 代际 +1）：测试里唯一能赶在 200ms
     // 终验窗口前使在途回调变 stale 的触发源（会话路径受 500ms 最短时长约束）。
@@ -1569,7 +1512,7 @@ void TestTargetedCoordinatorReadbackPollExhausts() {
     // 成功 → 终验通过（Finalize 光标恢复落字段末尾 → fake 记 "end"）。
     assert((harness.ops() ==
             std::vector<std::string>{"select", "read", "read", "read", "read", "read",
-                                     "whole_text", "end"}));
+                                     "paste_all", "end"}));
     assert(harness.field().doc == L"我去上班");
     std::string expected_deleted = Tr(StringId::kVoiceTargetedDeleted, harness.language());
     {
@@ -1597,8 +1540,8 @@ void TestTargetedCoordinatorWholeFieldRewriteSucceeds() {
     harness.editor().swallow_select = true;
     harness.ops().clear();
     assert(harness.RunCommand("删除刚才的北京", 282));
-    // UIA 选区写耗尽（read×5）→ 整框重写（whole_text）→ 终验通过。
-    assert(std::find(harness.ops().begin(), harness.ops().end(), "whole_text") !=
+    // UIA 选区写耗尽（read×5）→ 全选粘贴整框替换（paste_all）→ 终验通过。
+    assert(std::find(harness.ops().begin(), harness.ops().end(), "paste_all") !=
            harness.ops().end());
     assert(harness.field().doc == L"我去上班");
     std::string expected = Tr(StringId::kVoiceTargetedDeleted, harness.language());
@@ -1617,64 +1560,7 @@ void TestTargetedCoordinatorWholeFieldRewriteSucceeds() {
     assert(harness.field().doc == L"我去");
 }
 
-// 键盘选区兜底（Chromium UIA Select() 写不落地，2026-11-04 复测 got_len=0 实锤）：
-// UIA 写路径读回耗尽 → 键盘序列选区 → 读回命中 → 执行动作（验证不过绝不盲改）。
-void TestTargetedCoordinatorKeyboardFallbackSucceeds() {
-    AppConfig config = AppConfig::Defaults();
-    config.refine_enabled = false;
-    config.auto_enter = false;
-    VoiceTargetedHarness harness(config);
-    assert(harness.PasteText("我去北京上班", 261));
-    harness.editor().swallow_select = true;
-    harness.editor().set_whole_text_fails = true;  // 整框重写不可用 → 强制落键盘兜底
-    harness.ops().clear();
-    assert(harness.RunCommand("删除刚才的北京", 262));
-    // 「我去北京上班」G=6 target[2,4)：末尾锚 → Ctrl+End + Left×2（移到右端）+
-    // Shift+Left×2（选中 [2,4)）→ 读回命中 → Backspace。fake 键盘落位使读回真实命中。
-    const std::vector<std::string> expected_seq = {
-        "Ctrl+End", "Left", "Left", "Shift+Left", "Shift+Left", "Backspace"};
-    assert(harness.input().sent_key_combos.size() >= expected_seq.size());
-    assert(std::equal(expected_seq.begin(), expected_seq.end(),
-                      harness.input().sent_key_combos.begin()));
-    assert(harness.field().doc == L"我去上班");
-    std::string expected = Tr(StringId::kVoiceTargetedDeleted, harness.language());
-    const auto marker = expected.find("%d");
-    expected.replace(marker, 2, "2");
-    assert(harness.ui().timed_messages.back() == TargetedToast(expected.c_str()));
-    // 记录保留：swallow 解除后回归 UIA 原生路径（原生目标零回归底线）。
-    harness.editor().swallow_select = false;
-    harness.ops().clear();
-    assert(harness.RunCommand("删除刚才的上班", 263));
-    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "end"}));
-    assert(harness.field().doc == L"我去");
-}
-
-// 兜底验证失败（锚点漂移形态）：键盘选区落位不符 → 读回耗尽 → Ctrl+End 恢复 +
-// fieldMismatch；零改动、记录保留（安全模型：验证不过绝不盲改）。
-void TestTargetedCoordinatorKeyboardFallbackVerifyFails() {
-    AppConfig config = AppConfig::Defaults();
-    config.refine_enabled = false;
-    config.auto_enter = false;
-    VoiceTargetedHarness harness(config);
-    assert(harness.PasteText("我去北京上班", 271));
-    harness.editor().swallow_select = true;
-    harness.editor().set_whole_text_fails = true;  // 整框重写不可用 → 落键盘兜底
-    harness.input().keyboard_drift = true;
-    harness.ops().clear();
-    assert(harness.RunCommand("删除刚才的北京", 272));
-    assert(std::find(harness.ops().begin(), harness.ops().end(), "backspace") ==
-           harness.ops().end());
-    assert(harness.field().doc == L"我去北京上班");  // 零改动
-    assert(harness.ui().timed_messages.back() ==
-           TargetedToast(Tr(StringId::kVoiceTargetedTextChanged, harness.language()).c_str()));
-    // 记录保留：drift 关闭后同命令重试，兜底直接生效。
-    harness.input().keyboard_drift = false;
-    harness.ops().clear();
-    assert(harness.RunCommand("删除刚才的北京", 273));
-    assert(harness.field().doc == L"我去上班");
-}
-
-// 全兜底失败（无 ValuePattern + 键盘锚点漂移）：Ctrl+End 恢复 + fieldMismatch，
+// 全兜底失败（全选粘贴未落地）：Ctrl+End 恢复 + fieldMismatch，
 // 零改动、记录保留（安全模型：验证不过绝不盲改）。
 void TestTargetedCoordinatorAllFallbacksFailRejects() {
     AppConfig config = AppConfig::Defaults();
@@ -1683,21 +1569,20 @@ void TestTargetedCoordinatorAllFallbacksFailRejects() {
     VoiceTargetedHarness harness(config);
     assert(harness.PasteText("我去北京上班", 291));
     harness.editor().swallow_select = true;
-    harness.editor().set_whole_text_fails = true;
-    harness.input().keyboard_drift = true;
+    harness.input().paste_all_fails = true;
     harness.ops().clear();
-    assert(harness.RunCommand("删除刚才的北京", 292));
+    assert(harness.RunCommand("删除刚才的北京", 292, 6000));
     assert(std::find(harness.ops().begin(), harness.ops().end(), "backspace") ==
            harness.ops().end());
     assert(harness.field().doc == L"我去北京上班");  // 零改动
+    // 粘贴未落地 = still_old → 记录保留 + 「结果未确认」提示（窗末分类语义）。
     assert(harness.ui().timed_messages.back() ==
-           TargetedToast(Tr(StringId::kVoiceTargetedTextChanged, harness.language()).c_str()));
+           TargetedToast(Tr(StringId::kVoiceTargetedUnconfirmed, harness.language()).c_str()));
     // 记录保留：开关全关后同命令重试，UIA 原生路径直接生效。
     harness.editor().swallow_select = false;
-    harness.editor().set_whole_text_fails = false;
-    harness.input().keyboard_drift = false;
+    harness.input().paste_all_fails = false;
     harness.ops().clear();
-    assert(harness.RunCommand("删除刚才的北京", 293));
+    assert(harness.RunCommand("删除刚才的北京", 293, 3000));
     assert(harness.field().doc == L"我去上班");
 }
 
@@ -2330,60 +2215,6 @@ void TestTargetedCursorRestore() {
     assert(MapWholeFieldEditToRemaining("我去北京上班", 2, 2, "上海") == "我去上海上班");
 }
 
-// 键盘选区兜底规划（grapheme 口径 + 双锚事件数取短；Chromium UIA Select() 写
-// 不落地场景，对齐 macOS「AX 写彻底不可用目标的最后手段」）。
-void TestKeyboardSelectionPlanner() {
-    // 纯中文中段目标，两端事件数平局 → 取末尾锚。
-    // 「我去北京上班」G=6，target[2,4)：from_end=1+2+2=5；from_home=1+2+2=5。
-    {
-        const auto plan = PlanKeyboardSelection("我去北京上班", 2, 4);
-        assert(plan.ok && plan.from_end);
-        assert(plan.plain_moves == 6 - 4);      // Left 移到目标右端 ge
-        assert(plan.shifted_moves == 4 - 2);    // Shift+Left 选中 [gs,ge)
-    }
-    // 目标靠近末尾：末尾锚事件更少。「我去北京上班吃烤鸭」= 9 字 G=9，
-    // target[6,9)「吃烤鸭」：from_end=1+0+3=4 < from_home=1+6+3=10。
-    {
-        const auto plan = PlanKeyboardSelection("我去北京上班吃烤鸭", 6, 9);
-        assert(plan.ok && plan.from_end);
-        assert(plan.plain_moves == 0);
-        assert(plan.shifted_moves == (9 - 9) + 3);
-    }
-    // emoji 尾缀（surrogate 对 = 1 簇 2 码元）使末尾变贵 → 取首锚。
-    // 「我去北京上班🎉」G=7，target[2,4)：from_end=1+3+2=6 > from_home=1+2+2=5。
-    {
-        const auto plan = PlanKeyboardSelection("我去北京上班\xF0\x9F\x8E\x89", 2, 4);
-        assert(plan.ok && !plan.from_end);
-        assert(plan.plain_moves == 2);
-        assert(plan.shifted_moves == 2);
-    }
-    // CRLF 归一为 LF 的字段：\n 自成 1 簇。「你好\n世界」G=5，target[3,5)：
-    // from_end=1+0+2=3 < from_home=1+3+2=6。
-    {
-        const auto plan = PlanKeyboardSelection("你好\n世界", 3, 5);
-        assert(plan.ok && plan.from_end);
-        assert(plan.plain_moves == 0);
-        assert(plan.shifted_moves == 2);
-    }
-    // 区间越界（UTF-16 超全文长度）→ 拒绝。
-    assert(!PlanKeyboardSelection("我去上班", 2, 99).ok);
-    // 起点/终点落在 surrogate 对中间（非 grapheme 边界）→ 拒绝（选区算术会漂）。
-    {
-        const std::string emoji = "\xF0\x9F\x8E\x89\xE5\x8E\xBB";  // 🎉去（u16 长 3）
-        assert(!PlanKeyboardSelection(emoji, 1, 3).ok);   // u16=1 在 🎉 内
-        assert(PlanKeyboardSelection(emoji, 0, 3).ok);    // u16=3 = 全文末尾（合法边界）
-        assert(PlanKeyboardSelection(emoji, 0, 2).ok);    // u16=2 = 🎉|去 簇边界
-    }
-    // 双端事件数都超上限（超长字段 + 居中目标）→ 不可行。
-    {
-        const std::string huge(5000, 'a');
-        assert(!PlanKeyboardSelection(huge, 2500, 2501).ok);
-    }
-    // 空区间 / 倒序 → 拒绝。
-    assert(!PlanKeyboardSelection("我去上班", 2, 2).ok);
-    assert(!PlanKeyboardSelection("我去上班", 4, 2).ok);
-}
-
 // 整框重写替换构造（全文定位 + 簇边界精确切片；ValuePattern.SetValue 兜底用）。
 void TestWholeFieldReplacement() {
     // 中文替换：「我去北京上班」[2,4)→「上海」=「我去上海上班」。
@@ -2535,7 +2366,6 @@ void RunVoiceEditTests() {
     TestTargetedPositionParse();
     TestTargetedDomainResolve();
     TestTargetedCursorRestore();
-    TestKeyboardSelectionPlanner();
     TestWholeFieldReplacement();
     TestVoiceEditOrdinalReply();
     TestVoiceEditUndoPhraseAndFallback();
@@ -2553,8 +2383,6 @@ void RunVoiceEditTests() {
     TestTargetedCoordinatorKeepsAutoEnterNewline();
     TestTargetedCoordinatorReadbackPollConverges();
     TestTargetedCoordinatorReadbackPollExhausts();
-    TestTargetedCoordinatorKeyboardFallbackSucceeds();
-    TestTargetedCoordinatorKeyboardFallbackVerifyFails();
     TestTargetedCoordinatorAllFallbacksFailRejects();
     TestTargetedCoordinatorWholeFieldRewriteSucceeds();
     TestTargetedCoordinatorFinalVerifyFailsInvalidates();

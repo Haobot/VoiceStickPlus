@@ -637,55 +637,7 @@ VoiceTargetedPlan PlanVoiceTargetedAnchored(const VoiceTargetedCommand& command,
     return plan;
 }
 
-// 键盘选区兜底规划（Chromium UIA Select() 写不落地场景）：grapheme 表精确边界
-// 匹配（目标区间落在簇中间一律拒绝——选区算术会漂，交给读回验证前的硬门）；
-// 末尾锚/首锚双方案按总事件数取短。方向键按 grapheme 口径计数，emoji surrogate /
-// 组合字符 / CRLF（归一后 LF，1 簇）偏移不漂。
-KeyboardSelectionPlan PlanKeyboardSelection(std::string_view field_full_utf8,
-                                            std::size_t target_start_utf16,
-                                            std::size_t target_end_utf16) {
-    KeyboardSelectionPlan plan;
-    if (target_start_utf16 >= target_end_utf16) return plan;
-    const auto graphemes = utf8::SplitGraphemes(field_full_utf8);
-    // grapheme index → UTF-16 offset 逐簇累加；目标边界必须精确命中簇边界。
-    std::optional<std::size_t> gs, ge;
-    std::size_t utf16_offset = 0;
-    for (std::size_t i = 0; i < graphemes.size() && (!gs.has_value() || !ge.has_value());
-         ++i) {
-        if (utf16_offset == target_start_utf16) gs = i;
-        if (utf16_offset == target_end_utf16) ge = i;
-        utf16_offset += utf8::Utf16Length(
-            field_full_utf8.substr(graphemes[i].offset, graphemes[i].length));
-    }
-    if (utf16_offset == target_start_utf16) gs = graphemes.size();
-    if (utf16_offset == target_end_utf16) ge = graphemes.size();
-    if (!gs.has_value() || !ge.has_value()) return plan;  // 非簇边界 / 越界
-    const std::size_t G = graphemes.size();
-    // 末尾锚：Ctrl+End → Left ×(G-ge)（光标移到目标右端 ge）→ Shift+Left ×(ge-gs)
-    //（锚在 ge 向左选中 [gs,ge)）。首锚：Ctrl+Home → Right ×gs → Shift+Right
-    // ×(ge-gs)（锚在 gs 向右选中 [gs,ge)）。Shift 方向键只朝锚反方向移动（锚
-    // 固定），不存在「先扩后缩」——收缩需要反向 Shift 键，锚语义不支持。
-    const int end_anchor =
-        1 + static_cast<int>(G - *ge) + static_cast<int>(*ge - *gs);
-    const int home_anchor = 1 + static_cast<int>(*gs) + static_cast<int>(*ge - *gs);
-    if (end_anchor <= home_anchor) {
-        plan.from_end = true;
-        plan.plain_moves = static_cast<int>(G - *ge);
-        plan.shifted_moves = static_cast<int>(*ge - *gs);
-    } else {
-        plan.from_end = false;
-        plan.plain_moves = static_cast<int>(*gs);
-        plan.shifted_moves = static_cast<int>(*ge - *gs);
-    }
-    constexpr int kKeyboardSelectionMaxEvents = 2048;
-    if (1 + plan.plain_moves + plan.shifted_moves > kKeyboardSelectionMaxEvents) {
-        return KeyboardSelectionPlan{};  // 双端都超上限：兜底不可行
-    }
-    plan.ok = true;
-    return plan;
-}
-
-// 整框重写替换构造：与 PlanKeyboardSelection 同款簇表边界匹配（落在簇中间 /
+// 整框替换构造：簇表边界精确匹配（落在簇中间 /
 // 越界 → nullopt，防字素切坏），切片 前段 + replacement + 后段。
 std::optional<std::string> BuildWholeFieldReplacement(std::string_view field_full_utf8,
                                                       std::size_t target_start_utf16,
