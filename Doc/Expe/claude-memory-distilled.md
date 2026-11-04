@@ -549,6 +549,10 @@ CER：UTF-8 按字符拆分+编辑距离 DP；数字/中英混合语料 CER 不�
 
 targeted 替换在 Chromium 系目标（Electron AXTextArea/浏览器 textarea）必败的根因：**AX 选区/光标写入（kAXSelectedTextRange）经 renderer 异步生效**，写调用返回 success 但立即读回拿到写入前旧值 → 验证式注入判「读回不符」零改动放弃（听写正文是 Cmd+V 粘贴填充故必踩；原生应用同步生效，原生目标验收测不出）。修法=读回与终验小步轮询（只追加读操作，耗尽才走拒绝路径，安全模型不变）。同构律：**平台返回的成功 ≠ 对端可见**（BLE CCCD 订阅假成功 §3.15 同族）。附带教训：执行环节静默路径必须补日志（本次 `voice_targeted action=` 后零日志是排障黑洞，已闭环 §7.5 引用文档待办第 3 条）；注入/AX 类功能验收必须覆盖一个 Electron/浏览器目标（原生目标通过≠Chromium 可用）。详见 `Doc/Expe/targeted-replace-chromium-ax-async-write-2026-10-29.md`。
 
+### 7.8 发布轨道与 CHANGELOG 纪律（2026-11-04）
+
+**发布轨道定案**：main 分支 + Mac 直接 `gh release create --latest`（三信号握手：tag→8 件→12 件；Windows 独揽 MSI/COS/网页）——预签名轨道（publish-mac.yml stage/finalize）废弃（finalize 从未成功过，Pages environment 拒 ci/*）。律：**等待侧长无信号 ≠ 失败**（本轮 Windows 停滞 6h20m 后完成），只如实汇报不代做对方职责；`build-macos.sh` 会原地盖源 Info.plist 版本戳且不恢复（每次构建从 VERSION 重盖，零功能影响），按「bump 只改两文件」约定构建后 checkout 恢复。**CHANGELOG 归段唯一标准 = `git tag --contains` 的最早 tag**（写作位置/时间不可信；message grep 常命中后续提交，用核心文件首笔历史 `--diff-filter=A` 定位）；「入库版本」≠「分发版本」按用户首次可获取归段并注记；段名必须先验 tag 存在（v2.3.8 伪段教训）；发布时 Unreleased 随手毕业 + tag 列表 vs 段列表 diff 对账。详见 `Doc/Expe/release-250-dual-machine-direct-gh-2026-11-04.md` 与 `Doc/Expe/changelog-structure-reconciliation-2026-11-04.md`。
+
 ---
 
 ## 8. 遗留待办 / 待真机验证项
@@ -657,3 +661,4 @@ targeted 替换在 Chromium 系目标（Electron AXTextArea/浏览器 textarea�
 - **本地精修/ASR 选型先看形态再看模型（2026-10-28）**：判据=整句重写后 CER 不降反升（小模型改写正确文本、代词翻转）⇒ 形态错，换 editform 编辑指令+守卫；本地 ASR 公开榜排名无效（whisper 小档真机音频 CER≥16%），认 SenseVoice int8（40ms/条）。数据与复现：`Doc/Test/local-fullstack-eval-2026-10-28.md`、`scripts/local_model_eval/`。
 - **资源持有类对象绝不进 weak + 生产构造测试盲区（2026-10-29）**：macOS 本地 ASR 上线即卡 listening——引擎只被 ctx weak 持有，start 返回即释放，sendOggOpusChunk 守卫静默丢音频；状态机单测全走 engineOverride 注入零覆盖该路径。判据=回放 DebugAudio 会话（Tools/AsrReplayCli）零回调、日志零记录。另：git 走代理被断时用 SwiftPM 全局缓存镜像 + GIT_CONFIG_COUNT 注入 insteadOf 离线构建（mirror 目录带 .git、base 不带）。详见 `Doc/Expe/local-llm-alignment-task-shape-lessons-2026-10-28.md` 追加二。
 - **语音输入 targeted 替换「命中却零变化」（2026-10-29）**：AX 选区/光标写入在 Chromium 系目标经 renderer 异步生效，写后立即读回必拿旧值 → 验证式注入误判「读回不符」放弃；修=读回/终验小步轮询。律：**平台写成功 ≠ 已落地**，带验证的注入必须轮询确认；验收必须覆盖 Electron/浏览器目标。判据：`voice_targeted action=...` 后零日志=执行环节静默失败。详见 `Doc/Expe/targeted-replace-chromium-ax-async-write-2026-10-29.md`。
+- **发布轨道与 CHANGELOG 对账（2026-11-04）**：main 分支 + Mac 直接 gh 建 Release（预签名轨道废弃）；Windows 长无信号 ≠ 失败（6h20m 停滞仍完成），绝不代做对方职责；build-macos.sh 原地盖源 Info.plist 版本戳（构建后 checkout 恢复）。CHANGELOG 归段唯一标准=`git tag --contains` 最早 tag；条目定位用核心文件首笔历史（`--diff-filter=A`），message grep 不可靠；「入库版本」≠「分发版本」按分发归段；发布时 Unreleased 随手毕业 + tag/段列表 diff 对账（本次挖出：两流浪 Unreleased、v2.4.10 段错位、v2.4.0~2.4.6 整线缺段、v2.3.8 伪段）。详见 `Doc/Expe/release-250-dual-machine-direct-gh-2026-11-04.md` 与 `Doc/Expe/changelog-structure-reconciliation-2026-11-04.md`。

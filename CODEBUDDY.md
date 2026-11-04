@@ -84,7 +84,7 @@ macOS 桌面端另含 vendored `COpus` C target（xiph/opus v1.5.2，与 `deskto
 - `.gitignore` 整体忽略 `desktop/windows/`：提交 Windows 源码必须 `git add -f`，并用 `git ls-files <path>` 逐个验证新文件已被跟踪（教训：f75af4f5 曾因漏提交导致全新克隆无法构建）。
 - Windows 构建目录统一用 `desktop/windows/build-x64`；旧 `desktop/windows/build` 可能混入错误 VS/SDK 缓存。
 - 搜索仓库时排除 `website/node_modules/` 和 `firmware/build/`。
-- 同步规则：改网站 UI 文案同步 `website/src/i18n/zh-CN.json` + `en-US.json`；改 `README.md` 同步 `README.zh-CN.md`；改 `VERSION` 同步 `firmware/version.txt`；改协议同步 `Doc/Ref/protocol.md` 与全部实现端。
+- 同步规则：改网站 UI 文案同步 `website/src/i18n/zh-CN.json` + `en-US.json`；改 `README.md` 同步 `README.zh-CN.md`；改 `VERSION` 同步 `firmware/version.txt`；改协议同步 `Doc/Ref/protocol.md` 与全部实现端；发布时 CHANGELOG 的 `## Unreleased` 随手毕业进新版本段（条目归段以 `git tag --contains` 首发版本为准，段序新→旧，方法见 `Doc/Expe/changelog-structure-reconciliation-2026-11-04.md`）。
 - `Doc/` 子目录语义：`Ref/`（协议/配置/流程等事实参考）、`Plan/`（设计方案）、`Guide/`（第三方服务接入指南）、`Expe/`（经验教训）、`Agent/`（面向 AI 助手的工作知识，即本 Hub 的扩展文档）。历史根目录 `docs/superpowers/` 已于 r142 移除（历史见 git），新设计方案一律放 `Doc/Plan/`。
 - 根目录 .bat 仅存 `build_win.bat`（文档构建入口）与 `do_build.bat`（r142 清理：其余 7 个历史/残留脚本已删除，见 git 历史；`do_build` 与 `desktop\windows\build.bat` 含本机绝对路径或固定版本号，复用前先检查内容）；根目录散落的 `*.log`、`%BUILD_LOG%` 等是构建残留日志，不是源码。
 - Windows 构建若报 `C1083: winrt/base.h` 找不到：`build_win.bat` 已用 SDK 自带 `cppwinrt.exe` 生成投影头到 `desktop/windows/generated_winrt/`（gitignored）并 prepend 到 `INCLUDE`；手动 vcvars64 构建时须同样加入。
