@@ -193,6 +193,15 @@ KeyboardSelectionPlan PlanKeyboardSelection(std::string_view field_full_utf8,
                                             std::size_t target_start_utf16,
                                             std::size_t target_end_utf16);
 
+// 整框重写兜底：全文定位替换构造（Chromium 目标选区读写通道全死时，以
+// ValuePattern.SetValue 写回整个字段——用户语义「对整个输入框内容进行编辑，
+// 不依赖语音输入内容」）。目标区间必须精确命中 grapheme 边界（落在簇中间 /
+// 越界 → nullopt，防字素切坏）；delete 传空 replacement。
+std::optional<std::string> BuildWholeFieldReplacement(std::string_view field_full_utf8,
+                                                      std::size_t target_start_utf16,
+                                                      std::size_t target_end_utf16,
+                                                      std::string_view replacement);
+
 // 批次 1 新签名（字段内锚定）：协调器先用 LocateVoiceEditAnchor 定出锚点（tail
 // 窗口内 UTF-16 偏移）再带锚进计划——锚已保证 anchored 段在字段中精确成立，
 // 本函数只复用可读性守卫，不重复做后缀校验。field_readable=false → 拒绝。

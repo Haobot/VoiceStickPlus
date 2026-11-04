@@ -1534,9 +1534,10 @@ void VoiceStickCoordinator::VerifyTargetedSelectionThenAct(
             return;
         }
         if (!via_keyboard_fallback) {
-            // UIA 写路径耗尽 → 降级键盘选区兜底（Chromium UIA Select() S_OK 不
-            // 落地目标上唯一可靠的选区手段；一次机会，兜底验证再失败即拒绝）。
-            TryKeyboardSelectionFallback(command, plan, exec, generation);
+            // UIA 写路径耗尽 → 降级整框重写（ValuePattern.SetValue，不依赖选区
+            // 通道）；其不可用时内部自动落键盘选区兜底（一次机会，验证再失败即
+            // 拒绝）。
+            TryWholeFieldRewriteFallback(command, plan, exec, generation);
             return;
         }
         // 兜底验证也耗尽：Ctrl+End 恢复安全光标，零删除/零粘贴；字段文本未被
@@ -1700,6 +1701,87 @@ void VoiceStickCoordinator::TryKeyboardSelectionFallback(
             if (!alive->load()) return;
             VerifyTargetedSelectionThenAct(command, plan, exec, generation,
                                            /*attempt=*/0, /*via_keyboard_fallback=*/true);
+        });
+    }).detach();
+}
+
+// 整框重写兜底（第三层，优先于键盘兜底）：读全文 → 目标绝对区间（与键盘兜底
+// 同一换算）→ BuildWholeFieldReplacement 全文定位替换构造 → SetWholeText
+//（ValuePattern.SetValue）→ 200ms 后回 UI 线程复用 FinalizeVoiceTargetedEdit
+// 全文/尾窗终验。不依赖选区通道；SetWholeText 不可用（无 ValuePattern/只读/
+// 写失败）→ 落键盘选区兜底。
+void VoiceStickCoordinator::TryWholeFieldRewriteFallback(
+    const VoiceTargetedCommand& command, const VoiceTargetedPlan& plan,
+    const TargetedExecutionContext& exec, std::uint64_t generation) {
+    if (generation != voice_edit_generation_) return;
+    auto* editor = targeted_field_editor_.get();
+    VoiceEditFieldState field;
+    const bool readable =
+        focus_text_reader_ != nullptr && editor != nullptr &&
+        focus_text_reader_->ReadFocusedFieldFullText(&field) && field.readable &&
+        !field.full_truncated && !field.is_password;
+    std::size_t target_start = 0;
+    if (readable) {
+        if (exec.absolute_coords) {
+            target_start = plan.anchor_start_utf16 + plan.occurrence.utf16_start;
+        } else {
+            // 批次 1 尾窗换算（与键盘兜底同一公式；CRLF 口径假设同款，终验兜底）。
+            const std::size_t expected_tail_utf16 =
+                VoiceTargetedUtf16Length(plan.tail_prefix) + plan.remaining_utf16_length +
+                (plan.has_recorded_newline ? 1 : 0) +
+                VoiceTargetedUtf16Length(plan.anchor_after_text);
+            target_start = field.full_utf16_length >= expected_tail_utf16
+                               ? field.full_utf16_length - expected_tail_utf16 +
+                                     plan.anchor_start_utf16 + plan.occurrence.utf16_start
+                               : field.full_utf16_length;  // 强制越界 → 构造拒绝
+        }
+    }
+    const std::size_t target_end =
+        target_start + (readable ? plan.occurrence.utf16_length : 0);
+    const std::string field_full =
+        readable ? NormalizeVoiceEditLineBreaks(field.full_text) : std::string();
+    const std::string replacement =
+        plan.action.kind == VoiceTargetedActionKind::kDelete ? std::string()
+                                                             : command.action.replacement;
+    const auto rewritten =
+        readable ? BuildWholeFieldReplacement(field_full, target_start, target_end,
+                                              replacement)
+                 : std::optional<std::string>{};
+    if (!rewritten.has_value() || !editor->SetWholeText(*rewritten)) {
+        LogCoordinatorLine("voice targeted whole-field rewrite unavailable readable=" +
+                           std::string(readable ? "1" : "0") +
+                           " built=" + (rewritten.has_value() ? "1" : "0"));
+        // 整框写回不可用 → 落键盘选区兜底（选区读通道活着的目标）。
+        TryKeyboardSelectionFallback(command, plan, exec, generation);
+        return;
+    }
+    LogCoordinatorLine("voice targeted whole-field rewrite applied full_len=" +
+                       std::to_string(rewritten->size()));
+    // 终验（复用 FinalizeVoiceTargetedEdit；整框域传 F' 全文精确比对，批次 1
+    // 尾窗沿用现成期望尾部公式——写回后尾窗内容照常匹配）。
+    std::string expected;
+    std::string pre_action;
+    if (exec.absolute_coords) {
+        expected = *rewritten;
+        pre_action = field_full;  // 动作前全文（窗末 still_old 分类用）
+    } else {
+        expected = plan.tail_prefix + plan.new_remaining_text +
+                   (plan.has_recorded_newline ? "\n" : "") + plan.anchor_after_text;
+        pre_action = last_injection_.has_value()
+                         ? plan.tail_prefix + last_injection_->remaining_text +
+                               (plan.has_recorded_newline ? "\n" : "") +
+                               plan.anchor_after_text
+                         : std::string();
+    }
+    const auto alive = alive_;
+    std::thread([this, alive, generation, plan, command, exec, expected, pre_action]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        if (!alive->load()) return;
+        RunOnUiThread([this, alive, generation, plan, command, exec, expected,
+                       pre_action]() {
+            if (!alive->load()) return;
+            FinalizeVoiceTargetedEdit(generation, plan, expected, pre_action, command,
+                                      exec, 0);
         });
     }).detach();
 }

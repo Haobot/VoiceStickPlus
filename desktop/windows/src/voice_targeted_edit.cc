@@ -685,4 +685,32 @@ KeyboardSelectionPlan PlanKeyboardSelection(std::string_view field_full_utf8,
     return plan;
 }
 
+// 整框重写替换构造：与 PlanKeyboardSelection 同款簇表边界匹配（落在簇中间 /
+// 越界 → nullopt，防字素切坏），切片 前段 + replacement + 后段。
+std::optional<std::string> BuildWholeFieldReplacement(std::string_view field_full_utf8,
+                                                      std::size_t target_start_utf16,
+                                                      std::size_t target_end_utf16,
+                                                      std::string_view replacement) {
+    if (target_start_utf16 >= target_end_utf16) return std::nullopt;
+    const auto graphemes = utf8::SplitGraphemes(field_full_utf8);
+    std::optional<std::size_t> start_byte, end_byte;
+    std::size_t utf16_offset = 0;
+    for (std::size_t i = 0;
+         i < graphemes.size() && (!start_byte.has_value() || !end_byte.has_value()); ++i) {
+        if (utf16_offset == target_start_utf16) start_byte = graphemes[i].offset;
+        if (utf16_offset == target_end_utf16) end_byte = graphemes[i].offset;
+        utf16_offset += utf8::Utf16Length(
+            field_full_utf8.substr(graphemes[i].offset, graphemes[i].length));
+    }
+    if (utf16_offset == target_start_utf16) start_byte = field_full_utf8.size();
+    if (utf16_offset == target_end_utf16) end_byte = field_full_utf8.size();
+    if (!start_byte.has_value() || !end_byte.has_value()) return std::nullopt;
+    std::string out;
+    out.reserve(field_full_utf8.size() - (*end_byte - *start_byte) + replacement.size());
+    out.append(field_full_utf8.substr(0, *start_byte));
+    out.append(replacement);
+    out.append(field_full_utf8.substr(*end_byte));
+    return out;
+}
+
 }  // namespace voicestick

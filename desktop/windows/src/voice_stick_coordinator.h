@@ -785,6 +785,15 @@ private:
                                       const VoiceTargetedPlan& plan,
                                       const TargetedExecutionContext& exec,
                                       std::uint64_t generation);
+    // 整框重写兜底（第三层，2026-11-04 优先于键盘兜底）：Chromium 目标选区读写
+    // 通道全死（Select() S_OK 不落地 + GetSelection 恒空）时，读全文 → 全文定位
+    // 替换构造（BuildWholeFieldReplacement）→ ValuePattern.SetValue 写回 → 全文
+    // 终验——不依赖选区通道，即「对整个输入框内容进行编辑」的用户语义。
+    // SetWholeText 不可用时落键盘选区兜底。
+    void TryWholeFieldRewriteFallback(const VoiceTargetedCommand& command,
+                                      const VoiceTargetedPlan& plan,
+                                      const TargetedExecutionContext& exec,
+                                      std::uint64_t generation);
     // 单次动作执行 + 延时终验（UIA 读回命中与兜底读回命中两条路共用）。
     void ExecuteTargetedActionAndVerify(const VoiceTargetedCommand& command,
                                         const VoiceTargetedPlan& plan,

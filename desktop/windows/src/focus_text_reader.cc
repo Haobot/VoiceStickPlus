@@ -65,6 +65,17 @@ std::string Utf8FromUtf16(std::wstring_view text) {
     return out;
 }
 
+std::wstring Utf16FromUtf8(std::string_view text) {
+    if (text.empty()) return {};
+    const int length = MultiByteToWideChar(CP_UTF8, 0, text.data(),
+                                           static_cast<int>(text.size()), nullptr, 0);
+    if (length <= 0) return {};
+    std::wstring out(static_cast<std::size_t>(length), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                        out.data(), length);
+    return out;
+}
+
 class FocusTextReaderWin : public IFocusTextReader {
 public:
     bool ReadFocusedField(VoiceEditFieldState* out) override {
@@ -526,6 +537,33 @@ public:
             SysFreeString(selected);
         }
         return true;
+    }
+
+    // ---- 整框写回（ValuePattern.SetValue；见头文件注释）----
+    bool SetWholeText(std::string_view utf8) override {
+        ComPtr<IUIAutomation> automation;
+        HRESULT hr = CoCreateInstance(
+            __uuidof(CUIAutomation8), nullptr, CLSCTX_INPROC_SERVER,
+            __uuidof(IUIAutomation), reinterpret_cast<void**>(automation.Put()));
+        if (FAILED(hr) || !automation) return false;
+        ComPtr<IUIAutomationElement> focused;
+        hr = automation->GetFocusedElement(focused.Put());
+        if (FAILED(hr) || !focused) return false;
+        ComPtr<IUIAutomationValuePattern> value_pattern;
+        hr = focused->GetCurrentPatternAs(UIA_ValuePatternId,
+                                          __uuidof(IUIAutomationValuePattern),
+                                          reinterpret_cast<void**>(value_pattern.Put()));
+        if (FAILED(hr) || !value_pattern) return false;
+        BOOL read_only = TRUE;
+        hr = value_pattern->get_CurrentIsReadOnly(&read_only);
+        if (SUCCEEDED(hr) && read_only) return false;
+        const std::wstring wide = Utf16FromUtf8(utf8);
+        if (wide.empty()) return false;
+        BSTR value = SysAllocStringLen(wide.data(), static_cast<UINT>(wide.size()));
+        if (value == nullptr) return false;
+        hr = value_pattern->SetValue(value);
+        SysFreeString(value);
+        return SUCCEEDED(hr);
     }
 
     bool MoveCaretTo(std::size_t tail_relative_utf16) override {
