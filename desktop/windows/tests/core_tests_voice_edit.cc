@@ -561,6 +561,21 @@ void TestCaretDeleteLocators() {
     // 边界：空文本 / 光标越界 → invalid。
     assert(!FindSentenceAtCaret("", 0).valid);
     assert(!FindSentenceAtCaret(text, 999).valid);
+
+    // 规则增强：数字小数点不算句末（版本号/小数）。
+    const std::string ver = "版本 3.14 发布了。谢谢。";
+    r = FindSentenceAtCaret(ver, 5);
+    assert(r.valid && r.start_utf16 == 0 && r.end_utf16 == 12);
+
+    // 规则增强：常见英文缩写（Mr./Dr./etc.）不算句末。
+    const std::string abbr = "Mr. Smith is here. Thanks.";
+    r = FindSentenceAtCaret(abbr, 5);
+    assert(r.valid && r.start_utf16 == 0 && r.end_utf16 == 18);
+
+    // 规则增强：省略号「……」算句末（连续 ≥2 个 '…'，边界取最后一个）。
+    const std::string ellipsis = "等等……然后呢。";
+    r = FindSentenceAtCaret(ellipsis, 1);
+    assert(r.valid && r.start_utf16 == 0 && r.end_utf16 == 4);
 }
 
 // 光标结构化删除解析：整句精确白名单；普通说话不吞。

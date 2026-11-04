@@ -1,6 +1,7 @@
 #include "voice_edit_command.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <span>
 
@@ -747,18 +748,71 @@ VoiceEditPlan PlanVoiceEdit(std::string_view remaining_text, bool pressed_enter,
 
 namespace {
 
-bool IsSentenceEndPunctuation(char32_t cp) {
-    return cp == U'。' || cp == U'！' || cp == U'？' || cp == U'；' || cp == U'.' ||
-           cp == U'!' || cp == U'?' || cp == U';';
-}
-
 struct CaretIndexEntry {
     std::size_t utf16_offset = 0;
     std::size_t utf16_length = 1;
+    char32_t value = 0;
     bool sentence_end = false;
 };
 
-// 码点索引（UTF-16 偏移 + 长度 + 是否句末标点）。
+bool IsSentenceEndPunctuation(char32_t cp) {
+    return cp == U'。' || cp == U'！' || cp == U'？' || cp == U'；' || cp == U'.' ||
+           cp == U'!' || cp == U'?' || cp == U';' || cp == U'…';
+}
+
+bool IsAsciiDigit(char32_t cp) { return cp >= U'0' && cp <= U'9'; }
+
+bool IsAsciiLetter(char32_t cp) {
+    return (cp >= U'a' && cp <= U'z') || (cp >= U'A' && cp <= U'Z');
+}
+
+// 常见英文缩写（'.' 前最后一个词）：Mr./Mrs./Ms./Dr./Prof./Sr./Jr./St./vs./etc.
+bool IsCommonAbbreviation(const std::vector<CaretIndexEntry>& index,
+                          std::size_t dot_index) {
+    if (dot_index == 0) return false;
+    std::size_t begin = dot_index;
+    while (begin > 0 && IsAsciiLetter(index[begin - 1].value)) --begin;
+    if (begin == dot_index) return false;  // '.' 前不是字母
+    std::string word;
+    for (std::size_t i = begin; i < dot_index; ++i) {
+        word.push_back(static_cast<char>(index[i].value));
+    }
+    std::string lower;
+    lower.reserve(word.size());
+    for (const char c : word) {
+        lower.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    static constexpr std::string_view kAbbreviations[] = {
+        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc",
+    };
+    for (const auto abbreviation : kAbbreviations) {
+        if (lower == abbreviation) return true;
+    }
+    return false;
+}
+
+// 句末标点是否真正的句子边界（规则增强）：
+//   '.'：前后都是数字（小数点）→ 否；前是常见缩写 → 否；否则是；
+//   '…'：连续 ≥2 个时只有最后一个算边界；单个不算；
+//   其余（。！？；!?;）→ 是。
+bool IsSentenceBoundary(const std::vector<CaretIndexEntry>& index, std::size_t i) {
+    if (!index[i].sentence_end) return false;
+    const char32_t cp = index[i].value;
+    if (cp == U'.') {
+        const bool prev_digit = i > 0 && IsAsciiDigit(index[i - 1].value);
+        const bool next_digit = i + 1 < index.size() && IsAsciiDigit(index[i + 1].value);
+        if (prev_digit && next_digit) return false;  // 3.14
+        if (IsCommonAbbreviation(index, i)) return false;  // Mr.
+        return true;
+    }
+    if (cp == U'…') {
+        if (i + 1 < index.size() && index[i + 1].value == U'…') return false;  // 中间
+        return i > 0 && index[i - 1].value == U'…';  // 最后一个 '…' 才是边界
+    }
+    return true;
+}
+
+// 码点索引（UTF-16 偏移 + 长度 + 值 + 是否句末标点）。
 std::vector<CaretIndexEntry> BuildCaretIndex(std::string_view text) {
     std::vector<CaretIndexEntry> index;
     std::size_t utf16 = 0;
@@ -768,6 +822,7 @@ std::vector<CaretIndexEntry> BuildCaretIndex(std::string_view text) {
         CaretIndexEntry entry;
         entry.utf16_offset = utf16;
         entry.utf16_length = cp.value > 0xFFFF ? 2 : 1;
+        entry.value = cp.value;
         entry.sentence_end = IsSentenceEndPunctuation(cp.value);
         index.push_back(entry);
         utf16 += entry.utf16_length;
@@ -868,7 +923,7 @@ VoiceEditTextRange FindSentenceAtCaret(std::string_view text, std::size_t caret_
     // 句首：光标之前最近的句末标点（含其位置之后）。
     std::size_t start_utf16 = 0;
     for (std::size_t i = caret_index; i > 0; --i) {
-        if (index[i - 1].sentence_end) {
+        if (IsSentenceBoundary(index, i - 1)) {
             start_utf16 = index[i - 1].utf16_offset + index[i - 1].utf16_length;
             break;
         }
@@ -876,7 +931,7 @@ VoiceEditTextRange FindSentenceAtCaret(std::string_view text, std::size_t caret_
     // 句尾：从光标所在字符起第一个句末标点（含标点；无则到末尾）。
     std::size_t end_utf16 = total_utf16;
     for (std::size_t i = caret_index; i < index.size(); ++i) {
-        if (index[i].sentence_end) {
+        if (IsSentenceBoundary(index, i)) {
             end_utf16 = index[i].utf16_offset + index[i].utf16_length;
             break;
         }
