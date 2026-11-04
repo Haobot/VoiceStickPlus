@@ -1105,6 +1105,80 @@ void VoiceStickCoordinator::MoveCaretForVoiceEditDeletion(
     fail();
 }
 
+bool VoiceStickCoordinator::HandleCaretDeleteIfMatched(const std::string& text) {
+    if (is_shutdown_) return false;
+    if (session_state_ != SessionState::kFinalizing) return false;
+    const auto config = ConfigSnapshot();
+    if (!config->voice_edit.enabled) return false;
+    if (OutputProfileForDevice(active_device_id_).target != OutputTarget::kFocusedApp) {
+        return false;
+    }
+    const auto kind = ParseCaretDeleteCommand(text);
+    if (!kind.has_value()) return false;
+    const UiLanguage language = EffectiveUiLanguage(config->ui_language);
+    // 结构化删除必须知道光标位置：读不到全文/光标 → 明确拒绝（不落普通文本）。
+    VoiceEditFieldState field;
+    if (!ReadFieldFullTextWithFallback(&field) || !field.readable ||
+        field.full_truncated || field.is_password ||
+        field.caret_abs_utf16 == kCaretOutsideTail) {
+        LogCoordinatorLine("voice caret delete rejected reason=verify_unavailable");
+        LogVoiceEditFailure("focused_element", "verify_unavailable");
+        FinishRecognitionCycle();
+        EnterReady("voice_caret_delete_rejected");
+        ui_->ShowTimedMessage(Tr(StringId::kVoiceEditUnreadable, language),
+                              kVoiceEditToastMs);
+        return true;
+    }
+    const std::string field_full = NormalizeVoiceEditLineBreaks(field.full_text);
+    VoiceEditTextRange range;
+    const char* kind_name = "sentence";
+    switch (*kind) {
+        case VoiceEditCaretDeleteKind::kSentence:
+            range = FindSentenceAtCaret(field_full, field.caret_abs_utf16);
+            break;
+        case VoiceEditCaretDeleteKind::kParagraph:
+            kind_name = "paragraph";
+            range = FindParagraphAtCaret(field_full, field.caret_abs_utf16);
+            break;
+        case VoiceEditCaretDeleteKind::kLine:
+            kind_name = "line";
+            range = FindLineAtCaret(field_full, field.caret_abs_utf16);
+            break;
+    }
+    if (!range.valid) {
+        LogCoordinatorLine("voice caret delete rejected reason=not_found kind=" +
+                           std::string(kind_name));
+        LogVoiceEditFailure("focused_element", "target_not_found");
+        FinishRecognitionCycle();
+        EnterReady("voice_caret_delete_not_found");
+        ui_->ShowTimedMessage(Tr(StringId::kVoiceEditUnreadable, language),
+                              kVoiceEditToastMs);
+        return true;
+    }
+    LogCoordinatorLine("voice caret delete kind=" + std::string(kind_name) + " start=" +
+                       std::to_string(range.start_utf16) + " len=" +
+                       std::to_string(range.end_utf16 - range.start_utf16));
+    // 构造单区间批量删除 → 复用整框批量粘贴（一次构造完整新文本 + 全文终验）。
+    VoiceTargetedCommand command;
+    command.action = VoiceTargetedAction{VoiceTargetedActionKind::kDelete, {}};
+    command.has_explicit_scope = true;
+    TargetedExecutionContext exec;
+    exec.absolute_coords = true;
+    exec.is_batch = true;
+    VoiceTargetedOccurrence occurrence;
+    occurrence.utf16_start = range.start_utf16;
+    occurrence.utf16_length = range.end_utf16 - range.start_utf16;
+    exec.batch = {occurrence};
+    exec.original_caret_utf16 = range.start_utf16;
+    exec.pre_action_text = field_full;
+    exec.domain = VoiceTargetedDomainKind::kWholeField;
+    exec.record_action = TargetedExecutionContext::RecordAction::kInvalidate;
+    FinishRecognitionCycle();
+    EnterReady("voice_caret_delete");
+    TryWholeFieldPasteRewrite(command, VoiceTargetedPlan{}, exec, voice_edit_generation_);
+    return true;
+}
+
 bool VoiceStickCoordinator::HandleVoiceTargetedEditIfMatched(const std::string& text) {
     if (is_shutdown_) return false;
     // 只在 finalizing 内接受（与旧编辑同一闸）。

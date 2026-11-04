@@ -2507,6 +2507,10 @@ void VoiceStickCoordinator::FinishWithFinalText(const std::string& text) {
     // 语音编辑（Doc/Plan/voice-edit-commands.md §5.6）：入口拦截——命中指令即接管本轮，
     // 不保存精修回退文本、不进入精修/翻译/粘贴。命中处理内部自行 FinishRecognitionCycle
     // + EnterReady，并异步退格。
+    // 光标结构化删除（「删掉这句话/这一段/这一行」）：位置相对语义，与语音输入
+    // 记录解耦（Doc/Plan/voice-edit-structural-delete.md）；白名单精确匹配，
+    // 与其他编辑指令无重叠。
+    if (HandleCaretDeleteIfMatched(text)) return;
     if (HandleVoiceEditIfMatched(text)) return;
     // targeted 编辑（删除/替换最近一次输入中的指定词）：旧解析器优先、targeted 其次。
     if (HandleVoiceTargetedEditIfMatched(text)) return;

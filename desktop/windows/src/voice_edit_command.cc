@@ -743,4 +743,190 @@ VoiceEditPlan PlanVoiceEdit(std::string_view remaining_text, bool pressed_enter,
     return plan;
 }
 
+// ======================== 光标结构化删除 ========================
+
+namespace {
+
+bool IsSentenceEndPunctuation(char32_t cp) {
+    return cp == U'。' || cp == U'！' || cp == U'？' || cp == U'；' || cp == U'.' ||
+           cp == U'!' || cp == U'?' || cp == U';';
+}
+
+struct CaretIndexEntry {
+    std::size_t utf16_offset = 0;
+    std::size_t utf16_length = 1;
+    bool sentence_end = false;
+};
+
+// 码点索引（UTF-16 偏移 + 长度 + 是否句末标点）。
+std::vector<CaretIndexEntry> BuildCaretIndex(std::string_view text) {
+    std::vector<CaretIndexEntry> index;
+    std::size_t utf16 = 0;
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        const auto cp = DecodeUtf8(text, pos);
+        CaretIndexEntry entry;
+        entry.utf16_offset = utf16;
+        entry.utf16_length = cp.value > 0xFFFF ? 2 : 1;
+        entry.sentence_end = IsSentenceEndPunctuation(cp.value);
+        index.push_back(entry);
+        utf16 += entry.utf16_length;
+        pos += cp.length;
+    }
+    return index;
+}
+
+std::size_t TotalUtf16(const std::vector<CaretIndexEntry>& index) {
+    return index.empty() ? 0 : index.back().utf16_offset + index.back().utf16_length;
+}
+
+// 光标（UTF-16 偏移）落在的码点下标；光标在末尾返回 index.size()。
+std::size_t CaretCodePointIndex(const std::vector<CaretIndexEntry>& index,
+                                std::size_t total_utf16, std::size_t caret_utf16) {
+    if (caret_utf16 > total_utf16) return index.size();
+    for (std::size_t i = 0; i < index.size(); ++i) {
+        if (caret_utf16 < index[i].utf16_offset + index[i].utf16_length) return i;
+    }
+    return index.size();
+}
+
+// UTF-16 偏移 → 字节偏移（越界置 *found=false）。
+std::size_t ByteOffsetForUtf16(std::string_view text, std::size_t target_utf16,
+                               bool* found) {
+    *found = false;
+    std::size_t utf16 = 0;
+    std::size_t pos = 0;
+    while (pos <= text.size()) {
+        if (utf16 == target_utf16) {
+            *found = true;
+            return pos;
+        }
+        if (pos == text.size()) break;
+        const auto cp = DecodeUtf8(text, pos);
+        utf16 += cp.value > 0xFFFF ? 2 : 1;
+        pos += cp.length;
+    }
+    return text.size();
+}
+
+// 行表：[start_byte, end_byte)（不含 \n）。
+std::vector<std::pair<std::size_t, std::size_t>> BuildLineTable(std::string_view text) {
+    std::vector<std::pair<std::size_t, std::size_t>> lines;
+    std::size_t line_start = 0;
+    for (std::size_t i = 0; i <= text.size(); ++i) {
+        if (i == text.size() || text[i] == '\n') {
+            lines.emplace_back(line_start, i);
+            line_start = i + 1;
+        }
+    }
+    return lines;
+}
+
+std::size_t CaretLineIndex(const std::vector<std::pair<std::size_t, std::size_t>>& lines,
+                           std::size_t caret_byte) {
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        if (caret_byte >= lines[i].first && caret_byte <= lines[i].second) return i;
+    }
+    return lines.empty() ? 0 : lines.size() - 1;
+}
+
+}  // namespace
+
+std::optional<VoiceEditCaretDeleteKind> ParseCaretDeleteCommand(std::string_view text) {
+    const std::string command = NormalizeCommandText(text);
+    if (command.empty()) return std::nullopt;
+    static constexpr std::string_view kSentenceForms[] = {
+        "删掉这句话", "删除这句话", "删掉这一句", "删除这一句",
+        "删掉这句",   "这一句删掉", "这句话删掉",
+    };
+    static constexpr std::string_view kParagraphForms[] = {
+        "删掉这一段", "删除这一段", "删掉这段", "这一段删掉", "这段删掉",
+    };
+    static constexpr std::string_view kLineForms[] = {
+        "删掉这一行", "删除这一行", "删掉这行", "这一行删掉", "这行删掉",
+    };
+    for (const auto form : kSentenceForms) {
+        if (command == form) return VoiceEditCaretDeleteKind::kSentence;
+    }
+    for (const auto form : kParagraphForms) {
+        if (command == form) return VoiceEditCaretDeleteKind::kParagraph;
+    }
+    for (const auto form : kLineForms) {
+        if (command == form) return VoiceEditCaretDeleteKind::kLine;
+    }
+    return std::nullopt;
+}
+
+VoiceEditTextRange FindSentenceAtCaret(std::string_view text, std::size_t caret_utf16) {
+    VoiceEditTextRange range;
+    if (text.empty()) return range;
+    const auto index = BuildCaretIndex(text);
+    const std::size_t total_utf16 = TotalUtf16(index);
+    if (caret_utf16 > total_utf16) return range;
+    const std::size_t caret_index =
+        CaretCodePointIndex(index, total_utf16, caret_utf16);
+    // 句首：光标之前最近的句末标点（含其位置之后）。
+    std::size_t start_utf16 = 0;
+    for (std::size_t i = caret_index; i > 0; --i) {
+        if (index[i - 1].sentence_end) {
+            start_utf16 = index[i - 1].utf16_offset + index[i - 1].utf16_length;
+            break;
+        }
+    }
+    // 句尾：从光标所在字符起第一个句末标点（含标点；无则到末尾）。
+    std::size_t end_utf16 = total_utf16;
+    for (std::size_t i = caret_index; i < index.size(); ++i) {
+        if (index[i].sentence_end) {
+            end_utf16 = index[i].utf16_offset + index[i].utf16_length;
+            break;
+        }
+    }
+    if (start_utf16 >= end_utf16) return range;
+    range.start_utf16 = start_utf16;
+    range.end_utf16 = end_utf16;
+    range.valid = true;
+    return range;
+}
+
+VoiceEditTextRange FindParagraphAtCaret(std::string_view text, std::size_t caret_utf16) {
+    VoiceEditTextRange range;
+    if (text.empty()) return range;
+    bool found = false;
+    const std::size_t caret_byte = ByteOffsetForUtf16(text, caret_utf16, &found);
+    if (!found) return range;
+    const auto lines = BuildLineTable(text);
+    const std::size_t caret_line = CaretLineIndex(lines, caret_byte);
+    // 段首：向前跳过非空行，遇到空行（或首行）止。
+    std::size_t first = caret_line;
+    while (first > 0 && lines[first - 1].first != lines[first - 1].second) --first;
+    // 段尾：向后跳过非空行，遇到空行（或末行）止。
+    std::size_t last = caret_line;
+    while (last + 1 < lines.size() && lines[last + 1].first != lines[last + 1].second) {
+        ++last;
+    }
+    range.start_utf16 = Utf16Length(text.substr(0, lines[first].first));
+    range.end_utf16 = Utf16Length(text.substr(0, lines[last].second));
+    range.valid = range.start_utf16 < range.end_utf16;
+    return range;
+}
+
+VoiceEditTextRange FindLineAtCaret(std::string_view text, std::size_t caret_utf16) {
+    VoiceEditTextRange range;
+    if (text.empty()) return range;
+    bool found = false;
+    const std::size_t caret_byte = ByteOffsetForUtf16(text, caret_utf16, &found);
+    if (!found) return range;
+    const auto lines = BuildLineTable(text);
+    const std::size_t caret_line = CaretLineIndex(lines, caret_byte);
+    // 行尾含 \n（决策：吃掉行尾换行）；最后一行无 \n 则到末尾。
+    const std::size_t line_end_byte = lines[caret_line].second;
+    const std::size_t end_byte =
+        line_end_byte < text.size() && text[line_end_byte] == '\n' ? line_end_byte + 1
+                                                                   : line_end_byte;
+    range.start_utf16 = Utf16Length(text.substr(0, lines[caret_line].first));
+    range.end_utf16 = Utf16Length(text.substr(0, end_byte));
+    range.valid = range.start_utf16 < range.end_utf16;
+    return range;
+}
+
 }  // namespace voicestick

@@ -191,4 +191,34 @@ VoiceEditPlan PlanVoiceEdit(std::string_view remaining_text, bool pressed_enter,
 // 批次 2（交付 E）：上下文撤销短语白名单（撤销/撤回/撤销刚才的/撤回刚才的）。
 bool IsVoiceEditUndoPhrase(std::string_view text);
 
+// ======================== 光标结构化删除（Doc/Plan/voice-edit-structural-delete.md） ========================
+// 「删掉这句话/这一段/这一行」：按光标位置找句子/段落/行边界删除，与语音输入
+// 记录完全解耦（任意光标位置可用）。
+enum class VoiceEditCaretDeleteKind {
+    kSentence,   // 删掉这句话
+    kParagraph,  // 删掉这一段
+    kLine,       // 删掉这一行
+};
+
+// 解析光标结构化删除指令（整句精确白名单；未命中 nullopt → 按普通文本上屏）。
+std::optional<VoiceEditCaretDeleteKind> ParseCaretDeleteCommand(std::string_view text);
+
+// 光标所在文本区间（UTF-16 码元，[start_utf16, end_utf16)）：
+//   - 句子：句末标点 。！？；.!?; **含标点**；光标在标点后归属下一句；
+//   - 段落：空行（\n\n）分隔，段尾不含空行；
+//   - 行：\n 分隔，行尾**含** \n（最后一行无 \n 则到末尾）。
+// 全文为空 / 光标越界 / 区间为空 → valid=false。
+struct VoiceEditTextRange {
+    std::size_t start_utf16 = 0;
+    std::size_t end_utf16 = 0;
+    bool valid = false;
+};
+
+VoiceEditTextRange FindSentenceAtCaret(std::string_view field_full_utf8,
+                                       std::size_t caret_abs_utf16);
+VoiceEditTextRange FindParagraphAtCaret(std::string_view field_full_utf8,
+                                        std::size_t caret_abs_utf16);
+VoiceEditTextRange FindLineAtCaret(std::string_view field_full_utf8,
+                                   std::size_t caret_abs_utf16);
+
 } // namespace voicestick

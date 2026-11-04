@@ -748,6 +748,10 @@ private:
     // targeted 编辑（删除/替换最近一次输入中的指定词；旧解析器优先、targeted 其次）。
     // 同样只在 finalizing 内接受；命中（含结构非法）即吞掉本轮并接管。
     bool HandleVoiceTargetedEditIfMatched(const std::string& text);
+    // 光标结构化删除（Doc/Plan/voice-edit-structural-delete.md）：「删掉这句话/
+    // 这一段/这一行」——按光标位置找边界删除，与语音输入记录解耦。
+    // 微信等无光标目标明确拒绝（不降级为删最后一句）。
+    bool HandleCaretDeleteIfMatched(const std::string& text);
     // targeted 接管主体（批次 2：直命中与整框门控命中两条入口共用；对齐 macOS
     // performTargetedTakeover——field_scope 开走域解析，关走批次 1 原路径）。
     // reread_attempt：全文读冷态重试轮次（微信 MMUI a11y 树按需激活，2026-11-04

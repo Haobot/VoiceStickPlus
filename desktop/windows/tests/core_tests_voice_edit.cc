@@ -531,6 +531,48 @@ void TestTargetedBatchParser() {
     assert(plain->command.position == VoiceTargetedPosition::kUnspecified);
 }
 
+// 光标结构化删除（Doc/Plan/voice-edit-structural-delete.md）：句子/段落/行定位。
+void TestCaretDeleteLocators() {
+    // 句子：含句末标点；光标在句中 → 整句；光标在句末标点后 → 归属下一句。
+    const std::string text = "北京很好。上海也很好。";
+    auto r = FindSentenceAtCaret(text, 2);
+    assert(r.valid && r.start_utf16 == 0 && r.end_utf16 == 5);  // "北京很好。"
+    r = FindSentenceAtCaret(text, 7);
+    assert(r.valid && r.start_utf16 == 5 && r.end_utf16 == 11);  // "上海也很好。"
+    r = FindSentenceAtCaret(text, 5);  // 句末标点后 = 第二句开头
+    assert(r.valid && r.start_utf16 == 5 && r.end_utf16 == 11);
+
+    // 段落：空行分隔（单换行属段内换行）；段尾不含空行。
+    const std::string para = "第一段第一行\n第一段第二行\n\n第二段";
+    r = FindParagraphAtCaret(para, 3);
+    assert(r.valid && r.start_utf16 == 0 && r.end_utf16 == 13);
+    r = FindParagraphAtCaret(para, 16);
+    assert(r.valid && r.start_utf16 == 15 && r.end_utf16 == 18);  // "第二段"
+
+    // 行：行尾含 \n（决策：吃掉行尾换行）；最后一行无 \n。
+    const std::string lines = "第一行\n第二行\n第三行";
+    r = FindLineAtCaret(lines, 1);
+    assert(r.valid && r.start_utf16 == 0 && r.end_utf16 == 4);  // "第一行\n"
+    r = FindLineAtCaret(lines, 5);
+    assert(r.valid && r.start_utf16 == 4 && r.end_utf16 == 8);  // "第二行\n"
+    r = FindLineAtCaret(lines, 9);
+    assert(r.valid && r.start_utf16 == 8 && r.end_utf16 == 11);  // "第三行"
+
+    // 边界：空文本 / 光标越界 → invalid。
+    assert(!FindSentenceAtCaret("", 0).valid);
+    assert(!FindSentenceAtCaret(text, 999).valid);
+}
+
+// 光标结构化删除解析：整句精确白名单；普通说话不吞。
+void TestCaretDeleteParser() {
+    assert(ParseCaretDeleteCommand("删掉这句话") == VoiceEditCaretDeleteKind::kSentence);
+    assert(ParseCaretDeleteCommand("删除这一句") == VoiceEditCaretDeleteKind::kSentence);
+    assert(ParseCaretDeleteCommand("删掉这段") == VoiceEditCaretDeleteKind::kParagraph);
+    assert(ParseCaretDeleteCommand("删掉这一行") == VoiceEditCaretDeleteKind::kLine);
+    assert(!ParseCaretDeleteCommand("你好").has_value());
+    assert(!ParseCaretDeleteCommand("删掉北京").has_value());
+}
+
 void TestVoiceEditParserDeleteAllForms() {
     const std::vector<std::string> mac_forms = {
         "删除刚才的", "删除刚才", "删掉刚才的", "删掉刚才", "删除刚才的内容",
@@ -1960,6 +2002,49 @@ void TestTargetedBatchDeleteAllRejects() {
     assert(harness.field().doc == L"北京北京北京");  // 字段零改动
 }
 
+// 光标结构化删除：删光标所在句（含句末标点），不依赖语音输入记录。
+void TestCaretDeleteSentence() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("第一句。第二句。第三句。", 371));
+    harness.field().sel_start = 5;  // 「第二句」中间
+    harness.field().sel_len = 0;
+    harness.ops().clear();
+    assert(harness.RunCommand("删掉这句话", 372));
+    assert(harness.field().doc == L"第一句。第三句。");
+}
+
+// 删句导致字段清空：拒绝（沿用「不支持删除全部内容」决策），零写入。
+void TestCaretDeleteAllRejects() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("只有一句。", 373));
+    harness.field().sel_start = 1;
+    harness.field().sel_len = 0;
+    harness.ops().clear();
+    assert(harness.RunCommand("删掉这句话", 374, 6000));
+    assert(harness.ops().empty());
+    assert(harness.field().doc == L"只有一句。");
+}
+
+// 无光标（微信剪贴板通道）：明确拒绝，不降级为「删最后一句」。
+void TestCaretDeleteNoCaretRejects() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("第一句。第二句。", 375));
+    harness.reader().caret_missing = true;
+    harness.ops().clear();
+    assert(harness.RunCommand("删掉这句话", 376, 6000));
+    assert(harness.ops().empty());
+    assert(harness.field().doc == L"第一句。第二句。");
+}
+
 // 全兜底失败（全选粘贴未落地）：Ctrl+End 恢复 + fieldMismatch，
 // 零改动、记录保留（安全模型：验证不过绝不盲改）。
 void TestTargetedCoordinatorAllFallbacksFailRejects() {
@@ -2757,6 +2842,8 @@ void TestVoiceEditUndoPhraseAndFallback() {
 
 void RunVoiceEditTests() {
     TestVoiceEditParserPositive();
+    TestCaretDeleteLocators();
+    TestCaretDeleteParser();
     TestTargetedBatchParser();
     TestVoiceEditParserDeleteAllForms();
     TestVoiceEditParserNegative();
@@ -2807,6 +2894,9 @@ void RunVoiceEditTests() {
     TestTargetedBatchReplaceRange();
     TestTargetedBatchTooManyRejects();
     TestTargetedBatchDeleteAllRejects();
+    TestCaretDeleteSentence();
+    TestCaretDeleteAllRejects();
+    TestCaretDeleteNoCaretRejects();
     TestTargetedCoordinatorFinalVerifyFailsInvalidates();
     TestTargetedCoordinatorOffModeUnreadableRejects();
     TestTargetedCoordinatorStaleGeneration();
