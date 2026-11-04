@@ -1144,6 +1144,18 @@ public:
     bool ReadFocusedFieldFullText(VoiceEditFieldState* out) override {
         if (out == nullptr) return false;
         *out = VoiceEditFieldState{};
+        ++fulltext_reads;
+        // fulltext_truncated：超 200k 上限形态（生产置 full_truncated 且返回 false）。
+        if (fulltext_truncated) {
+            out->full_truncated = true;
+            return false;
+        }
+        // fulltext_fail_streak：模拟微信 MMUI a11y 冷态（2026-11-04 实锤：树按需
+        // 激活异步构建，前 N 次全文读失败后收敛为可用）。
+        if (fulltext_fail_streak > 0) {
+            --fulltext_fail_streak;
+            return false;
+        }
         if (!readable || field == nullptr) return false;
         out->readable = true;
         out->full_text = Utf8FromUtf16ForTest(std::wstring_view(field->doc));
@@ -1175,6 +1187,11 @@ public:
     // caret_missing：ReadFocusedFieldFullText 强制 caret 哨兵（微信 GetSelection
     // 间歇失败形态）。
     bool caret_missing = false;
+    // fulltext_fail_streak：全文读前 N 次失败后收敛（微信 a11y 冷态→热态形态）；
+    // fulltext_reads：全文读取计数（断言重试次数）；fulltext_truncated：超上限形态。
+    int fulltext_fail_streak = 0;
+    int fulltext_reads = 0;
+    bool fulltext_truncated = false;
 };
 
 class VoiceTargetedFakeEditor : public ITargetedFieldEditor {
@@ -1616,6 +1633,61 @@ void TestTargetedCoordinatorCaretMissingWholeFieldRewrite() {
     const auto marker = expected.find("%d");
     expected.replace(marker, 2, "2");
     assert(harness.ui().timed_messages.back() == TargetedToast(expected.c_str()));
+}
+
+// 冷态重试（微信 MMUI a11y 树按需激活，2026-11-04 实锤：闲置后树被回收，首次
+// 查询触发异步构建，单次查询拿不到 TextPattern）：全文读不可用按 100/200/400/
+// 800ms 重试等树建好，streak 内收敛 → 编辑正常执行；验证语义零放宽。
+void TestTargetedCoordinatorFieldRereadRecovers() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 331));
+    harness.reader().fulltext_fail_streak = 3;  // 首读 + 2 次重试失败，第 4 次收敛
+    harness.ops().clear();
+    assert(harness.RunCommand("删除刚才的北京", 332));
+    // 读取计数 = 接管链 4 次（首读 + 3 次重试，第 4 次收敛）+ 终验读回 1 次。
+    assert(harness.reader().fulltext_reads == 5);
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "end"}));
+    assert(harness.field().doc == L"我去上班");
+    std::string expected = Tr(StringId::kVoiceTargetedDeleted, harness.language());
+    const auto marker = expected.find("%d");
+    expected.replace(marker, 2, "2");
+    assert(harness.ui().timed_messages.back() == TargetedToast(expected.c_str()));
+}
+
+// 冷态重试耗尽（树始终不暴露）：按 verify_unavailable 拒绝——零写入、字段零改动
+//（安全模型：验证不过绝不盲改）。
+void TestTargetedCoordinatorFieldRereadExhaustedRejects() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 333));
+    harness.reader().fulltext_fail_streak = 999;  // 恒冷
+    harness.ops().clear();
+    assert(harness.RunCommand("删除刚才的北京", 334, 6000));
+    assert(harness.reader().fulltext_reads == 5);  // 首读 + 4 次重试
+    assert(harness.ops().empty());                 // 零写入
+    assert(harness.field().doc == L"我去北京上班");
+    assert(harness.ui().timed_messages.back() ==
+           TargetedToast(Tr(StringId::kVoiceEditUnreadable, harness.language()).c_str()));
+}
+
+// full_truncated（超 200k 上限）不走冷态重试（重试救不了超长）：单次读取即拒。
+void TestTargetedCoordinatorFieldTruncatedNoReread() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 335));
+    harness.reader().fulltext_truncated = true;
+    harness.ops().clear();
+    assert(harness.RunCommand("删除刚才的北京", 336));
+    assert(harness.reader().fulltext_reads == 1);  // 无重试
+    assert(harness.ops().empty());
+    assert(harness.field().doc == L"我去北京上班");
 }
 
 // 全兜底失败（全选粘贴未落地）：Ctrl+End 恢复 + fieldMismatch，
@@ -2445,6 +2517,9 @@ void RunVoiceEditTests() {
     TestTargetedCoordinatorAllFallbacksFailRejects();
     TestTargetedCoordinatorWholeFieldRewriteSucceeds();
     TestTargetedCoordinatorCaretMissingWholeFieldRewrite();
+    TestTargetedCoordinatorFieldRereadRecovers();
+    TestTargetedCoordinatorFieldRereadExhaustedRejects();
+    TestTargetedCoordinatorFieldTruncatedNoReread();
     TestTargetedCoordinatorFinalVerifyFailsInvalidates();
     TestTargetedCoordinatorOffModeUnreadableRejects();
     TestTargetedCoordinatorStaleGeneration();

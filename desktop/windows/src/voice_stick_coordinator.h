@@ -744,9 +744,13 @@ private:
     bool HandleVoiceTargetedEditIfMatched(const std::string& text);
     // targeted 接管主体（批次 2：直命中与整框门控命中两条入口共用；对齐 macOS
     // performTargetedTakeover——field_scope 开走域解析，关走批次 1 原路径）。
+    // reread_attempt：全文读冷态重试轮次（微信 MMUI a11y 树按需激活，2026-11-04
+    // 实锤：闲置后树被回收，首次查询触发异步构建——按 100/200/400/800ms 重入等
+    // 树建好；耗尽仍不可读才拒绝，验证语义零放宽）。
     bool TakeOverTargetedCommand(const std::string& text,
                                  const VoiceTargetedParseResult& parse_result,
-                                 std::shared_ptr<const AppConfig> config);
+                                 std::shared_ptr<const AppConfig> config,
+                                 int reread_attempt = 0);
     // targeted 执行（UI 线程内同步完成选区+读回+单次动作；延时终验经 worker +
     // RunOnUiThread 回收，generation 防 stale 回调覆盖新记录）。终验小步轮询重试
     // （动作在部分目标异步落地），窗末按「未落地→记录保留 / 真不符→记录失效」分类。

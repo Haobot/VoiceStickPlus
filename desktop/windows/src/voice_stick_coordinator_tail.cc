@@ -1152,7 +1152,7 @@ bool VoiceStickCoordinator::HandleVoiceTargetedEditIfMatched(const std::string& 
 // 门控命中两条入口复用；对齐 macOS performTargetedTakeover）。
 bool VoiceStickCoordinator::TakeOverTargetedCommand(
     const std::string& text, const VoiceTargetedParseResult& parse_result,
-    std::shared_ptr<const AppConfig> config) {
+    std::shared_ptr<const AppConfig> config, int reread_attempt) {
     (void)text;
     const auto& voice_edit = config->voice_edit;
     // === 命中 targeted：本轮由 targeted 接管，绝不粘贴命令文本/精修/翻译/写历史 ===
@@ -1305,9 +1305,44 @@ bool VoiceStickCoordinator::TakeOverTargetedCommand(
         // 全文读不到/超长 → 整框域不可验证（field_too_long 单列）。
         // caret_abs 缺失不再拒绝（2026-11-04 微信实锤：GetSelection 间歇失败
         // 读不到绝对光标，而整框替换不依赖光标）——跳过 recent 域直接整框域。
+        // 冷态重试（同日实锤：微信 MMUI 自绘渲染窗口 a11y 树按需激活、闲置超时
+        // 回收，单次查询拿不到 TextPattern 即被拒）：首次查询本身是激活信号，树
+        // 异步构建——按终验同节拍重试等树建好；超长/密码框不重试（重试救不了）。
+        // TODO(win): gate（HandleVoiceTargetedEditIfMatched 整框门控）与 clarify
+        //（ExecuteClarifiedReply）两条全文读路径暂不重试（前者失败退化为普通文本
+        // 上屏不违安全模型；后者刚交互过树为热态）。
+        static constexpr std::chrono::milliseconds kTargetedFieldRereadDelays[] = {
+            std::chrono::milliseconds(100), std::chrono::milliseconds(200),
+            std::chrono::milliseconds(400), std::chrono::milliseconds(800)};
+        static constexpr int kTargetedFieldRereadAttempts =
+            static_cast<int>(sizeof(kTargetedFieldRereadDelays) /
+                             sizeof(kTargetedFieldRereadDelays[0]));
+        if (!field.full_truncated && !field.is_password &&
+            reread_attempt < kTargetedFieldRereadAttempts) {
+            LogCoordinatorLine("voice targeted field reread attempt=" +
+                               std::to_string(reread_attempt + 1));
+            const auto alive = alive_;
+            std::thread([this, alive, text, parse_result, config, reread_attempt]() {
+                std::this_thread::sleep_for(kTargetedFieldRereadDelays[reread_attempt]);
+                if (!alive->load()) return;
+                RunOnUiThread([this, alive, text, parse_result, config,
+                               reread_attempt]() {
+                    // 会话已被接管/关停（新会话开始或 shutdown）→ 本轮静默作废。
+                    if (!alive->load() || is_shutdown_) return;
+                    if (session_state_ != SessionState::kFinalizing) return;
+                    TakeOverTargetedCommand(text, parse_result, config,
+                                            reread_attempt + 1);
+                });
+            }).detach();
+            return true;
+        }
         reject(field.full_truncated ? VoiceTargetedFailure::kFieldTooLong
                                     : VoiceTargetedFailure::kVerifyUnavailable);
         return true;
+    }
+    if (reread_attempt > 0) {
+        LogCoordinatorLine("voice targeted field reread recovered reads=" +
+                           std::to_string(reread_attempt + 1));
     }
     const bool caret_missing = field.caret_abs_utf16 == kCaretOutsideTail;
     const std::string field_full = NormalizeVoiceEditLineBreaks(field.full_text);

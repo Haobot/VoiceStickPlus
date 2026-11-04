@@ -65,6 +65,34 @@ std::string Utf8FromUtf16(std::wstring_view text) {
     return out;
 }
 
+// 焦点元素描述（失败诊断日志用）：ClassName/Name(截 16 字符)/PID。微信冷态
+//（MMUI a11y 树未激活，2026-11-04 实锤）与焦点漂移的判据——看拿到的是哪个元素。
+std::string DescribeElement(IUIAutomationElement* element) {
+    if (element == nullptr) return "element=null";
+    std::string out;
+    BSTR cls = nullptr;
+    if (SUCCEEDED(element->get_CurrentClassName(&cls)) && cls != nullptr) {
+        out += "class='";
+        out += Utf8FromUtf16(std::wstring_view(cls, SysStringLen(cls)));
+        out += "' ";
+        SysFreeString(cls);
+    }
+    BSTR name = nullptr;
+    if (SUCCEEDED(element->get_CurrentName(&name)) && name != nullptr) {
+        const UINT len = SysStringLen(name);
+        out += "name='";
+        out += Utf8FromUtf16(std::wstring_view(
+            name, len > 16 ? 16 : len));  // 只留前缀足够定位元素
+        out += "' ";
+        SysFreeString(name);
+    }
+    int pid = 0;
+    if (SUCCEEDED(element->get_CurrentProcessId(&pid))) {
+        out += "pid=" + std::to_string(pid);
+    }
+    return out;
+}
+
 
 class FocusTextReaderWin : public IFocusTextReader {
 public:
@@ -104,7 +132,9 @@ public:
                                           __uuidof(IUIAutomationTextPattern),
                                           reinterpret_cast<void**>(text_pattern.Put()));
         if (FAILED(hr) || !text_pattern) {
-            // 不支持 TextPattern 的控件（自绘编辑器/终端等）→ 不可验证。
+            // 不支持 TextPattern 的控件（自绘编辑器/终端等，微信冷态即此形态）→
+            // 不可验证；记焦点元素信息以区分「树未激活」与「焦点漂移」。
+            LogApp("voice edit: TextPattern unavailable " + DescribeElement(focused.Get()));
             return false;
         }
 
@@ -160,6 +190,8 @@ public:
         selections->get_Length(&selection_count);
         if (selection_count == 0) {
             // 无选区信息（部分控件不支持）→ 不可验证。
+            LogApp("voice edit: GetSelection returned 0 selections " +
+                   DescribeElement(focused.Get()));
             return false;
         }
         if (selection_count != 1) {
@@ -255,7 +287,13 @@ public:
         hr = focused->GetCurrentPatternAs(UIA_TextPatternId,
                                           __uuidof(IUIAutomationTextPattern),
                                           reinterpret_cast<void**>(text_pattern.Put()));
-        if (FAILED(hr) || !text_pattern) return false;
+        if (FAILED(hr) || !text_pattern) {
+            // 微信冷态实锤落点（2026-11-04）：MMUI a11y 树未激活时焦点元素无
+            // TextPattern——记元素信息供「树未激活 vs 焦点漂移」判别。
+            LogApp("voice edit: fulltext TextPattern unavailable " +
+                   DescribeElement(focused.Get()));
+            return false;
+        }
         ComPtr<IUIAutomationTextRange> document;
         hr = text_pattern->get_DocumentRange(document.Put());
         if (FAILED(hr) || !document) {
@@ -266,11 +304,19 @@ public:
         // 全文长度（文档 range Start 前进 INT_MAX 的实际移动数）。
         ComPtr<IUIAutomationTextRange> measure;
         hr = document->Clone(measure.Put());
-        if (FAILED(hr) || !measure) return false;
+        if (FAILED(hr) || !measure) {
+            LogApp("voice edit: fulltext measure clone failed hr=" +
+                   std::to_string(static_cast<long long>(hr)));
+            return false;
+        }
         int doc_length = 0;
         hr = measure->MoveEndpointByUnit(TextPatternRangeEndpoint_Start,
                                          TextUnit_Character, INT_MAX, &doc_length);
-        if (FAILED(hr)) return false;
+        if (FAILED(hr)) {
+            LogApp("voice edit: fulltext measure move failed hr=" +
+                   std::to_string(static_cast<long long>(hr)));
+            return false;
+        }
         // 超上限：不读全文（避免大文档 GetText 阻塞 UI 线程），置 truncated。
         if (static_cast<std::size_t>(doc_length) > kFieldScopeFullTextMaxUtf16) {
             out->full_truncated = true;
@@ -279,7 +325,11 @@ public:
         }
         BSTR full = nullptr;
         hr = document->GetText(-1, &full);
-        if (FAILED(hr)) return false;
+        if (FAILED(hr)) {
+            LogApp("voice edit: fulltext GetText failed hr=" +
+                   std::to_string(static_cast<long long>(hr)));
+            return false;
+        }
         if (full != nullptr) {
             const UINT length = SysStringLen(full);
             out->full_text = Utf8FromUtf16(std::wstring_view(full, length));
@@ -289,14 +339,26 @@ public:
         // 尾部窗口（与 ReadFocusedField 同一窗口定义；既有消费方保持可用）。
         ComPtr<IUIAutomationTextRange> tail;
         hr = document->Clone(tail.Put());
-        if (FAILED(hr) || !tail) return false;
+        if (FAILED(hr) || !tail) {
+            LogApp("voice edit: fulltext tail clone failed hr=" +
+                   std::to_string(static_cast<long long>(hr)));
+            return false;
+        }
         int moved = 0;
         hr = tail->MoveEndpointByUnit(TextPatternRangeEndpoint_Start,
                                       TextUnit_Character, -kTailUtf16Limit, &moved);
-        if (FAILED(hr)) return false;
+        if (FAILED(hr)) {
+            LogApp("voice edit: fulltext tail move failed hr=" +
+                   std::to_string(static_cast<long long>(hr)));
+            return false;
+        }
         BSTR tail_text = nullptr;
         hr = tail->GetText(-1, &tail_text);
-        if (FAILED(hr)) return false;
+        if (FAILED(hr)) {
+            LogApp("voice edit: fulltext tail GetText failed hr=" +
+                   std::to_string(static_cast<long long>(hr)));
+            return false;
+        }
         if (tail_text != nullptr) {
             const UINT length = SysStringLen(tail_text);
             out->tail_text = Utf8FromUtf16(std::wstring_view(tail_text, length));
@@ -322,7 +384,11 @@ public:
         }
         int selection_count = 0;
         selections->get_Length(&selection_count);
-        if (selection_count == 0) return false;
+        if (selection_count == 0) {
+            LogApp("voice edit: fulltext GetSelection returned 0 selections " +
+                   DescribeElement(focused.Get()));
+            return false;
+        }
         if (selection_count != 1) {
             out->readable = true;
             out->selection_collapsed = false;
