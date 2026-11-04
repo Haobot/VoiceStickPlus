@@ -192,9 +192,19 @@ if errorlevel 1 (
     echo See build_compile.log for details
     exit /b 1
 )
+REM 兜底：VoiceStick.exe 被运行中进程锁定时，链接报 LNK1104 但 cmake --build
+REM 实测仍返回 0（2026-11-04 两次「改完却无效」的真凶）。构建日志在本次构建前
+REM 已清空，出现 ninja 的 FAILED 标记即判失败。
+findstr /C:"FAILED:" "%BUILD_LOG%" >nul 2>&1
+if not errorlevel 1 (
+    echo ERROR: Build failed ^(link step - see build_compile.log^)
+    echo.
+    echo See build_compile.log for details
+    exit /b 1
+)
 
 echo.
-echo Build SUCCEEDED! Output: %BUILD_DIR%\VoiceStick.exe
+echo Build SUCCEEDED - Output: %BUILD_DIR%\VoiceStick.exe
 >> "%LOG_FILE%" echo Build SUCCEEDED at %date% %time%
 >> "%LOG_FILE%" echo Setup log: %SETUP_LOG%
 >> "%LOG_FILE%" echo Configure log: %CONFIGURE_LOG%
