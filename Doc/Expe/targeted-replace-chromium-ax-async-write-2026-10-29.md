@@ -84,6 +84,13 @@ targeted 执行链是「AX 写选区（kAXSelectedTextRange）→ **立即**读�
 - 日志判据：`voice targeted whole-field paste applied full_len=` → `result=ok`=闭环；`verify unconfirmed still_old=1` = Ctrl+A/Ctrl+V 也未落地（下一层查焦点 HWND 分发）。
 - 教训累积：**Chromium 原生 UIA 的「写」面（Select/SetValue）在部分 Electron 应用上整体空转且返回成功——平台写 API 的返回值在 Chromium 上完全没有可信度**，验证必须走「动作后读回」。终态方案反而最朴素：全文读（活）+ 键盘全选粘贴（活）+ 全文终验（活）。
 
+## 追加（2026-11-04 第四轮）：微信「无法输入」真根因 = UIPI（进程完整性），非注入机制
+
+- 用户报微信无法输入；app 日志却显示 record/paste_complete 正常——**app 侧假成功**。实测完整性：微信 4.x 全部 5 个 Weixin.exe 进程 = **S-1-16-12288（High）**，VoiceStick = S-1-16-8192（Medium）→ 中→高 SendInput 被 UIPI **静默丢弃**（11:45 app 自身日志 `foreground elevated Weixin.exe (UIPI)` 自证，那是遥控器网关会话的检查；主设备听写链路此前无此检查）。用户记忆「微信权限高需管理员运行」正确。
+- 探测法：PowerShell P/Invoke GetTokenInformation(TokenIntegrityLevel) 枚举全部进程；**注意 TokenElevation（是否管理员）≠ IntegrityLevel（MIC 级别）**——微信是「高完整性非提升令牌」，只查 Elevation 会误判「微信没提权」。
+- 修复（`71ba9ca`）：听写 chokepoint（CompletePendingPaste）加 UIPI 前置检查——前台高完整性 → toast「目标窗口权限较高，请以管理员身份运行 VoiceStick」+ 放弃注入 + **不写编辑记录**（防假成功污染 targeted）。`result=ok` 类终验有读回的链路（targeted/undo）不受假成功污染，无需加检查。
+- 运行姿势：**以管理员身份运行 VoiceStick**（High ≥ High → UIPI 放行）。间歇性成功的假象（同日 11:52 result=ok vs 12:11 失败）疑与微信多进程/多窗口的会话状态有关，提权后不再依赖此运气。
+
 ## 互链
 
 - 同功能准确率分层排查：`targeted-edit-accuracy-layered-triage-2026-10-28.md`
