@@ -28,6 +28,9 @@ std::string AsrStartFailureMessage(const AsrClient& asr) {
     return message.empty() ? "Failed to start ASR" : message;
 }
 
+// 字段尾部窗口（UTF-16 码元）：与 focus_text_reader.cc 的 kTailUtf16Limit 同值。
+constexpr std::size_t kVoiceFieldTailUtf16 = 512;
+
 
 } // namespace
 
@@ -1296,6 +1299,49 @@ void VoiceStickCoordinator::SetFocusTextReader(std::unique_ptr<IFocusTextReader>
 void VoiceStickCoordinator::SetTargetedFieldEditor(
     std::unique_ptr<ITargetedFieldEditor> editor) {
     targeted_field_editor_ = std::move(editor);
+}
+
+void VoiceStickCoordinator::SetClipboardFieldReader(
+    std::unique_ptr<IClipboardFieldReader> reader) {
+    clipboard_field_reader_ = std::move(reader);
+}
+
+// 剪贴板回读通道填充整框域字段状态：只能拿全文，拿不到光标/选区——caret 双哨兵
+// （跳过 recent 域直接整框域），读取后右方向键已取消选区、光标落末尾。
+bool VoiceStickCoordinator::FillFieldStateFromClipboard(VoiceEditFieldState* out) {
+    if (out == nullptr || clipboard_field_reader_ == nullptr) return false;
+    std::string clip_text;
+    if (!clipboard_field_reader_->ReadFieldFullText(&clip_text)) return false;
+    *out = VoiceEditFieldState{};
+    out->readable = true;
+    out->full_text = clip_text;
+    out->full_utf16_length = VoiceTargetedUtf16Length(clip_text);
+    out->tail_text =
+        VoiceTargetedUtf8Tail(clip_text, kVoiceFieldTailUtf16, &out->tail_utf16_length);
+    out->truncated = out->tail_utf16_length < out->full_utf16_length;
+    out->selection_collapsed = true;
+    out->caret_at_end = true;
+    out->caret_abs_utf16 = kCaretOutsideTail;
+    out->caret_tail_utf16 = kCaretOutsideTail;
+    LogCoordinatorLine("voice targeted clipboard fallback full_len=" +
+                       std::to_string(out->full_utf16_length));
+    return true;
+}
+
+// 批次 2 整框域全文读取统一入口：UIA 优先，不可用时走剪贴板回读通道。微信 4.x
+// MMUI 自绘窗口不暴露 TextPattern（2026-11-04 路线 A 已真机证伪：屏幕阅读器标志
+// + 重启微信后树仍全哑），剪贴板 Ctrl+A / Ctrl+C 是唯一可用的读通道。
+bool VoiceStickCoordinator::ReadFieldFullTextWithFallback(VoiceEditFieldState* out) {
+    if (out == nullptr) return false;
+    *out = VoiceEditFieldState{};
+    if (focus_text_reader_ != nullptr &&
+        focus_text_reader_->ReadFocusedFieldFullText(out) && out->readable &&
+        !out->full_truncated && !out->is_password) {
+        return true;
+    }
+    // 密码框/超长不降级（剪贴板通道无法判密码；超长不该整框替换）。
+    if (out->is_password || out->full_truncated) return false;
+    return FillFieldStateFromClipboard(out);
 }
 
 bool VoiceStickCoordinator::MaybeWarnForegroundElevated(const std::string& device_id) {

@@ -1336,9 +1336,18 @@ bool VoiceStickCoordinator::TakeOverTargetedCommand(
             }).detach();
             return true;
         }
-        reject(field.full_truncated ? VoiceTargetedFailure::kFieldTooLong
-                                    : VoiceTargetedFailure::kVerifyUnavailable);
-        return true;
+        // 重试耗尽：剪贴板回读 fallback（微信 4.x MMUI 自绘窗口不暴露 UIA，
+        // 路线 A「屏幕阅读器标志 + 重启微信」已真机证伪；剪贴板 Ctrl+A/C 是唯一
+        // 可用读通道）。填充后 caret 双哨兵 → 跳过 recent 域直接整框域。
+        if (!field.full_truncated && !field.is_password &&
+            FillFieldStateFromClipboard(&field)) {
+            field_read = true;
+        }
+        if (!field_read) {
+            reject(field.full_truncated ? VoiceTargetedFailure::kFieldTooLong
+                                        : VoiceTargetedFailure::kVerifyUnavailable);
+            return true;
+        }
     }
     if (reread_attempt > 0) {
         LogCoordinatorLine("voice targeted field reread recovered reads=" +
@@ -1536,6 +1545,15 @@ void VoiceStickCoordinator::ExecuteVoiceTargetedEdit(
             ? editor->SelectAbsoluteRange(selection_start, plan.occurrence.utf16_length)
             : editor->SelectTailRange(selection_start, plan.occurrence.utf16_length);
     if (!selected_ok) {
+        // UIA 选区写不可用（微信 4.x MMUI 等无 TextPattern 自绘窗口）：注入剪贴板
+        // 回读通道时降级整框粘贴兜底（Ctrl+A 语义固定，不依赖 UIA 选区；读不到
+        // 全文时 TryWholeFieldPasteRewrite 内部按 field_mismatch 拒绝，零改动）。
+        // 未注入（默认/既有行为）时保持原拒绝语义。
+        if (clipboard_field_reader_ != nullptr) {
+            LogCoordinatorLine("voice targeted select unavailable -> whole-field paste");
+            TryWholeFieldPasteRewrite(command, plan, exec, generation);
+            return;
+        }
         LogVoiceEditFailure("selected_range", "verify_unavailable");
         editor->MoveCaretToEnd();
         ui_->ShowTimedMessage(
@@ -1669,9 +1687,19 @@ void VoiceStickCoordinator::TryWholeFieldPasteRewrite(
     const TargetedExecutionContext& exec, std::uint64_t generation) {
     if (generation != voice_edit_generation_) return;
     VoiceEditFieldState field;
-    const bool readable = focus_text_reader_ != nullptr &&
-                          focus_text_reader_->ReadFocusedFieldFullText(&field) &&
-                          field.readable && !field.full_truncated && !field.is_password;
+    bool readable = false;
+    if (exec.absolute_coords) {
+        // 整框域：复用计划时刻的全文（剪贴板回读有全选闪烁副作用，执行前重复读
+        // 纯属浪费——接管阶段已读过同一份文本）。若文本在执行前被用户改动，终验
+        // 按 result_unconfirmed 报错，不伪造成功。
+        field.readable = true;
+        field.full_text = exec.pre_action_text;
+        field.full_utf16_length = VoiceTargetedUtf16Length(exec.pre_action_text);
+        readable = true;
+    } else {
+        readable = ReadFieldFullTextWithFallback(&field) && field.readable &&
+                   !field.full_truncated && !field.is_password;
+    }
     std::size_t target_start = 0;
     if (readable) {
         if (exec.absolute_coords) {
@@ -1794,8 +1822,8 @@ void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(
     bool read_ok = false;
     if (exec.absolute_coords) {
         // TODO(win): 待 Windows 机编译+CTest 验证（全文终验读取路径）。
-        if (focus_text_reader_ && focus_text_reader_->ReadFocusedFieldFullText(&field) &&
-            field.readable && !field.full_truncated) {
+        if (ReadFieldFullTextWithFallback(&field) && field.readable &&
+            !field.full_truncated) {
             actual = NormalizeVoiceEditLineBreaks(field.full_text);
             read_ok = true;
             verified = actual == expected_tail;

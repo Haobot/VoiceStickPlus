@@ -170,6 +170,9 @@ add_library(voicestick_core STATIC
     # + UIA 焦点字段读取（focus_text_reader）。
     src/voice_edit_command.cc
     src/focus_text_reader.cc
+    # 剪贴板回读通道（微信 4.x MMUI 等无 UIA 自绘编辑框的兜底读通道；
+    # Doc/Plan/wechat-clipboard-readback.md）。
+    src/clipboard_field_reader.cc
     # targeted 语音编辑（删除/替换最近一次输入中的指定词；Doc targeted 章节）：
     # 纯逻辑解析/匹配/计划（零 Win32），与 macOS VoiceTargetedEdit.swift 同向量；
     # 批次 2 域解析/序数应答/光标平移（voice_targeted_domain，与

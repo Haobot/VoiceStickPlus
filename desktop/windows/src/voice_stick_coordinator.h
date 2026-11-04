@@ -7,6 +7,7 @@
 #include "audio_opus_decoder.h"
 #include "audio_opus_encoder.h"
 #include "ble_protocol.h"
+#include "clipboard_field_reader.h"
 #include "correction_pairs.h"
 #include "session_history.h"
 #include "default_audio_device_controller.h"
@@ -311,6 +312,11 @@ public:
     // 注入 targeted 编辑平台出口（UIA TextRange 精确选区 + 读回 + 末尾光标；测试注入
     // Fake）。未注入时 targeted 一律按不可验证拒绝（targeted 恒 verified，严禁盲改）。
     void SetTargetedFieldEditor(std::unique_ptr<ITargetedFieldEditor> editor);
+    // 注入剪贴板回读通道（微信 4.x MMUI 等不暴露 UIA TextPattern 的自绘编辑框
+    // 兜底读通道；测试注入 Fake）。未注入 = 不启用（UIA 不可用时直接拒绝，既有
+    // 行为逐字节不变）。须在 Start 前调用。设计见
+    // Doc/Plan/wechat-clipboard-readback.md。
+    void SetClipboardFieldReader(std::unique_ptr<IClipboardFieldReader> reader);
     // 注入本机麦克风模式运行件（local-mic 会话，须在 Start 前调用，对齐
     // SetForegroundProbe 的注入模式）：采集器 + 本地 ASR 客户端。二者缺一或
     // config [local_asr] enabled=false 时按住说话热键完全旁路。
@@ -781,6 +787,16 @@ private:
                                         const VoiceTargetedPlan& plan,
                                         const TargetedExecutionContext& exec,
                                         std::uint64_t generation, int attempt);
+    // 全文读取统一入口（批次 2 整框域）：UIA 优先；UIA 不可用（微信 4.x MMUI
+    // 自绘窗口不暴露 TextPattern，2026-11-04 路线 A 已真机证伪）时走剪贴板回读
+    // 通道。剪贴板通道拿不到光标/选区 → caret 双哨兵、selection_collapsed /
+    // caret_at_end 置 true（读后右方向键取消选区、光标落末尾）。全通道不可用
+    // 返回 false，out 保持不可读。须在 UI 线程调用（内部 SendInput）。
+    bool ReadFieldFullTextWithFallback(VoiceEditFieldState* out);
+    // 用剪贴板回读通道填充整框域字段状态（UIA 不可用时的兜底；读取后光标落
+    // 末尾、caret 双哨兵）。未注入 clipboard_field_reader_ 或读取失败返回 false。
+    // 须在 UI 线程调用（内部 SendInput）。
+    bool FillFieldStateFromClipboard(VoiceEditFieldState* out);
     // 整框替换兜底（第二层）：读全文 → 全文定位替换构造（BuildWholeFieldReplacement）
     // → ReplaceAllWithPaste（Ctrl+A 全选 + Ctrl+V 粘贴，语义固定无光标算术、失败
     // 无损）→ 全文终验——不依赖选区通道，即「对整个输入框内容进行编辑，判断不
@@ -1022,6 +1038,8 @@ private:
     std::unique_ptr<IFocusTextReader> focus_text_reader_;
     // targeted 编辑平台实现（外壳注入；nullptr = targeted 一律不可验证拒绝）。
     std::unique_ptr<ITargetedFieldEditor> targeted_field_editor_;
+    // 剪贴板回读通道（外壳注入；nullptr = 不启用）。
+    std::unique_ptr<IClipboardFieldReader> clipboard_field_reader_;
     std::atomic_bool waiting_for_audio_end_{false};
     std::atomic_uint64_t audio_end_wait_generation_{0};
     // recording 硬超时兜底（可经构造注入，测试用短值；默认 kRecordingHardTimeout）。

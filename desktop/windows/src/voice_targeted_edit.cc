@@ -17,6 +17,28 @@ std::size_t VoiceTargetedUtf16Length(std::string_view text) {
     return Utf16Length(text);
 }
 
+std::string VoiceTargetedUtf8Tail(std::string_view text, std::size_t max_utf16,
+                                  std::size_t* out_utf16_length) {
+    std::size_t utf16 = 0;
+    std::size_t start = text.size();
+    while (start > 0 && utf16 < max_utf16) {
+        // 回退到上一个字符的首字节（跳过 continuation byte 0b10xxxxxx）。
+        std::size_t position = start - 1;
+        while (position > 0 &&
+               (static_cast<unsigned char>(text[position]) & 0xC0u) == 0x80u) {
+            --position;
+        }
+        const unsigned char lead = static_cast<unsigned char>(text[position]);
+        // 4 字节 UTF-8（>= 0xF0）= 1 个码点 = 2 个 UTF-16 码元。
+        const std::size_t units = lead >= 0xF0u ? 2u : 1u;
+        if (utf16 + units > max_utf16) break;
+        utf16 += units;
+        start = position;
+    }
+    if (out_utf16_length != nullptr) *out_utf16_length = utf16;
+    return std::string(text.substr(start));
+}
+
 VoiceTargetedPositionOutcome SelectTargetedOccurrence(
     const VoiceTargetedCommand& command,
     const std::vector<VoiceTargetedOccurrence>& matches,

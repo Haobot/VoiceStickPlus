@@ -134,6 +134,12 @@ VoiceTargetedPositionOutcome SelectTargetedOccurrence(
 // UTF-8 文本的 UTF-16 码元长度（协调器换算选区偏移用；转发 utf8_grapheme.h）。
 std::size_t VoiceTargetedUtf16Length(std::string_view text);
 
+// 取 UTF-8 文本最后至多 max_utf16 个 UTF-16 码元（不切断 surrogate 对；4 字节
+// UTF-8 计 2 码元）。out_utf16_length 返回实际取的码元数。供剪贴板回读通道把
+// 全文切成与 UIA tail 窗口同口径的尾部窗口（512 码元）。
+std::string VoiceTargetedUtf8Tail(std::string_view text, std::size_t max_utf16,
+                                  std::size_t* out_utf16_length);
+
 // targeted 执行计划。安全模型（与旧尾部删除不同）：
 //   * 任何 verify_mode（strict/auto/off）下都必须 verified——读不到字段/光标一律
 //     拒绝，严禁复用 8s unverified 盲删/盲改；

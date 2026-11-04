@@ -5,6 +5,7 @@
 #include "voice_edit_command.h"
 #ifdef _WIN32
 #include "app_config.h"
+#include "clipboard_field_reader.h"
 #include "focus_text_reader.h"
 #include "test_support.h"  // 协调器 Fake（FakeBleCentral/FakeAsrClient/FakeUi/FakeInputInjector…）
 
@@ -1118,6 +1119,31 @@ public:
     }
 };
 
+// 剪贴板回读通道 fake（微信 4.2.0.8 MMUI 不暴露 UIA 的兜底读通道）：
+// 默认读 fake 字段当前全文；available=false 模拟剪贴板不可用；script 非空时按
+// 读取次数依次返回（模拟初读成功、终验读回旧文本的时序）。
+class VoiceTargetedFakeClipboardReader : public IClipboardFieldReader {
+public:
+    bool ReadFieldFullText(std::string* out) override {
+        ++reads;
+        if (out == nullptr) return false;
+        out->clear();
+        if (!available || field == nullptr) return false;
+        if (!script.empty()) {
+            const std::size_t index =
+                static_cast<std::size_t>(reads - 1) < script.size() ? reads - 1 : script.size() - 1;
+            *out = script[index];
+            return true;
+        }
+        *out = Utf8FromUtf16ForTest(field->doc);
+        return true;
+    }
+    VoiceTargetedFakeField* field = nullptr;
+    bool available = true;
+    std::vector<std::string> script;
+    int reads = 0;
+};
+
 class VoiceTargetedFakeFocusReader : public IFocusTextReader {
 public:
     bool ReadFocusedField(VoiceEditFieldState* out) override {
@@ -1330,14 +1356,18 @@ public:
         reader_ = reader.get();
         auto editor = std::make_unique<VoiceTargetedFakeEditor>();
         editor_ = editor.get();
+        auto clip = std::make_unique<VoiceTargetedFakeClipboardReader>();
+        clip_ = clip.get();
         coordinator_ = std::make_unique<VoiceStickCoordinator>(
             config_, std::move(ble), std::move(asr), &ui_, &input_);
         coordinator_->SetForegroundProbe(std::move(probe));
         coordinator_->SetFocusTextReader(std::move(reader));
         coordinator_->SetTargetedFieldEditor(std::move(editor));
+        coordinator_->SetClipboardFieldReader(std::move(clip));
         reader_->field = &field_;
         editor_->field = &field_;
         editor_->ops = &ops_;
+        clip_->field = &field_;
         input_.field = &field_;
         input_.ops = &ops_;
         coordinator_->SetUiDispatcher([this](std::function<void()> action) {
@@ -1358,6 +1388,7 @@ public:
     std::vector<std::string>& ops() { return ops_; }
     VoiceTargetedFakeEditor& editor() { return *editor_; }
     VoiceTargetedFakeFocusReader& reader() { return *reader_; }
+    VoiceTargetedFakeClipboardReader& clip_reader() { return *clip_; }
     UiLanguage language() const { return EffectiveUiLanguage(config_.ui_language); }
 
     bool PumpOnce() {
@@ -1414,6 +1445,7 @@ private:
     VoiceEditFakeForegroundProbe* probe_ = nullptr;
     VoiceTargetedFakeFocusReader* reader_ = nullptr;
     VoiceTargetedFakeEditor* editor_ = nullptr;
+    VoiceTargetedFakeClipboardReader* clip_ = nullptr;
     FakeBleCentral* ble_ = nullptr;
     FakeAsrClient* asr_ = nullptr;
     std::mutex queue_mutex_;
@@ -1666,6 +1698,7 @@ void TestTargetedCoordinatorFieldRereadExhaustedRejects() {
     VoiceTargetedHarness harness(config);
     assert(harness.PasteText("我去北京上班", 333));
     harness.reader().fulltext_fail_streak = 999;  // 恒冷
+    harness.clip_reader().available = false;      // 剪贴板通道也不可用（全通道拒绝）
     harness.ops().clear();
     assert(harness.RunCommand("删除刚才的北京", 334, 6000));
     assert(harness.reader().fulltext_reads == 5);  // 首读 + 4 次重试
@@ -1688,6 +1721,82 @@ void TestTargetedCoordinatorFieldTruncatedNoReread() {
     assert(harness.reader().fulltext_reads == 1);  // 无重试
     assert(harness.ops().empty());
     assert(harness.field().doc == L"我去北京上班");
+}
+
+// 剪贴板回读 fallback（微信 4.2.0.8 MMUI 不暴露 UIA，路线 A「标志点火 + 重启」
+// 已真机证伪）：UIA 全文读不可用（重试耗尽）→ 剪贴板通道（Ctrl+A/C）读全文 →
+// 整框域替换 → 终验同样走剪贴板读回 → ok。
+void TestTargetedCoordinatorClipboardFallbackRewriteSucceeds() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 341));
+    harness.reader().fulltext_fail_streak = 999;  // UIA 恒不可用（微信形态）
+    harness.editor().select_fails = true;         // UIA 选区写也不可用（微信形态）
+    harness.ops().clear();
+    assert(harness.RunCommand("删除刚才的北京", 342, 6000));
+    // 两次读取（接管初读 + 终验读回）；构造替换文本复用接管阶段的全文，
+    // 避免第三次全选闪烁。
+    assert(harness.clip_reader().reads == 2);
+    assert(std::find(harness.ops().begin(), harness.ops().end(), "paste_all") !=
+           harness.ops().end());
+    assert(harness.field().doc == L"我去上班");
+    std::string expected = Tr(StringId::kVoiceTargetedDeleted, harness.language());
+    const auto marker = expected.find("%d");
+    expected.replace(marker, 2, "2");
+    assert(harness.ui().timed_messages.back() == TargetedToast(expected.c_str()));
+}
+
+// 剪贴板通道也不可用（剪贴板被占用/目标不响应 Ctrl+C）：重试耗尽后
+// verify_unavailable 拒绝——零写入、字段零改动。
+void TestTargetedCoordinatorClipboardFallbackUnavailableRejects() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 343));
+    harness.reader().fulltext_fail_streak = 999;
+    harness.clip_reader().available = false;
+    harness.ops().clear();
+    assert(harness.RunCommand("删除刚才的北京", 344, 6000));
+    assert(harness.reader().fulltext_reads == 5);  // 首读 + 4 次重试
+    assert(harness.ops().empty());
+    assert(harness.field().doc == L"我去北京上班");
+    assert(harness.ui().timed_messages.back() ==
+           TargetedToast(Tr(StringId::kVoiceEditUnreadable, harness.language()).c_str()));
+}
+
+// 剪贴板读到的全文不含目标：域解析拒绝，零写入（绝不盲改）。
+void TestTargetedCoordinatorClipboardFallbackMismatchRejects() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 345));
+    harness.reader().fulltext_fail_streak = 999;
+    harness.clip_reader().script = {"完全无关的内容"};
+    harness.ops().clear();
+    assert(harness.RunCommand("删除刚才的北京", 346, 6000));
+    assert(harness.ops().empty());
+    assert(harness.field().doc == L"我去北京上班");
+}
+
+// 剪贴板终验读回旧文本（粘贴未落地）：result_unconfirmed，不伪造成功。
+void TestTargetedCoordinatorClipboardFinalVerifyMismatch() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 347));
+    harness.reader().fulltext_fail_streak = 999;
+    harness.editor().select_fails = true;  // UIA 选区写也不可用（微信形态）
+    // 接管与构造替换文本读回旧全文；终验仍读回旧全文（粘贴未落地）。
+    harness.clip_reader().script = {"我去北京上班", "我去北京上班", "我去北京上班"};
+    harness.ops().clear();
+    assert(harness.RunCommand("删除刚才的北京", 348, 8000));
+    assert(harness.ui().timed_messages.back() ==
+           TargetedToast(Tr(StringId::kVoiceTargetedUnconfirmed, harness.language()).c_str()));
 }
 
 // 全兜底失败（全选粘贴未落地）：Ctrl+End 恢复 + fieldMismatch，
@@ -1748,6 +1857,7 @@ void TestTargetedCoordinatorOffModeUnreadableRejects() {
     config.voice_edit.verify_mode = VoiceEditVerifyMode::kOff;
     VoiceTargetedHarness harness(config);
     harness.reader().readable = false;
+    harness.clip_reader().available = false;  // 剪贴板通道也不可用（严禁盲改）
     assert(harness.PasteText("我去北京上班", 171));
     assert(harness.RunCommand("删除刚才的北京", 172));
     assert(harness.input().sent_key_combos.empty());
@@ -2520,6 +2630,10 @@ void RunVoiceEditTests() {
     TestTargetedCoordinatorFieldRereadRecovers();
     TestTargetedCoordinatorFieldRereadExhaustedRejects();
     TestTargetedCoordinatorFieldTruncatedNoReread();
+    TestTargetedCoordinatorClipboardFallbackRewriteSucceeds();
+    TestTargetedCoordinatorClipboardFallbackUnavailableRejects();
+    TestTargetedCoordinatorClipboardFallbackMismatchRejects();
+    TestTargetedCoordinatorClipboardFinalVerifyMismatch();
     TestTargetedCoordinatorFinalVerifyFailsInvalidates();
     TestTargetedCoordinatorOffModeUnreadableRejects();
     TestTargetedCoordinatorStaleGeneration();

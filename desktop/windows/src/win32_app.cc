@@ -715,6 +715,9 @@ int Win32App::Run() {
         // 注入 targeted 编辑平台出口（UIA TextRange 精确选区 + 读回 + 末尾光标；
         // 仅 UI 线程调用，COM STA）。
         coordinator_->SetTargetedFieldEditor(CreateTargetedFieldEditor());
+        // 注入剪贴板回读通道（微信 4.x MMUI 等不暴露 UIA 的自绘编辑框兜底；
+        // 仅 UI 线程调用，内部 SendInput Ctrl+A/C，读完恢复剪贴板并取消选区）。
+        coordinator_->SetClipboardFieldReader(CreateClipboardFieldReader());
 #ifdef VOICESTICK_LOCAL_ASR_ENABLED
         // 本机麦克风模式（[local_asr]，Doc/Plan/local-mic-mode.md）：安装 WASAPI
         // 采集器 + 本地 SenseVoice ASR 与按住说话热键。模型缺失不在启动期报错
