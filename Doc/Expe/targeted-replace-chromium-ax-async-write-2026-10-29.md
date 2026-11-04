@@ -77,6 +77,13 @@ targeted 执行链是「AX 写选区（kAXSelectedTextRange）→ **立即**读�
 - **锚序列方向教训（测试对拍钉出来的）**：末尾锚不存在「先扩后缩」——锚在右端时 Shift+Right 移动的是左端（选区只会左移或消失）；正确序列是「无 Shift 方向键移到目标右端 ge，再 Shift+Left 选中 [gs,ge)」（锚固定在 ge，Shift 朝锚反方向移动）。首锚同理（Right 到 gs 再 Shift+Right）。fake 编辑器推演 + 断言失败暴露，纯靠公式推导时两处独立写反。
 - 键盘兜底复测实锤（`9f59d56` 后）：`keyboard fallback start anchor=home plain=3` 算法正确执行，但 `verify failed got_len=0`——**选区读通道也死**（GetSelection 恒空），键盘选区无法验证。至此 ZCode 的选区读写两通道全灭，而全文读通道 ✓、退格注入 ✓ 始终正常——「失效面」是选区专属。第三层兜底（`27e6896`）：**整框重写**——真机探测 ZCode 输入框有 ValuePattern（readOnly=False），读全文 → BuildWholeFieldReplacement 全文定位替换（簇表精确边界匹配，落在簇中间/越界拒绝）→ SetValue 写回 → 全文终验。不依赖选区通道、不依赖语音注入记录（「对整个输入框内容进行编辑，判断不依赖语音输入内容变化」的用户语义）。兜底层级：选区写+读回轮询（原生零回归）→ 整框重写 → 键盘选区 → 兜底拒绝。日志判据：`whole-field rewrite applied full_len=` + `result=ok`=闭环；`whole-field rewrite unavailable` = 目标无 ValuePattern（微信能力未知，凭日志定性）。SetValue 落地质量待真机验收（终验兜底防误伤）。
 
+## 追加（2026-11-04 第三轮）：SetValue 同为 S_OK 空转——整框替换改走 Ctrl+A 全选粘贴（`e40537f`）
+
+- 复测判据：`whole-field rewrite applied full_len=27` → `verify unconfirmed expected_len=27 actual_len=27 still_old=1`——**SetValue 返回成功但字段一字未变**（still_old=1=动作前原样）。至此 ZCode 上 UIA 写 API 全线实证 S_OK 空转（Select、SetValue），选区读（GetSelection）恒空；键盘兜底因无法验证被安全模型正确拦截。**UIA 读写通道全灭，SendInput 键盘是唯一活着的写通道**（退格删除一直在该目标上成功）。对照组 Notepad 同轮 `result=ok`。
+- 修复：整框替换改走 `Ctrl+A 全选 + Ctrl+V 粘贴`（`ReplaceAllWithPaste`，复用 ClipboardVault 快照基建）——**Ctrl+A 语义固定=全选，无光标算术无错位；失败模式全部无损**（焦点错/粘贴被忽略 → 字段原样 → still_old 提示）。砍掉 SetValue 层（实证死路）与键盘选区层（依赖的选区读验证在同目标上已死）。终验轮询窗 ≈2.7s 覆盖粘贴异步落地。
+- 日志判据：`voice targeted whole-field paste applied full_len=` → `result=ok`=闭环；`verify unconfirmed still_old=1` = Ctrl+A/Ctrl+V 也未落地（下一层查焦点 HWND 分发）。
+- 教训累积：**Chromium 原生 UIA 的「写」面（Select/SetValue）在部分 Electron 应用上整体空转且返回成功——平台写 API 的返回值在 Chromium 上完全没有可信度**，验证必须走「动作后读回」。终态方案反而最朴素：全文读（活）+ 键盘全选粘贴（活）+ 全文终验（活）。
+
 ## 互链
 
 - 同功能准确率分层排查：`targeted-edit-accuracy-layered-triage-2026-10-28.md`
