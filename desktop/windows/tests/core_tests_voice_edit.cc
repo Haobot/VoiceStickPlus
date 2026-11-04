@@ -1038,6 +1038,36 @@ void TestVoiceEditCoordinatorDisabledPastesNormally() {
     assert(harness.ui().timed_messages.empty());
 }
 
+// UIPI：前台为高完整性进程（2026-11-04 微信实锤 Weixin.exe = S-1-16-12288 High，
+// 本进程 Medium）时，中完整性本进程的 SendInput 注入被系统静默丢弃——粘贴无效
+// 且 Paste 无回执，还会写入假成功的编辑记录污染后续 targeted。不粘贴、不写记录，
+// toast 提示以管理员运行。
+void TestVoiceEditCoordinatorElevatedForegroundSkipsPaste() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceEditHarness harness(config);
+    harness.probe().elevated = true;
+    harness.probe().elevated_process = L"Weixin.exe";
+    const std::size_t toasts_before = harness.ui().timed_messages.size();
+    harness.RecordAndStop(91);
+    harness.asr().on_final("我要去北京吃烤鸭");
+    assert(harness.PumpUntil([&] {
+        return harness.ui().timed_messages.size() > toasts_before;
+    }));
+    assert(harness.input().pasted_text.empty());  // 不粘贴
+    assert(harness.ui().timed_messages.back() ==
+           WithToastDuration(Tr(StringId::kPasteElevated, harness.language())));
+    // 记录未写：紧接着的旧删除命令按 noInjection 拒绝（零退格）。
+    const std::size_t toasts_mid = harness.ui().timed_messages.size();
+    harness.RecordAndStop(92);
+    harness.asr().on_final("删除刚才的");
+    assert(harness.PumpUntil([&] {
+        return harness.ui().timed_messages.size() > toasts_mid;
+    }));
+    assert(harness.input().sent_key_combos.empty());  // 无退格 = 记录确实未写
+}
+
 // ======================= targeted 编辑：协调器级 Fake 验证 =======================
 // 与 macOS Tests/VoiceStickTests/CoordinatorFsmTests.swift 的 targeted 段同向量：
 // 完整调用顺序（select → 读回 → 一次 delete/paste(false) → 恢复末尾 → 终验 → 更新）、
@@ -2378,6 +2408,7 @@ void RunVoiceEditTests() {
     TestVoiceEditCoordinatorUnverifiedWindowExecutes();
     TestVoiceEditCoordinatorStrictRejectsUnreadable();
     TestVoiceEditCoordinatorDisabledPastesNormally();
+    TestVoiceEditCoordinatorElevatedForegroundSkipsPaste();
     TestTargetedCoordinatorDelete();
     TestTargetedCoordinatorReplace();
     TestTargetedCoordinatorKeepsAutoEnterNewline();

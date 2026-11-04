@@ -9,7 +9,7 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kVoiceTargetedUndoChanged) + 1;
+constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kPasteElevated) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -678,6 +678,7 @@ constexpr StringTable EnglishStrings() {
         "The text changed; say the edit command again";
     table[Index(StringId::kVoiceTargetedUndoOk)] = "Edit undone";
     table[Index(StringId::kVoiceTargetedUndoChanged)] = "The text changed; cannot undo";
+    table[Index(StringId::kPasteElevated)] = "The target window has elevated permissions. Run VoiceStick as administrator.";
     return table;
 }
 
@@ -1291,6 +1292,7 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kVoiceTargetedClarifyChanged)] = "文本已变化，请重新说修改指令";
     table[Index(StringId::kVoiceTargetedUndoOk)] = "已撤销修改";
     table[Index(StringId::kVoiceTargetedUndoChanged)] = "文本已变化，无法撤销";
+    table[Index(StringId::kPasteElevated)] = "目标窗口权限较高，无法输入；请以管理员身份运行 VoiceStick";
     return table;
 }
 

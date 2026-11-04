@@ -731,6 +731,24 @@ void VoiceStickCoordinator::CompletePendingPaste(const std::string& raw_text, bo
     }
     pending_paste_entered_at_ms_ = 0;
     pending_paste_state_ = {};
+    // UIPI 前置检查：前台为高完整性进程（2026-11-04 微信实锤 Weixin.exe =
+    // S-1-16-12288 High，本进程 Medium）时，中完整性本进程的 SendInput 注入被
+    // 系统静默丢弃——粘贴无效且 Paste 无回执，继续走还会写入假成功的编辑记录
+    // 污染后续 targeted。检测到即提示提权并放弃注入。
+    if (foreground_probe_ != nullptr) {
+        std::wstring elevated_process;
+        if (foreground_probe_->IsForegroundHigherIntegrity(elevated_process)) {
+            LogCoordinatorLine("paste skipped: foreground elevated proc=" +
+                               std::string(elevated_process.begin(), elevated_process.end()));
+            ui_->ShowTimedMessage(
+                Tr(StringId::kPasteElevated,
+                   EffectiveUiLanguage(ConfigSnapshot()->ui_language)),
+                kVoiceEditToastMs);
+            FinishRecognitionCycle();
+            EnterReady("paste_elevated");
+            return;
+        }
+    }
     FinishRecognitionCycle();
     // 时序探针汇总：button_up -> ready 各阶段耗时，定位 Thinking 延迟根因。
     LogLatencyProbeBreakdown("paste_complete");

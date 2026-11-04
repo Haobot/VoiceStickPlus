@@ -635,6 +635,7 @@ enum class StringId {
     kVoiceTargetedClarifyChanged,    // 文本已变化，请重新说修改指令
     kVoiceTargetedUndoOk,       // 已撤销修改
     kVoiceTargetedUndoChanged,  // 文本已变化，无法撤销
+    kPasteElevated,             // 目标窗口权限较高，无法输入；请以管理员身份运行 VoiceStick
 };
 
 // 返回 UTF-8 本地化文本
