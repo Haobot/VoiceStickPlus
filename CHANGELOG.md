@@ -1,6 +1,30 @@
 # CHANGELOG.md
 
-## Unreleased
+## v2.5.0
+
+完整发布轮（固件 2.5.0 + macOS + Windows MSI 双端，2026-11-04 发布；GitHub Release / COS 国内源 / 网页+AppCast 三渠道同步，终验 8 项全绿）。本版包含固件 2.5.0，设备 OTA 自动提示升级，建议 app 与固件一起升（固件含音频链路与功耗改进）。双端语音编辑默认开启；本地离线识别为实验特性、默认关，模型需在设置中手动下载。
+
+- 新增（macOS + Windows）：**标点独词输入**——单独说「句号」「逗号」等标点名，直接上屏符号本身；配套修复句中「去句号」误删单独口述句号的交叉场景。
+- 新增（macOS）：**本地离线识别（实验）**——`[local_asr]` SenseVoice 本地 ASR（默认关）：设备语音会话整体走本地识别，断网可用、零 API 成本、音频不出本机；修复引擎 weak 引用被过早释放致音频静默丢弃卡 Listening。配套设置页「服务提供方」本地虚项与应用内模型下载器（LLM GGUF 档位 pin Ollama registry blob——同名官方量化行为有实质差异，量化文件不可互换）；内嵌 llama.cpp（运行时 dylib 由 `scripts/fetch-llama-cpp.sh` 编译合成，无 dylib 如实降级）：精修 editform 与 targeted 目标词对齐可走本地小模型兜底（默认关；候选恒为最近注入的真实子串 + 代码复验，失败回退旧行为）。评测定案：SenseVoice+editform×qwen2.5:3b 为当前最优组合，整句重写判死（任务形态定律——换任务形态必须重跑 `scripts/local_align_bench` 选型）。
+- 新增（Windows）：**热词体系升级**——热词分区管理；智能热词管理（上下文自动切换领域分类、冷词自动清理进回收池、池内词回升自动恢复、活跃度随使用频率动态更新）；热词碟（设置页托盘组件自动聚合各分类高活跃热词优先匹配）+ 领域语境自动推理；热词设置页外部配置变更同步。macOS 端新增热词候选挖掘管道（精修 diff 挖掘 + 设置页候选确认入库）。
+- 新增（macOS + Windows）：**纠错学习闭环（用户数据飞轮 P0→P3）**——纠错对资产化（精修 diff 提取替换对 + 精修 prompt few-shot 注入）；编辑追踪（注入后 AX 读窗捕获用户手动修改，edited 对入纠错对库）；会话历史数据底座（SQLite history 表同 schema 双端，Windows vendored SQLite）；纠错对 App 场景分域（采集打桶 + 当前桶∪全局桶查询）；拼音同音/近音入表闸门（same_pronunciation 标注 + few-shot 优先）；改写对全句精确命中直接替换跳过精修；负信号采集（确认/取消/重录/停留时长全埋点 JSONL 事件流）+ recall_count 保留信号与低精确率降权；Windows 纠错后原地替换选中文本；火山 dialog_ctx（最近精修文本随 ASR 直传）。
+- 新增（macOS）：**小米遥控器长按连发**——方向/删除/音量 inject 键按住重复，节拍可调；直连 HID 与网关 `gateway_key` 双路径。
+- 新增（macOS）：**小米遥控器电源键自定义**——补齐与 Windows 一致的 12 键全集（HID usage 0x66；直连 IOHID 观察层拦截并吞除 systemDefined 双形态原生电源事件；网关按 has_mapping 路由 software/passthrough）。2026-10-19 真机验收通过；网关模式 power 映射与未映射原生行为待实测。详见 `Doc/Expe/macos-power-key-dual-form-system-defined-2026-10-19.md`。
+- 新增（Windows）：**电池监测**——托盘实时电量指示 + 实时电压曲线；开发者模式快速采集；断连重连逻辑优化与全链路诊断日志。
+- 新增（Windows）：**虚拟麦克风增强**——直通输出模式；虚拟麦克风设备重命名；设备级麦克风模式。
+- 新增（macOS）：**悬浮窗液态玻璃**——原生 `NSGlassEffectView` `.clear` 控件级玻璃定稿（菜单化对齐；透明度滑杆改「霜化」语义，同明暗族基底修「调透明度像调亮度」）。三轮迭代经验沉淀 `Doc/Expe/`。
+- 新增（macOS）：设置底部按钮行「启动音频调试」——启动 `spectrogram_server.py` 回放页供开发者回听。
+- 新增（固件）：BLE 断连自动记录诊断数据（断连原因可追溯）；设备息屏进入动态电源管理 + LVGL tick 调整降待机功耗。
+- 改进（macOS）：**精修链路延迟**——预算回退 + 打点 + 短文本跳过，长尾从 29s 压到按文本长度封顶；DeepSeek 模型名命中自动注入 `thinking:{type:disabled}` + reasoning 活动喂活首 token 预算（修思考链拖垮精修）。
+- 改进（macOS + Windows + 固件）：**耳语电平 AGC v2/v2.1**——自适应噪声预算门 + 增益上限 +12→+36dB（四端同步）；v2.1 click guard 移到 AGC 之前（真机根因：咔哒污染本底导致耳语整场不放大）。真机验收：耳语语音帧 RMS -22.1dBFS、增益 +26.6→+35dB；近场大声峰值 -5.8dBFS 零削波。
+- 修复（固件 + macOS）：**遥控器网关链路录音卡顿/变快发闷**（三缺陷叠加）——① I2S DMA 环 30ms 小于单次读请求 40ms 零余量致丢样 13%~50%（环加深 80ms + audio_task 优先级 7）；② 遥控器采集均匀压缩 ~9%（基频 108.1 vs Stick 98.8Hz、帧数比 0.909 互证），Stick 侧做时间基自适应伸缩修正；③ 修正插值必须三次（Catmull-Rom）——线性插值 4kHz 即 -3dB（听感发闷）。判据：设备串口 `source=`/`frame=`（应 =40000us）/`stretch=`。详见 `Doc/Expe/remote-gateway-audio-speed-timbre-2026-10-16.md`。
+- 修复（Windows + 固件）：BLE 连接参数协商与音频卡顿。
+- 修复（macOS）：**targeted 编辑在 Chromium 系目标必败**——AX 选区/光标写（kAXSelectedTextRange 等）经 renderer 异步生效，写后立即读回必拿旧值；读回与终验改小步轮询确认。验收纪律：注入/AX 类功能必须覆盖一个 Electron/浏览器文本目标（原生 TextEdit 通过≠Chromium 可用）。详见 `Doc/Expe/targeted-replace-chromium-ax-async-write-2026-10-29.md`。
+- 修复（macOS）：设置窗口内容装 NSScrollView 支持滚动——开发者模式全展开超屏可滚到底。
+- 修复（macOS）：编辑追踪纯追加编辑崩溃——`extractReplacementPairs` 空侧入参返回空对。
+- 工程：RNNoise vendored 源码 MSVC 编译兼容（5 处 C99 VLA 改头文件定长上限 + M_PI 走 `_USE_MATH_DEFINES`，源码零改动，双侧 `CRnnoise` 同步）；`scripts/e2e_test/run_audio_regression.py` 语料合成音频回归闭环（`--watch` 监听 / `--install-hook` commit 触发）；build-msi.bat VS 探测钉回 MSVC 2022（vswhere -latest 随新装主版本漂移致工具链混用）；语音编辑 Windows 平台代码 MSVC 首验编译修复并在本轮发布构建 MSVC/CTest 全量通过；`probe_refine_latency.py` 精修延迟基准；固件关闭编解码器 I2C 向后兼容配置。
+- 新增（macOS + Windows）：**语音编辑指令（基础版）**——说完话后直接说"删掉最后两个字"/"删除最后一句"/"删除刚才的/撤销"/单独"删除"（默认删 1 字），桌面端在 ASR final 后本地整句白名单解析（零额外延迟、不依赖云端），删除最近一次语音注入到 focused_app 的文本尾部；支持字/句/整段，仅对最近一次注入且光标仍在该文本末尾时生效（字段+光标校验，失败安全拒绝并提示），字幕/微信输入法模式不支持。配置 `[voice_edit]` 默认开启，设置页「语音编辑」区块可关闭或调整单独"删除"的默认字数；设计见 `Doc/Plan/voice-edit-commands.md`，字段见 `Doc/Ref/desktop-config.md`。
+- 工程：macOS 新增 VoiceEditParser/VoiceEditPlanner 纯逻辑（解析 52 正例/34 负例 + 计划向量）与协调器级命令轮集成测试，`swift run VoiceStickTests` PASSED 1336/1336（基线 1053）；Windows 侧纯逻辑与 macOS 同向量（本机 clang 对拍 + CTest 套件 `RunVoiceEditTests` 已注册，Windows 环境待执行）；AX 读取含 macOS 27 system-wide 失效时的前台应用级 fallback。真机验收矩阵见方案 §11.3。
 
 - 新增（macOS + Windows）：**语音编辑批次 2——追问「第几个」+ 整个输入框可编辑 + 上下文撤销 + 尾删光标降级**（`[voice_edit].field_scope` 默认 true，false 完全回到批次 1 行为）。「替换/删除X」升级为**整框搜索域**：最近一次语音输入唯一命中时优先改它（末尾追加+唯一匹配与批次 1 完全一致——回归底线），否则扩展到整个输入框（手改过的注入、更早口述、手打文字都可改；批次 1 验收 C2「注入被手改后替换被拒」修复；显式「刚才的」在注入不可定位时退回整框；整框 >200,000 UTF-16 新失败码 `field_too_long` 拒绝）。目标多处时**追问「第几个」**（20 秒有效）：弹「找到 N 处X，请说第几个」，紧接着说「第二个/倒数第一个/最后一个/裸数字」直接执行（执行前同域重算出现次数，变化拒绝重说；越界提示「只有 N 处」并保留等待；取消词退出；非应答一律放行正常链路，绝不吞正常说话）；位置词扩展第 N 个/倒数第 N 个（中文一…九十九+阿拉伯 1–99），越界新失败码 `position_out_of_range`。**上下文撤销**：「撤销/撤回(刚才的)」30 秒内、同应用、字段与编辑后状态严格一致时还原上一次语音修改（targeted 替换/删除与尾删都记录锚点；一级撤销；不满足条件走原「删掉刚才整句」语义，行为不变）。**尾删光标降级**：定位失败且光标折叠时「删掉最后N个字/句」降级为删光标前 N 字/句（deleteAll 不降级；开关关不降级）；`voiceEditFieldMismatch` 文案改「刚才的输入已被修改，未删除」。**有意变化**：targeted 光标恢复统一「原位置+平移」（段首/段中不再跳到段末；末尾追加情形不变）；设置页语音编辑提示更新为整框语义。纯逻辑双端同向量（macOS `VoiceTargetedDomain.swift`/`VoiceEditOrdinalReply.swift`；Windows `voice_targeted_domain.{h,cc}` 单文件承载），`swift run VoiceStickTests` PASSED 2116/2116（批次 1 基线 1850）；Windows 纯逻辑本机 clang 链接运行全绿（-Wall 零警告），协调器/UIA 全文读取与绝对选区路径待 Windows 机 MSVC/CTest 补验。实施记录见 `Doc/Plan/voice-edit-commands.md` §17.9。
 
@@ -17,8 +41,11 @@
 
 ## v2.4.10
 
-- 新增（macOS + Windows）：**语音编辑指令**——说完话后直接说"删掉最后两个字"/"删除最后一句"/"删除刚才的/撤销"/单独"删除"（默认删 1 字），桌面端在 ASR final 后本地整句白名单解析（零额外延迟、不依赖云端），删除最近一次语音注入到 focused_app 的文本尾部；支持字/句/整段，仅对最近一次注入且光标仍在该文本末尾时生效（字段+光标校验，失败安全拒绝并提示），字幕/微信输入法模式不支持。配置 `[voice_edit]` 默认开启，设置页「语音编辑」区块可关闭或调整单独"删除"的默认字数；设计见 `Doc/Plan/voice-edit-commands.md`，字段见 `Doc/Ref/desktop-config.md`。
-- 工程：macOS 新增 VoiceEditParser/VoiceEditPlanner 纯逻辑（解析 52 正例/34 负例 + 计划向量）与协调器级命令轮集成测试，`swift run VoiceStickTests` PASSED 1336/1336（基线 1053）；Windows 侧纯逻辑与 macOS 同向量（本机 clang 对拍 + CTest 套件 `RunVoiceEditTests` 已注册，Windows 环境待执行）；AX 读取含 macOS 27 system-wide 失效时的前台应用级 fallback。真机验收矩阵见方案 §11.3。
+录音音质与识别精度改进轮（2026-10-14 发布，固件 2.4.10 随版 OTA；Windows MSI 无功能变更、版本号随发布对齐）：
+
+- 改进（macOS + Windows + 固件）：**录音音质与识别精度（本版核心）**——固件音频链路参数收紧：软件高通滤波 90→120Hz（喷麦爆破音能量实测集中在 100-150Hz）、AGC 目标 -6→-12dBFS、增益上限 +20→+12dB。爆点不再撞限幅产生削波失真，语音间隙底噪泵升直降约 8dB；近场说话、喷麦场景的语音识别准确率明显提升（真机 A/B 已验证）。
+- 新增（macOS + Windows）：**桌面端人声增强/降噪（RNNoise，PoC）**——新增 `audio_noise_suppression` 配置项（默认关）。开启后 ASR 前对音频做 RNNoise 频域降噪（抑制风扇/空调/环境稳态底噪），macOS 与 Windows 双端可用（vendored 同源：macOS `Sources/CRnnoise`、Windows `desktop/windows/third_party/rnnoise`）；仅覆盖主输入路径，处理失败自动回退透传，增加约 10ms 时延。
+- 改进（macOS）：**小米遥控器直连模式**——桌面端后处理链 HPF/AGC 与固件同步收紧，音质与网关模式拉齐。
 
 ## v2.4.9
 
