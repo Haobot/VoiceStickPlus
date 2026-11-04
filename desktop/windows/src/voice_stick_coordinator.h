@@ -763,6 +763,16 @@ private:
                                   const VoiceTargetedPlan& plan,
                                   std::size_t tail_utf16_length,
                                   const TargetedExecutionContext& exec);
+    // 选区读回轮询确认后执行动作（对齐 macOS verifyTargetedSelectionThenAct，
+    // Doc/Expe/targeted-replace-chromium-ax-async-write-2026-10-29）：Chromium 系
+    // 目标（Electron/浏览器）UIA 选区写经 renderer 异步生效，写后立即读回必拿旧
+    // 值——按 kVoiceTargetedReadbackPollDelays 小步轮询 ReadSelectedText（只追加
+    // 读操作，绝不重写选区），命中才执行单次动作；耗尽走 fieldMismatch 拒绝
+    // （零改动、记录保留）。入口代际守卫，重入每拍再核（新注入即失效）。
+    void VerifyTargetedSelectionThenAct(const VoiceTargetedCommand& command,
+                                        const VoiceTargetedPlan& plan,
+                                        const TargetedExecutionContext& exec,
+                                        std::uint64_t generation, int attempt);
     void FinalizeVoiceTargetedEdit(std::uint64_t generation, const VoiceTargetedPlan& plan,
                                    std::string expected_tail, std::string pre_action_tail,
                                    const VoiceTargetedCommand& command,

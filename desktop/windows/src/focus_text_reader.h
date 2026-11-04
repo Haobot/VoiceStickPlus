@@ -45,23 +45,30 @@ std::unique_ptr<IFocusTextReader> CreateFocusTextReader();
 
 // targeted 编辑平台出口（UIA TextRange 精确选区；Doc targeted 章节）：
 // 只写选区、不写整个字段 Value；全部操作必须在 UI 线程（COM STA）。
+//
+// 写/读拆分（对齐 macOS 780d1a2，Doc/Expe/targeted-replace-chromium-ax-async-write）：
+// Chromium 系目标（Electron/浏览器）UIA 选区写经 renderer 异步生效，写后立即读回
+// 必拿旧值 → 写一次选区、由调用方小步轮询读回确认；轮询只追加读操作，绝不重写。
 class ITargetedFieldEditor {
 public:
     virtual ~ITargetedFieldEditor() = default;
 
+    // ---- 写选区（只写不读；生效时延由调用方轮询 ReadSelectedText 确认）----
     // 选中字段尾部窗口内 [tail_relative_start, +length)（UTF-16 码元，相对
-    // focus_text_reader 尾部窗口起点换算后的文档绝对位置由实现完成），并读回
-    // 实际选中文本（UTF-8）写入 selected_text。成功返回 true；失败返回 false
-    // （调用方按不可验证拒绝，绝不降级为盲操作/全选重贴/Ctrl+Z）。
-    virtual bool SelectAndReadBack(std::size_t tail_relative_start_utf16,
-                                   std::size_t length_utf16,
-                                   std::string* selected_text) = 0;
+    // focus_text_reader 尾部窗口起点换算后的文档绝对位置由实现完成）。失败返回
+    // false（调用方按不可验证拒绝，绝不降级为盲操作/全选重贴/Ctrl+Z）。
+    virtual bool SelectTailRange(std::size_t tail_relative_start_utf16,
+                                 std::size_t length_utf16) = 0;
 
-    // 批次 2（整框搜索域）：以**文档绝对偏移**设置选区并读回（整框域全文坐标；
-    // 与尾窗坐标无关）。TODO(win): 待 Windows 机编译+CTest 验证。
-    virtual bool SelectAndReadBackAbsolute(std::size_t abs_start_utf16,
-                                            std::size_t length_utf16,
-                                            std::string* selected_text) = 0;
+    // 批次 2（整框搜索域）：以**文档绝对偏移**写选区（整框域全文坐标；与尾窗
+    // 坐标无关）。TODO(win): 待 Windows 机编译+CTest 验证。
+    virtual bool SelectAbsoluteRange(std::size_t abs_start_utf16,
+                                     std::size_t length_utf16) = 0;
+
+    // ---- 读选区（只读不写；轮询重入安全）----
+    // 读回当前实际选中文本（UTF-8）：GetSelection → 恰 1 个 range → GetText。
+    // 恰 1 个选区之外（0 个或多个）返回 false。
+    virtual bool ReadSelectedText(std::string* selected_text) = 0;
 
     // 光标折叠定位到文档末尾（修改后的安全光标恢复）。
     virtual bool MoveCaretToEnd() = 0;

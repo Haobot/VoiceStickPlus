@@ -1472,16 +1472,15 @@ void VoiceStickCoordinator::ExecuteVoiceTargetedEdit(
     // 绝对：整框/全文域下计划偏移即文档绝对偏移。
     const std::size_t selection_start = plan.anchor_start_utf16 + plan.occurrence.utf16_start;
 
-    // 1. 平台精确选区 + 读回实际选中文本；2. 逐字 == target 才继续。
-    // 选区已尝试但任一步失败：尽力恢复安全光标（末尾），按不可验证拒绝（不修改）。
-    std::string selected_text;
+    // 1. 平台精确选区（只写不读；Chromium 系目标选区写经 renderer 异步生效，
+    // 读回确认交给读回轮询）。写失败：尽力恢复安全光标（末尾），按不可验证拒绝
+    // （不修改）。
     const bool selected_ok =
         exec.absolute_coords
-            ? editor->SelectAndReadBackAbsolute(selection_start,
-                                                plan.occurrence.utf16_length, &selected_text)
-            : editor->SelectAndReadBack(selection_start, plan.occurrence.utf16_length,
-                                        &selected_text);
+            ? editor->SelectAbsoluteRange(selection_start, plan.occurrence.utf16_length)
+            : editor->SelectTailRange(selection_start, plan.occurrence.utf16_length);
     if (!selected_ok) {
+        LogVoiceEditFailure("selected_range", "verify_unavailable");
         editor->MoveCaretToEnd();
         ui_->ShowTimedMessage(
             Tr(VoiceTargetedFailureMessageId(VoiceTargetedFailure::kVerifyUnavailable),
@@ -1489,10 +1488,55 @@ void VoiceStickCoordinator::ExecuteVoiceTargetedEdit(
             kVoiceEditToastMs);
         return;
     }
-    if (selected_text != command.target) {
-        // 选区读回不符：恢复安全光标（末尾），零删除/零粘贴；字段文本未被改动 →
-        // 记录保留有效。
-        editor->MoveCaretToEnd();
+    // 2. 读回轮询确认后执行（同步生效目标首次读即中，零重试、行为不变）。
+    VerifyTargetedSelectionThenAct(command, plan, exec, generation, /*attempt=*/0);
+}
+
+void VoiceStickCoordinator::VerifyTargetedSelectionThenAct(
+    const VoiceTargetedCommand& command, const VoiceTargetedPlan& plan,
+    const TargetedExecutionContext& exec, std::uint64_t generation, int attempt) {
+    if (generation != voice_edit_generation_) return;  // stale：新注入已接管
+    auto* editor = targeted_field_editor_.get();
+    std::string selected_text;
+    const bool read_ok = editor != nullptr && editor->ReadSelectedText(&selected_text);
+    if (!read_ok || selected_text != command.target) {
+        // 选区写尚未在目标落地（Chromium 系目标写选区经 renderer 异步生效，写后
+        // 立即读回必拿旧值）：小步轮询只追加读操作、绝不重写选区，命中或耗尽才
+        // 落判定；重入每拍再核代际（新注入即失效）。
+        static constexpr std::chrono::milliseconds kVoiceTargetedReadbackPollDelays[] = {
+            std::chrono::milliseconds(30), std::chrono::milliseconds(60),
+            std::chrono::milliseconds(120), std::chrono::milliseconds(200)};
+        static constexpr int kVoiceTargetedReadbackAttempts =
+            static_cast<int>(sizeof(kVoiceTargetedReadbackPollDelays) /
+                             sizeof(kVoiceTargetedReadbackPollDelays[0]));
+        if (attempt < kVoiceTargetedReadbackAttempts) {
+            if (attempt == 0) {
+                const auto got_len =
+                    read_ok ? static_cast<std::ptrdiff_t>(selected_text.size()) : -1;
+                LogCoordinatorLine("voice targeted readback retry got_len=" +
+                                   std::to_string(got_len));
+            }
+            const auto alive = alive_;
+            std::thread([this, alive, generation, command, plan, exec, attempt]() {
+                std::this_thread::sleep_for(kVoiceTargetedReadbackPollDelays[attempt]);
+                if (!alive->load()) return;
+                RunOnUiThread([this, alive, generation, command, plan, exec, attempt]() {
+                    if (!alive->load()) return;
+                    VerifyTargetedSelectionThenAct(command, plan, exec, generation,
+                                                   attempt + 1);
+                });
+            }).detach();
+            return;
+        }
+        // 耗尽：选区读回不符——恢复安全光标（末尾），零删除/零粘贴；字段文本
+        // 未被改动 → 记录保留有效。
+        const auto got_len =
+            read_ok ? static_cast<std::ptrdiff_t>(selected_text.size()) : -1;
+        LogCoordinatorLine("voice targeted readback mismatch expected_len=" +
+                           std::to_string(command.target.size()) +
+                           " got_len=" + std::to_string(got_len));
+        LogVoiceEditFailure("selected_text", "field_mismatch");
+        if (editor != nullptr) editor->MoveCaretToEnd();
         ui_->ShowTimedMessage(
             Tr(VoiceTargetedFailureMessageId(VoiceTargetedFailure::kFieldMismatch),
                EffectiveUiLanguage(ConfigSnapshot()->ui_language)),
@@ -1611,7 +1655,10 @@ void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(
     }
     if (verified) {
         // 批次 2 交付 C：注入记录维护（lastInjection 域写新 remaining；整框域
-        // update/keep/invalidate 三情形）+ 交付 E：撤销记录。
+        // update/keep/invalidate 三情形）+ 交付 E：撤销记录。成功日志（对齐
+        // macOS result=ok：执行环节所有出口必须有痕，否则排障只能靠探针重建）。
+        LogCoordinatorLine("voice targeted result=ok target_len=" +
+                           std::to_string(plan.target_graphemes));
         ApplyTargetedRecordMaintenance(plan, exec);
         RecordTargetedUndo(command, plan, exec, expected_tail);
         ui_->ShowTimedMessage(VoiceTargetedResultMessage(plan, language), kVoiceEditToastMs);
@@ -1959,9 +2006,14 @@ void VoiceStickCoordinator::ExecuteVoiceEditUndo(const LastVoiceEditRecord& reco
     }
     // 1. 选中编辑后区间（删除类折叠）+ 读回实际选中文本；2. 替换类逐字 == 插入
     //    文本才继续（删除类折叠区间跳过读回比对）。
+    // 写/读分离接口（读回轮询拆分后的迁移）：undo 保持写后单次读回、行为与旧
+    // SelectAndReadBackAbsolute 逐字节一致；Chromium 系异步生效目标上的 undo
+    // 读回为已知遗留（targeted 执行链已轮询，undo 待有测试基建后同步）。
     std::string selected_text;
-    if (!editor->SelectAndReadBackAbsolute(record.edit_start_utf16,
-                                           record.edit_length_utf16, &selected_text)) {
+    const bool selected_ok = editor->SelectAbsoluteRange(record.edit_start_utf16,
+                                                         record.edit_length_utf16) &&
+                             editor->ReadSelectedText(&selected_text);
+    if (!selected_ok) {
         editor->MoveCaretToEnd();
         LogCoordinatorLine("voice edit undo result=failure code=verify_unavailable");
         LogVoiceEditFailure("selected_range", "verify_unavailable");

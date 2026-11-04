@@ -1140,9 +1140,10 @@ public:
 
 class VoiceTargetedFakeEditor : public ITargetedFieldEditor {
 public:
-    bool SelectAndReadBack(std::size_t tail_relative_start_utf16, std::size_t length_utf16,
-                           std::string* selected_text) override {
-        if (selected_text == nullptr || field == nullptr) return false;
+    // ---- 写/读分离（读回轮询，2026-11-04 对齐 macOS 780d1a2）----
+    bool SelectTailRange(std::size_t tail_relative_start_utf16,
+                         std::size_t length_utf16) override {
+        if (field == nullptr || select_fails) return false;
         ops->push_back("select");
         constexpr std::size_t kTail = 512;
         const std::size_t tail_len = std::min(kTail, field->doc.size());
@@ -1150,14 +1151,32 @@ public:
         if (tail_relative_start_utf16 + length_utf16 > tail_len) return false;
         field->sel_start = tail_start + tail_relative_start_utf16;
         field->sel_len = length_utf16;
-        if (drift) {
-            *selected_text = "北";  // 模拟平台读回漂移（≠ target）
-        } else {
-            *selected_text = Utf8FromUtf16ForTest(
-                std::wstring_view(field->doc).substr(field->sel_start, field->sel_len));
-        }
         return true;
     }
+    bool SelectAbsoluteRange(std::size_t abs_start_utf16,
+                             std::size_t length_utf16) override {
+        if (field == nullptr || select_fails) return false;
+        ops->push_back("select");
+        if (abs_start_utf16 + length_utf16 > field->doc.size()) return false;
+        field->sel_start = abs_start_utf16;
+        field->sel_len = length_utf16;
+        return true;
+    }
+    // 读回当前选中文本；stale_reads > 0 时返回漂移旧值并递减——模拟 Chromium 系
+    // 目标选区写经 renderer 异步生效（写后前 N 次读回仍是写入前旧选区内容）。
+    bool ReadSelectedText(std::string* selected_text) override {
+        if (selected_text == nullptr || field == nullptr) return false;
+        ops->push_back("read");
+        if (stale_reads > 0) {
+            --stale_reads;
+            *selected_text = "北";  // 选区写未在目标落地（读回 ≠ target）
+            return true;
+        }
+        *selected_text = Utf8FromUtf16ForTest(
+            std::wstring_view(field->doc).substr(field->sel_start, field->sel_len));
+        return true;
+    }
+
     bool MoveCaretTo(std::size_t tail_relative_utf16) override {
         if (field == nullptr) return false;
         constexpr std::size_t kTail = 512;
@@ -1177,22 +1196,6 @@ public:
         field->sel_len = 0;
         return true;
     }
-    // 批次 2（整框域）：绝对偏移选区/光标（Fake 文档即全文，直接落位）。
-    bool SelectAndReadBackAbsolute(std::size_t abs_start_utf16, std::size_t length_utf16,
-                                   std::string* selected_text) override {
-        if (selected_text == nullptr || field == nullptr) return false;
-        ops->push_back("select");
-        if (abs_start_utf16 + length_utf16 > field->doc.size()) return false;
-        field->sel_start = abs_start_utf16;
-        field->sel_len = length_utf16;
-        if (drift) {
-            *selected_text = "北";
-        } else {
-            *selected_text = Utf8FromUtf16ForTest(
-                std::wstring_view(field->doc).substr(field->sel_start, field->sel_len));
-        }
-        return true;
-    }
     bool MoveCaretToAbsolute(std::size_t abs_utf16) override {
         if (field == nullptr) return false;
         ops->push_back(abs_utf16 >= field->doc.size() ? "end" : "abs");
@@ -1203,8 +1206,11 @@ public:
     }
     VoiceTargetedFakeField* field = nullptr;
     std::vector<std::string>* ops = nullptr;
-    bool drift = false;
     bool move_fails = false;  // 批次 1：模拟 UIA 移动失败（caret_move_failed 路径）
+    // 读回轮询脚本（对齐 macOS Chromium 异步生效语义）：stale_reads = 尚未落地的
+    // 读回次数（每次读回返回旧值并递减）；select_fails = 模拟 UIA 写选区失败。
+    int stale_reads = 0;
+    bool select_fails = false;
 };
 
 class VoiceTargetedInputInjector : public FakeInputInjector {
@@ -1400,7 +1406,7 @@ void TestTargetedCoordinatorDelete() {
     // 粘贴后 fake 字段与记录一致（reader 从字段读，tail=全文）。
     harness.ops().clear();
     assert(harness.RunCommand("删除刚才的北京", 122));
-    assert((harness.ops() == std::vector<std::string>{"select", "backspace", "end"}));
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "end"}));
     assert(harness.input().sent_key_combos.size() == 1);
     assert(harness.input().pasted_text == "我去北京上班");  // 命令轮不粘贴
     assert(harness.field().doc == L"我去上班");
@@ -1412,7 +1418,7 @@ void TestTargetedCoordinatorDelete() {
     // 记录已更新（remaining="我去上班"）：第二次删「上班」→ 字段「我去」。
     harness.ops().clear();
     assert(harness.RunCommand("删除刚才的上班", 123));
-    assert((harness.ops() == std::vector<std::string>{"select", "backspace", "end"}));
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "end"}));
     assert(harness.field().doc == L"我去");
 }
 
@@ -1445,25 +1451,55 @@ void TestTargetedCoordinatorKeepsAutoEnterNewline() {
     assert(harness.field().doc == L"你好\n");
 }
 
-// 选区读回不符：零删除/零粘贴 + 恢复末尾光标 + TextChanged + 记录保留。
-void TestTargetedCoordinatorSelectionReadbackMismatch() {
+// 选区读回不符用例已由 TestTargetedCoordinatorReadbackPollExhausts 覆盖
+// （2026-11-04 读回轮询改造：drift 恒漂移 = stale_reads 耗尽语义的特例）。
+
+// 读回轮询收敛（Chromium 异步生效，对齐 macOS 780d1a2）：选区写经 renderer
+// 异步落地，前 2 次读回仍是旧值，第 3 次读回命中后才执行动作——写一次选区、
+// 轮询只追加读操作；原生目标（stale_reads=0）首次读即命中，零重试。
+void TestTargetedCoordinatorReadbackPollConverges() {
     AppConfig config = AppConfig::Defaults();
     config.refine_enabled = false;
     config.auto_enter = false;
     VoiceTargetedHarness harness(config);
-    assert(harness.PasteText("我去北京上班", 151));
-    harness.editor().drift = true;
+    assert(harness.PasteText("我去北京上班", 221));
+    harness.editor().stale_reads = 2;
     harness.ops().clear();
-    assert(harness.RunCommand("删除刚才的北京", 152));
-    assert((harness.ops() == std::vector<std::string>{"select", "end"}));  // 无 backspace
-    assert(harness.field().doc == L"我去北京上班");
+    assert(harness.RunCommand("删除刚才的北京", 222));
+    // 1 次写选区 + 3 次读回（前 2 次旧值）→ 命中 → 一次 Backspace → 终验恢复。
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "read", "read",
+                                                      "backspace", "end"}));
+    assert(harness.input().sent_key_combos.size() == 1);
+    assert(harness.field().doc == L"我去上班");
+    std::string expected = Tr(StringId::kVoiceTargetedDeleted, harness.language());
+    const auto marker = expected.find("%d");
+    expected.replace(marker, 2, "2");
+    assert(harness.ui().timed_messages.back() == TargetedToast(expected.c_str()));
+}
+
+// 读回轮询耗尽：目标选区写彻底不生效（5 次读回全旧值）→ 零改动拒绝（零退格/
+// 零粘贴、恢复末尾光标、TextChanged toast）；字段未被改动 → 记录保留，同命令
+// 重试直接生效（安全模型：验证不过绝不盲改）。
+void TestTargetedCoordinatorReadbackPollExhausts() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 231));
+    harness.editor().stale_reads = 99;
+    harness.ops().clear();
+    assert(harness.RunCommand("删除刚才的北京", 232));
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "read", "read",
+                                                      "read", "read", "end"}));
+    assert(harness.input().sent_key_combos.empty());
+    assert(harness.field().doc == L"我去北京上班");  // 零改动
     assert(harness.ui().timed_messages.back() ==
            TargetedToast(Tr(StringId::kVoiceTargetedTextChanged, harness.language()).c_str()));
-    // 记录保留：漂移关闭后同命令可再执行。
-    harness.editor().drift = false;
+    // 记录保留：轮询恢复（stale 清零）后同命令重试直接生效。
+    harness.editor().stale_reads = 0;
     harness.ops().clear();
-    assert(harness.RunCommand("删除刚才的北京", 153));
-    assert((harness.ops() == std::vector<std::string>{"select", "backspace", "end"}));
+    assert(harness.RunCommand("删除刚才的北京", 233));
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "end"}));
     assert(harness.field().doc == L"我去上班");
 }
 
@@ -1487,7 +1523,7 @@ void TestTargetedCoordinatorFinalVerifyFailsInvalidates() {
     harness.input().swallow_backspace = false;
     harness.ops().clear();
     assert(harness.RunCommand("删除刚才的北京", 163));
-    assert((harness.ops() == std::vector<std::string>{"select", "backspace", "abs"}));
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "abs"}));
     assert(harness.field().doc == L"我去上班");
 }
 
@@ -1532,7 +1568,7 @@ void TestTargetedCoordinatorStaleGeneration() {
     std::this_thread::sleep_for(std::chrono::milliseconds(400));
     while (harness.PumpOnce()) {
     }
-    assert((harness.ops() == std::vector<std::string>{"select", "backspace"}));
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace"}));
     std::string expected = Tr(StringId::kVoiceTargetedDeleted, harness.language());
     for (const auto& toast : harness.ui().timed_messages) {
         assert(toast.find(expected.substr(0, expected.find("%d"))) == std::string::npos);
@@ -2237,7 +2273,8 @@ void RunVoiceEditTests() {
     TestTargetedCoordinatorDelete();
     TestTargetedCoordinatorReplace();
     TestTargetedCoordinatorKeepsAutoEnterNewline();
-    TestTargetedCoordinatorSelectionReadbackMismatch();
+    TestTargetedCoordinatorReadbackPollConverges();
+    TestTargetedCoordinatorReadbackPollExhausts();
     TestTargetedCoordinatorFinalVerifyFailsInvalidates();
     TestTargetedCoordinatorOffModeUnreadableRejects();
     TestTargetedCoordinatorStaleGeneration();
