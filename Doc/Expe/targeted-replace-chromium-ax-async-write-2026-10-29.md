@@ -60,6 +60,15 @@ targeted 执行链是「AX 写选区（kAXSelectedTextRange）→ **立即**读�
 - 修复（双端同构）：① 终验轮询窗 `[0.05, 0.1, 0.2]` → `[0.1, 0.2, 0.4, 0.8, 1.0]`（总窗 ≈2.7s）；② **窗末按内容分类**——文本仍是动作前原样＝动作未落地 → 记录保留只提示（后缀不变量仍成立：粘贴丢失时同命令重试直接生效，迟到落地时被 planner 字段校验拦下，均不污染字段）；文本变成第三种内容＝真不符 → 才失效记录；③ 中间轮次读到第三方文本不判死（粘贴中间态可能短暂为第三种文本），只在窗末分类。日志 `verify unconfirmed … still_old=0/1` 区分。
 - 教训：验证窗的长度要按**被验证动作自身的落地时延**定，而不是按读回通道的时延定；「平台返回成功 ≠ 对端可见」家族里，读回延迟与动作落地延迟是两个独立档位（后者更大）。
 
+## 追加（2026-11-04）：Windows 端同步缺失重演必败——v2.5.0 移植漏带本文修复，DebugAudio 回放定性「微信没显示」
+
+- 症状（Windows 用户实报）：Win 端记事本替换/删除正常，ZCode 输入框不行，微信输入框「更没有显示」。
+- 日志判据（Windows 旧二进制，< `950abd4`）：`voice targeted action=` 后**零日志** = 静默失败（Windows 移植时连本文的 result=ok 日志都未带，成功与 fieldMismatch 在日志上不可区分——本节教训在 Windows 重演）。
+- 根因：v2.5.0 的 Windows targeted 移植**带了 2026-10-31 终验轮询却漏了本文的读回轮询**——`focus_text_reader.cc` 的 `SelectAndReadBack` 在 UIA `Select()` 后立即 `GetSelection` 读回，Chromium UIA provider（ZCode=Electron）异步生效 → 必拿旧值 → fieldMismatch 零改动放弃。与 Mac 修复前完全同构（8 次 action 全部零日志：ZCode 3 败 + Notepad 5 成，用户报告与日志盲区完全吻合）。
+- 修复（Windows `950abd4`，双端同构）：`ITargetedFieldEditor` 写/读拆分（`SelectTailRange`/`SelectAbsoluteRange` 只写 + `ReadSelectedText` 只读），协调器按 `[30,60,120,200]`ms 轮询读回（只追加读操作）；补齐 `readback retry`/`readback mismatch`/`result=ok` 日志；TDD 两用例（stale_reads=2 收敛 / 耗尽零改动记录保留）先红后绿，CTest 2/2 绿。**移植教训：跨端移植功能要把源端该功能的全部后续修复 commit 链拉出来逐条对齐，不能只对齐「当时看到的代码形态」**——10-29 与 10-31 是两笔独立修复，只带后者的移植必然复现前者。
+- 微信（Weixin.exe 4.x）场景定性：**31 轮 DebugAudio 全量回放**（`scripts/e2e_test/replay_tencent_asr.py`，凭据从本机 config.toml 注入）证明微信场景 3 轮全是正文「我要去北京吃烤鸭。」（app 侧 paste_complete + record len=27=9 字剥尾标点吻合），**命令轮从未在微信发生**——用户主观「没有显示」到底是粘贴未上屏还是记忆混叠，修复后凭新日志复测定性（`result=ok`=闭环 / `readback mismatch` 耗尽=微信 UIA 选区写不可用需二期键盘兜底 / 正文 app 记录了但用户没见到=粘贴链路独立缺陷，头号嫌疑 150ms 剪贴板恢复竞态）。**没有识别文本前别给「微信不行」归因**——本次若按「微信也必败」提前改粘贴链路，就是朝错误方向动代码。
+- Windows 遗留：撤销链路（undo）已迁移到写读分离接口但保持单次读回（行为不变），Chromium 上 undo 读回为已知遗留，待测试基建后同步轮询。
+
 ## 互链
 
 - 同功能准确率分层排查：`targeted-edit-accuracy-layered-triage-2026-10-28.md`
