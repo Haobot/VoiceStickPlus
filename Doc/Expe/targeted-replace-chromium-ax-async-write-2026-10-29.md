@@ -75,7 +75,7 @@ targeted 执行链是「AX 写选区（kAXSelectedTextRange）→ **立即**读�
 - 生态佐证：Chromium 原生 UIA 自 Chrome 138 默认开启，ITextRangeProvider 有已知缺陷（issue 568011891），Electron 滞后。**「平台写调用返回成功」在 Chromium UIA 上甚至可能是纯 no-op——比「异步生效」更深的失效档位**。
 - 修复（`9f59d56`，本文预留的「AX 写彻底不可用目标的最后手段」落地）：UIA 读回耗尽 → 键盘选区兜底——`PlanKeyboardSelection`（grapheme 表精确边界匹配，落在簇中间一律拒绝；末尾锚 `Ctrl+End + Left×(G-ge) + Shift+Left×(ge-gs)` / 首锚 `Ctrl+Home + Right×gs + Shift+Right×(ge-gs)` 双方案按事件数取短；>2048 事件不可行）→ 后台线程逐键（12ms/键）→ 回 UI 线程读回轮询验证 → 命中才执行动作；验证不过 Ctrl+End 恢复 + fieldMismatch（零改动、记录保留——安全模型不变）。原生目标 UIA 路径优先命中，零回归。
 - **锚序列方向教训（测试对拍钉出来的）**：末尾锚不存在「先扩后缩」——锚在右端时 Shift+Right 移动的是左端（选区只会左移或消失）；正确序列是「无 Shift 方向键移到目标右端 ge，再 Shift+Left 选中 [gs,ge)」（锚固定在 ge，Shift 朝锚反方向移动）。首锚同理（Right 到 gs 再 Shift+Right）。fake 编辑器推演 + 断言失败暴露，纯靠公式推导时两处独立写反。
-- 验收待办：用户真机（ZCode）复测——日志判据 `voice targeted keyboard fallback start anchor=... → keyboard fallback selected target_len= → result=ok`；`keyboard fallback verify failed` = 键盘选区也失败（grapheme 漂移/IME 截获），二期再查。
+- 键盘兜底复测实锤（`9f59d56` 后）：`keyboard fallback start anchor=home plain=3` 算法正确执行，但 `verify failed got_len=0`——**选区读通道也死**（GetSelection 恒空），键盘选区无法验证。至此 ZCode 的选区读写两通道全灭，而全文读通道 ✓、退格注入 ✓ 始终正常——「失效面」是选区专属。第三层兜底（`27e6896`）：**整框重写**——真机探测 ZCode 输入框有 ValuePattern（readOnly=False），读全文 → BuildWholeFieldReplacement 全文定位替换（簇表精确边界匹配，落在簇中间/越界拒绝）→ SetValue 写回 → 全文终验。不依赖选区通道、不依赖语音注入记录（「对整个输入框内容进行编辑，判断不依赖语音输入内容变化」的用户语义）。兜底层级：选区写+读回轮询（原生零回归）→ 整框重写 → 键盘选区 → 兜底拒绝。日志判据：`whole-field rewrite applied full_len=` + `result=ok`=闭环；`whole-field rewrite unavailable` = 目标无 ValuePattern（微信能力未知，凭日志定性）。SetValue 落地质量待真机验收（终验兜底防误伤）。
 
 ## 互链
 
