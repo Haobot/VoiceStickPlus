@@ -1301,17 +1301,20 @@ bool VoiceStickCoordinator::TakeOverTargetedCommand(
         reject(VoiceTargetedFailure::kVerifyUnavailable);
         return true;
     }
-    if (!field_read || !field.readable || field.full_truncated ||
-        field.caret_abs_utf16 == kCaretOutsideTail) {
-        // 全文读不到/超长/无绝对光标 → 整框域不可验证（field_too_long 单列）。
+    if (!field_read || !field.readable || field.full_truncated) {
+        // 全文读不到/超长 → 整框域不可验证（field_too_long 单列）。
+        // caret_abs 缺失不再拒绝（2026-11-04 微信实锤：GetSelection 间歇失败
+        // 读不到绝对光标，而整框替换不依赖光标）——跳过 recent 域直接整框域。
         reject(field.full_truncated ? VoiceTargetedFailure::kFieldTooLong
                                     : VoiceTargetedFailure::kVerifyUnavailable);
         return true;
     }
+    const bool caret_missing = field.caret_abs_utf16 == kCaretOutsideTail;
     const std::string field_full = NormalizeVoiceEditLineBreaks(field.full_text);
     // 最近一次语音输入域可用性 = L0 批次 1 闸（记录/时间窗/同前台窗口与进程）+ 锚定。
+    // caret 缺失时显式跳过（锚定依赖光标位置；哨兵传入会误判「光标在末尾」）。
     std::optional<VoiceTargetedRecentDomain> recent;
-    if (last_injection_.has_value() && !last_injection_->remaining_text.empty()) {
+    if (!caret_missing && last_injection_.has_value() && !last_injection_->remaining_text.empty()) {
         const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
             now - last_injection_->injected_at);
         const std::uintptr_t foreground_window =
@@ -1926,10 +1929,11 @@ void VoiceStickCoordinator::ExecuteClarifiedReply(
                               kVoiceEditToastMs);
     };
     if (pending.domain == VoiceTargetedDomainKind::kWholeField) {
+        // caret_abs 缺失不再连坐拒绝（2026-11-04 微信 GetSelection 间歇失败）：
+        // 「文本已变化」防篡改由下方匹配数比对判定，与光标无关。
         VoiceEditFieldState field;
         if (!focus_text_reader_ || !focus_text_reader_->ReadFocusedFieldFullText(&field) ||
-            !field.readable || field.full_truncated || field.is_password ||
-            field.caret_abs_utf16 == kCaretOutsideTail) {
+            !field.readable || field.full_truncated || field.is_password) {
             reject_changed();
             return;
         }

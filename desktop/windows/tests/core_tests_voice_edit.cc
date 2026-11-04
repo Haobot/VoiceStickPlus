@@ -1152,6 +1152,12 @@ public:
         out->selection_collapsed = field->sel_len == 0;
         out->caret_at_end = field->sel_start + field->sel_len == field->doc.size();
         out->caret_abs_utf16 = field->sel_start + field->sel_len;
+        // caret_missing：模拟微信形态——GetSelection 间歇失败读不到绝对光标
+        //（选区状态未初始化），caret_abs/caret_tail 双哨兵。
+        if (caret_missing) {
+            out->caret_abs_utf16 = kCaretOutsideTail;
+            out->caret_tail_utf16 = kCaretOutsideTail;
+        }
         // 尾窗字段同步（既有消费方保持可用；小字段 tail = 全文）。
         constexpr std::size_t kTail = 512;
         const std::size_t tail_len = std::min(kTail, field->doc.size());
@@ -1166,6 +1172,9 @@ public:
     }
     VoiceTargetedFakeField* field = nullptr;
     bool readable = true;
+    // caret_missing：ReadFocusedFieldFullText 强制 caret 哨兵（微信 GetSelection
+    // 间歇失败形态）。
+    bool caret_missing = false;
 };
 
 class VoiceTargetedFakeEditor : public ITargetedFieldEditor {
@@ -1588,6 +1597,25 @@ void TestTargetedCoordinatorWholeFieldRewriteSucceeds() {
     assert(harness.RunCommand("删除刚才的上班", 283));
     assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "end"}));
     assert(harness.field().doc == L"我去");
+}
+
+// caret 缺失（微信 GetSelection 间歇失败，选区状态未初始化 → caret_abs 哨兵）：
+// 整框替换不依赖光标——不再被「无法校验光标」门槛拒绝，跳过 recent 域直接整框域。
+void TestTargetedCoordinatorCaretMissingWholeFieldRewrite() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("我去北京上班", 311));
+    harness.reader().caret_missing = true;
+    harness.ops().clear();
+    assert(harness.RunCommand("删除刚才的北京", 312));
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "end"}));
+    assert(harness.field().doc == L"我去上班");
+    std::string expected = Tr(StringId::kVoiceTargetedDeleted, harness.language());
+    const auto marker = expected.find("%d");
+    expected.replace(marker, 2, "2");
+    assert(harness.ui().timed_messages.back() == TargetedToast(expected.c_str()));
 }
 
 // 全兜底失败（全选粘贴未落地）：Ctrl+End 恢复 + fieldMismatch，
@@ -2416,6 +2444,7 @@ void RunVoiceEditTests() {
     TestTargetedCoordinatorReadbackPollExhausts();
     TestTargetedCoordinatorAllFallbacksFailRejects();
     TestTargetedCoordinatorWholeFieldRewriteSucceeds();
+    TestTargetedCoordinatorCaretMissingWholeFieldRewrite();
     TestTargetedCoordinatorFinalVerifyFailsInvalidates();
     TestTargetedCoordinatorOffModeUnreadableRejects();
     TestTargetedCoordinatorStaleGeneration();
