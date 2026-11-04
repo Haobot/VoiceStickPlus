@@ -9,7 +9,6 @@
 - 新增（Windows）：**热词体系升级**——热词分区管理；智能热词管理（上下文自动切换领域分类、冷词自动清理进回收池、池内词回升自动恢复、活跃度随使用频率动态更新）；热词碟（设置页托盘组件自动聚合各分类高活跃热词优先匹配）+ 领域语境自动推理；热词设置页外部配置变更同步。macOS 端新增热词候选挖掘管道（精修 diff 挖掘 + 设置页候选确认入库）。
 - 新增（macOS + Windows）：**纠错学习闭环（用户数据飞轮 P0→P3）**——纠错对资产化（精修 diff 提取替换对 + 精修 prompt few-shot 注入）；编辑追踪（注入后 AX 读窗捕获用户手动修改，edited 对入纠错对库）；会话历史数据底座（SQLite history 表同 schema 双端，Windows vendored SQLite）；纠错对 App 场景分域（采集打桶 + 当前桶∪全局桶查询）；拼音同音/近音入表闸门（same_pronunciation 标注 + few-shot 优先）；改写对全句精确命中直接替换跳过精修；负信号采集（确认/取消/重录/停留时长全埋点 JSONL 事件流）+ recall_count 保留信号与低精确率降权；Windows 纠错后原地替换选中文本；火山 dialog_ctx（最近精修文本随 ASR 直传）。
 - 新增（macOS）：**小米遥控器长按连发**——方向/删除/音量 inject 键按住重复，节拍可调；直连 HID 与网关 `gateway_key` 双路径。
-- 新增（macOS）：**小米遥控器电源键自定义**——补齐与 Windows 一致的 12 键全集（HID usage 0x66；直连 IOHID 观察层拦截并吞除 systemDefined 双形态原生电源事件；网关按 has_mapping 路由 software/passthrough）。2026-10-19 真机验收通过；网关模式 power 映射与未映射原生行为待实测。详见 `Doc/Expe/macos-power-key-dual-form-system-defined-2026-10-19.md`。
 - 新增（Windows）：**电池监测**——托盘实时电量指示 + 实时电压曲线；开发者模式快速采集；断连重连逻辑优化与全链路诊断日志。
 - 新增（Windows）：**虚拟麦克风增强**——直通输出模式；虚拟麦克风设备重命名；设备级麦克风模式。
 - 新增（macOS）：**悬浮窗液态玻璃**——原生 `NSGlassEffectView` `.clear` 控件级玻璃定稿（菜单化对齐；透明度滑杆改「霜化」语义，同明暗族基底修「调透明度像调亮度」）。三轮迭代经验沉淀 `Doc/Expe/`。
@@ -38,6 +37,8 @@
 - 修复（macOS + Windows）：**targeted 文字替换不再被「光标须在末尾」拦截**——此前用户点击/双击核对目标词后光标不在末尾/选区非空，替换必被拒（toast「请先将光标移回末尾」）。targeted planner 放宽光标/选区门槛（定位本就靠完整后缀校验 + 计划时刻现算偏移，与光标位置无关；双击核对目标词是常态动作）；finalize 终验成功判据改为**字段文本**，光标恢复末尾改 best-effort（未落地只记日志不判失败）。「删掉最后几个字」等尾部删除通道门槛不变（退格机制需要光标在末尾）。
 
 - 修复（macOS + Windows）：**targeted 替换「首次成功却提示失败、二次命令变普通文本」**——终验窗（0.2s 首验 + 0.05/0.1/0.2 ≈0.6s）短于 Chromium 系目标的粘贴落地时延（2026-10-31 实测动作后 >0.6s 终验仍读到动作前旧文本，同长替换 expected/actual 同为 27B 判「结果未确认」）；误判随后连锁失效注入记录，自然简写命令（不带「刚才的」）失去作用域按普通文本上屏（显式作用域命令恒拦截弹提示，未漏拦）。修复：终验轮询窗加长到 ≈2.7s（0.1/0.2/0.4/0.8/1.0）；窗末按内容分类——文本仍是动作前原样＝动作未落地 → **记录保留**只提示（同命令可直接重试），文本变成第三种内容＝真不符 → 才失效记录；日志 `verify unconfirmed … still_old=0/1` 区分两类。macOS `swift run VoiceStickTests` PASSED 1764/1764（「终验失败吞记录」用例翻转为「未落地保留记录可重试」+ 新增「真不符才失效」用例）；Windows 同构（尾文件轮询重试 + 分类），本机无 Win32 未编译、新增 C++ 构造 scratch 预检通过，MSVC/CTest 待补。
+
+- 新增（macOS）：**小米遥控器电源键自定义**（macOS 补齐 Windows `xiaomi.keys` 12 键全集；原按键分级定案「C 级不可配置」撤销，Windows 端此前已实际开放）。`RemoteButton` 增 `power`（HID usage 0x66），直连模式与其他 B 级键同路径（`[device.<id>.buttons]`，需 `intercept=true`）：映射/禁用后 IOHID 观察层注入/吞键，CGEvent tap 同步吞掉系统原生电源事件——macOS 上该键原生事件为 systemDefined 双形态（subtype 1 首事件 `NX_SUBTYPE_POWER_KEY` + aux-control subtype 8 的 `NX_POWER_KEY(6)` down/up 对，同音量 special-key 通道；常量实证 Apple `ev_keymap.h`/`IOLLEvent.h`，机制对齐 PowerKey 双形态吞除），单次按下多形态故吞除用 300ms 非消耗窗口 + down/up 闩锁（原一次性消费标记会漏吞后续形态）；未映射时保持系统原生电源语义。网关路由分派对齐 Windows `PushGatewayKeymapRoutesFor` has_mapping 口径：power 有映射（key/disabled）→ `software` 由 `gateway_key` 消费（inject/连发/吞键），native → `passthrough`；`naturalSpec(.power)`=nil（系统电源语义不可也不应合成）。「按键映射…」对话框电源键热区解锁（原置灰「由设备固件管理」），附原生电源行为提示文案。按键映射单测 12 项断言更新 + power 路由/解析新增。设计定案更新见 `Doc/Plan/xiaomi-remote-button-mapping.md`，协议/配置文档同步。**2026-10-19 真机验收通过**（用户实测：电源键映射自定义工作正常，日志确认 IOHID 层收到 `usage=0x66` 上报、系统原生电源事件被吞除）；经验沉淀见 `Doc/Expe/macos-power-key-dual-form-system-defined-2026-10-19.md`。遗留：网关模式 power 映射与未映射原生行为待实测。
 
 ## v2.4.10
 
@@ -74,41 +75,7 @@ macOS 端 OTA 与体验修复轮（Windows MSI 无功能变更；固件含连接
 - 平台差异（macOS 暂缺，后续评估）：微信输入法模式（虚拟麦克风需 CoreAudio 驱动，macOS 无用户态注册路径）、划词加词/候选热词挖掘（AXUIElement 选区读取待做）、本地离线 ASR/LLM 与离线授权（Windows 产品线）、COM 口烧录工具（Mac 走浏览器烧录器 + BLE OTA）。
 - 工程配套：`.github/workflows/publish-mac.yml` 无人值守发布轨道（Mac 侧仅 SSH push；CI 代理建 Release/传资产，COS 大文件走「CI 预签名 URL + Mac 国内直传」绕开跨境上行必死限制）。
 
-## v2.3.8
-
-- 合并 VoiceStick (gitee/main v2.3.3) 到 VoiceStickPlus (github/merge)：以 VoiceStickPlus 为主仓库保留全部已有功能，同时移植 VoiceStick 独有特性。
-
-- 新增开发者模式（Windows）：设置对话框新增「开发者模式」开关，启用后显示高级设置区域与系统分区。移植自 VoiceStick，替换原硬编码的 `kShowAdvancedSettings=false` / `kShowSystemSection=false` 为运行时可见性谓词，支持中英双语（`localization` 新增 `kSettingsDeveloperMode`）。
-
-- DeepSeek 模型禁用思维链（Windows）：`llm_chat_client` 大小写不敏感检测模型名含 "deepseek" 时自动注入 `thinking:{type:disabled}`，避免 DeepSeek-R1 等推理模型在语音交互场景中产生不必要的长思维链。与已有的 `llm_disable_thinking` 配置（Qwen 风格 `enable_thinking:false`）互补，两者可同时生效。新增 `TestDeepSeekThinkingDisabled` 单测（含大小写变体）。
-
-- 补全烧录工具源文件（Windows）：v2.3.7 的 `CMakeLists.txt` 引用了 `com_port_selector`、`esptool_flash_command`、`esptool_progress`、`voice_stick_flash_tool`、`flash_tool_dialog`、`flash_tool_main`、`encoder_settings_dialog` 等源文件，但因 `desktop/windows/` 在 `.gitignore` 中而从未提交。本次用 `git add -f` 补全全部源文件并修复编译错误（类名/成员名/接口对齐），`FlashProcessRunner` 实现使用 `CreateProcessW` + 匿名管道捕获 stdout/stderr。
-
-- 构建脚本增强：`build_win.bat` 扩展 VS 2022/18 预览版路径搜索（支持 D: 盘）；自动生成 C++/WinRT 投影头文件（SDK 自带的 `winrt/base.h` 缺失时用 `cppwinrt.exe` 从 Union Metadata 生成）；`scripts/build-msi-unsigned.bat` 前置 C++/WinRT 头文件路径。
-
-## Unreleased
-
-- 新增（macOS）：**小米遥控器电源键自定义**（macOS 补齐 Windows `xiaomi.keys` 12 键全集；原按键分级定案「C 级不可配置」撤销，Windows 端此前已实际开放）。`RemoteButton` 增 `power`（HID usage 0x66），直连模式与其他 B 级键同路径（`[device.<id>.buttons]`，需 `intercept=true`）：映射/禁用后 IOHID 观察层注入/吞键，CGEvent tap 同步吞掉系统原生电源事件——macOS 上该键原生事件为 systemDefined 双形态（subtype 1 首事件 `NX_SUBTYPE_POWER_KEY` + aux-control subtype 8 的 `NX_POWER_KEY(6)` down/up 对，同音量 special-key 通道；常量实证 Apple `ev_keymap.h`/`IOLLEvent.h`，机制对齐 PowerKey 双形态吞除），单次按下多形态故吞除用 300ms 非消耗窗口 + down/up 闩锁（原一次性消费标记会漏吞后续形态）；未映射时保持系统原生电源语义。网关路由分派对齐 Windows `PushGatewayKeymapRoutesFor` has_mapping 口径：power 有映射（key/disabled）→ `software` 由 `gateway_key` 消费（inject/连发/吞键），native → `passthrough`；`naturalSpec(.power)`=nil（系统电源语义不可也不应合成）。「按键映射…」对话框电源键热区解锁（原置灰「由设备固件管理」），附原生电源行为提示文案。按键映射单测 12 项断言更新 + power 路由/解析新增。设计定案更新见 `Doc/Plan/xiaomi-remote-button-mapping.md`，协议/配置文档同步。**2026-10-19 真机验收通过**（用户实测：电源键映射自定义工作正常，日志确认 IOHID 层收到 `usage=0x66` 上报、系统原生电源事件被吞除）；经验沉淀见 `Doc/Expe/macos-power-key-dual-form-system-defined-2026-10-19.md`。遗留：网关模式 power 映射与未映射原生行为待实测。
-
-- 新增网关模式 macOS 端适配代码（P2 代码交付，真机验收待做）：`gateway_key` 软件路由键解析与注入（按下沿触发，映射取活跃配对 RC 的 `[device.<id>.buttons]` 配置，禁用键吞掉、KeySpec 非法忽略）、`gateway_target_info` 主机名上报（连接就绪即发，UTF-8 ≤23 字节按字符边界截断）、`gateway_keymap_set` 路由表下发（连接与配置热更时幂等重发：key/disabled → software、native → passthrough，显式覆盖全部 13 协议键避免继承上一目标残留路由）。核心纯逻辑（`GatewaySupport` 路由推导/主机名规整、`StateEvent` 网关字段、payload 构造器）下沉 VoiceStickCore 并新增 29 项单测。设计见 `Doc/Plan/xiaomi-gateway-p2-macos.md`；系统配对 spike 与语音/按键真机验收待设备在手执行。
-
-- 修复 macOS 端构建自 2026-09-08 起损坏的问题：`bffa235` 把按键拦截重构的「使用方」提交到 main，「定义方」（约 15 个文件，含 Package.swift 的 VoiceStickCore/测试 target、Localization、各设置窗口控制器）只存在于未合并的 `feat/add-MiRemote` 分支。修复 = 合并该分支（merge-base 以来 main 侧 macos 仅 5 文件、双方共同修改仅 AppDelegate/Info.plist，AppDelegate 取 HEAD 其余取并集）+ 按既有测试断言重建全历史从未提交的类型（`RemoteButton`/`ButtonMapping`/`ButtonsSettings`、`ButtonMappingWindowController` 托盘对话框、`FrontmostAppProvider`、AppConfig `[device.<id>.buttons]` 读写族、A 级语音键双击按映射处置）。另适配新版 SwiftPM 显式模块构建：纯头文件的 CZlib target 补空翻译单元（修链接期 `CZlib.o cannot be found`）。验证 `swift build` + `swift run VoiceStickTests`（executable runner）438/438 → 467/467 全过。详见 `Doc/Plan/xiaomi-gateway-p2-macos.md` §8。
-
-- 新增小米遥控器「增强按键识别」（Windows，返回/音量键）：RC003 的 back/volume_up/volume_down 走厂商页 0xFF00 HID 报告，被 Windows HidOverGatt 蓝牙栈在翻译层丢弃，系统输入链路全静默。本功能经「特权注入只读探针」在丢弃点之前截获报文：主程序按注册表定位 WUDFHost 宿主 PID → runas 启动注入器（四重校验：管理员身份/PID 匹配/进程名 wudfhost/DLL SHA-256 一致，DLL 部署至 `%PROGRAMDATA%` 并以 SID ACL 锁权限）→ 探针 DLL（Microsoft Detours hook `NtDeviceIoControlFile`，只读过滤 READ_CHARACTERISTIC IOCTL 成功返回的 9 字节输出）经命名管道回传原始报文 → 桌面端会话 diff 产按键沿。三键直触发（单击松手注入、长按 back 280/40ms 与音量 400/120ms 连发）；其余 10 键 tap 沿仅作 BREAK 兜底佐证（优先于物理键盘保守补偿）；系统可见固件（RC001 类）LL keydown 到达即取消直触发（含 150ms 乱序抑制窗）防双触发；断连/管道 EOF 活跃集合全释放。配置 `[device.<id>.xiaomi] hid_tap_enabled`（默认关，涉及 UAC 提权），「按键映射…」对话框开关即时生效 + 链路状态行（等待连接/等待授权/工作正常/连接异常）。GPL/Frida 双规避：仅参考 MiVibe-Remote 协议事实（IOCTL 号/报文格式/usage 表/注册表路径），实现全部自写；hook 引擎用 Detours v4.0.1（MIT）。设计、交付清单与真机冒烟验收清单见 `Doc/Plan/xiaomi-remote-usage-tap.md`（§7 冒烟未执行，发行前须完成）。
-
-- 新增离线授权激活（Windows，本地语音识别）：本地离线 ASR 启用「30 天试用 + 串码激活」。串码为自包含离线凭证（payload 15 字节：版本/绑定键哈希/到期日/流水号 + monocypher EdDSA 签名 64 字节，Crockford Base32 分组显示），客户端只内嵌公钥验签，支付/发卡是一次性在线交易，之后永久离线可用。绑定键 = 设备 ID（`RC-XXXX`/`VS-XXXX`）+ Windows MachineGuid，激活/验签均要求绑定设备在场（任一在场即放行，多设备友好）；已绑定他机/他设备的串码验签通过但绑定不匹配，落到试用/过期态。防时钟回拨：持久化 `last_seen_days`，回拨时按上次所见时间计 + 7 天宽限封顶。`config.toml` 新增 `[license]`（serial/trial_anchor_days/last_seen_days，字段说明见 `Doc/Ref/desktop-config.md`）。协调器新增 `SetLicenseGate` 闸口，试用/授权过期时本地引擎会话不启动并提示（云端 ASR 不受影响）；设置页新增「授权」分组（状态行 + 激活对话框，区分格式错/签名无效/绑定不匹配/已过期）。配套 `scripts/gen_serial.py`（零依赖纯 Python EdDSA-BLAKE2b 发卡器 + 测试向量，私钥不进仓库）。修复事故：协调器持有的 config 副本早于试用锚点写入，`SavePairedDeviceInfo` 全量落盘会把锚点抹掉——落盘前先 `ReloadLicenseFromDisk`（新增回归测试）。`license: status` 日志在启动与设备连接变化时记录状态。设计与实施见 `Doc/Plan/offline-license-activation.md`；发行前需用正式密钥对重生成 `license_public_key.h` 与测试向量。
-
-- 新增本地模型下载向导（Windows）：本地语音识别（SenseVoice int8 约 240MB）与本地文本精修（Qwen3-1.7B Q4_K_M 约 1.1GB）改为按需下载，安装包保持瘦体。设置页选中「本地语音识别」时出现「下载模型…」入口，向导支持必选识别 + 可选精修勾选、磁盘空间提示、聚合进度、取消（`.part` 保留断点续传）与错误汇总，完成后自动回填模型目录并刷新就绪状态；已在位（字节数相符）的文件自动跳过。下载核心 `model_manifest` 内置清单 + `model_downloader`（WinHTTP 流式、Range 断点续传、BCrypt SHA-256 校验、`.part` 原子改名、磁盘预检），分发源四重回退：腾讯 COS 正式域名直出 → COS myqcloud 直出 → ModelScope 免费分流 → GitHub Release（渠道约定见 `Doc/Ref/cos-distribution.md`），下载链路带 MDL 观测日志（换源/校验/跳过/汇总）。配套 `scripts/pack_local_models.py` 打包全量离线 zip（`voicestick-models-full-v1.zip`，源文件硬校验后 STORED 打包，含 NOTICE/MANIFEST，供内网分发）。真机验证：COS 实下 1.34GB 三文件 SHA-256 与清单一致。设计见 `Doc/Plan/local-model-distribution.md`。
-
-- 新增热词识别自动化验收测试工具（`scripts/e2e_test/run_hotword_acceptance.py`）：按桌面端同款发送逻辑（腾讯=词表通道 / 火山=评分裁剪直传）回放真实 ASR，报告每个热词的命中率与识别原文，并诊断「不可入表词（含空格/'.'，只能靠 LLM 精修）」；音频可自动生成（edge-tts 造句）或经 `--manifest` 标注清单使用已有录音。
-
-- 热词高频优先裁剪（Windows）：热词库超出单次会话直传预算（火山 80 tokens）时，按「频率 × 新近度 × 手动加权」评分优先保留（`hotword_selector`，与 `scripts/e2e_test/asr_bench/hotword_select.py` 同一评分模型），替代原按插入顺序贪心截断——新加的词排在列表尾部、旧逻辑最先被裁。使用统计（命中次数 + 最近使用时间，从最终文本大小写不敏感匹配，不记录文本）存 `%APPDATA%\VoiceStick\hotword_usage.json`；超预算时每次运行提示一次（浮窗/托盘，明细见日志）。精修/翻译 LLM prompt 的热词段改为评分 top-50（`kHotwordPromptMaxWords`），防大库稀释小模型注意力。新增 `TestHotwordSelector` 单测（镜像 hotword_select.py 自测断言）。
-
-- 新增小米蓝牙遥控器 2 Pro 作为第二种输入设备（Windows）：配对（双模扫描 VS-* + 小米白名单，WinRT 应用内配对优先、失败引导系统蓝牙设置，需 OS Bond）、语音键按住说话/双击注入 Enter、标准 Battery Service（0x180F/0x2A19）电量显示、与 StickS3 同时连接按台切换（主录音会话全局单例，交互即切换）、按设备输出覆盖复用 `[device.<id>.*]` 框架、「遥控器设置…」对话框（`gain_db`/`double_click_ms`，热更对已连接会话不生效，重连后生效）、语音键附带 F5 抑制（`xiaomi_suppress_f5`，WH_KEYBOARD_LL 低级键盘钩子，默认开，按有无已配对 RC 设备门控装载；三层判定：80ms 近窗 + 首次 keydown 关联等待至多 80ms 收口 HID/ATT 栈到达序竞态 + 序列闩锁联动吞掉自动重复与 keyup）。固件零改动：ATVV 协议接入全部在桌面端——`voicestick_core` 新增 `xiaomi_atvv_protocol`/`xiaomi_atvv_session`/`ima_adpcm_decoder`/`pcm_postprocessor`/`audio_opus_encoder` 五个纯逻辑模块（含 RC003 无 SYNC 硬重置、150ms 尾包宽限、300ms 重开拒绝、双击时序检测），归一化为标准 StateEvent/AudioFrame 复用现有协调器，下游 ASR/字幕/wechat 零改动；`ble_protocol` 新增 `DeviceClass` 设备类与 `RC-XXXX` 设备 ID（蓝牙地址低 16 位），`PairedDeviceEntry.hardware` 派生能力集驱动 `Send*` 跳过与托盘菜单显隐。真机订正：2 Pro 按下语音键直发 `0x04 <interaction> <codec> <sid>`（按下+开流一体帧，无 `0x08`、主机不写 `0x0C` ACK），松开发 `0x00`（可带尾字节），会话 FSM 支持 `0x08`（RC003，回 ACK）/`0x04`（2 Pro，直开）双入径；设计文档与 `Doc/Ref/protocol.md` 已按真机实测修正。设计见 `Doc/Plan/xiaomi-remote-2-pro-support.md`。macOS 端支持待后续版本。
-
-- 新增小米遥控器 ATVV E2E 工具链（`scripts/e2e_test/`）：`atvv_capture.py`（bleak 真机 golden 采集，落盘 events.jsonl + 每会话 adpcm/sidecar/双 WAV 四件套，供 C++ golden 对拍）、`atvv_bench.py`（按 sidecar 复现解码 + 桌面端同参数后处理，裸 PCM 直送真实 ASR 离线评测，`--gain-db`/`--no-smooth` 调参闭环）、`atvv_probe.py`（会话建立/首帧延迟、STOP 尾包时延分布、长连接静置稳定性探针）。golden fixtures 回归接入单测（`TestImaAdpcmDecoderGoldenFixtures`）与集成测试（重放经 XiaomiAtvvSession → 真实火山 ASR）：`fixtures/xiaomi/demo_synthetic/` 入库作冒烟资产，真机采集目录 gitignore。用法见 `Doc/Ref/e2e-test-toolchain.md`。
-
-- 修复：补回 f75af4f5 漏提交的 `power_log_monitor.*`/`battery_monitor_dialog.*` 源文件（`desktop/windows/` 整体被 .gitignore 忽略，新增文件须 `git add -f`），此前全新克隆因 CMakeLists 引用缺失文件无法构建。
+macOS 侧补录（以下条目代码自 v2.4.1 入库，但 macOS 分发自本版开始——Mac 用户自本版实际获得）：
 
 - macOS 端设计全面对齐 Windows（外观与功能同步，一次性补齐多年差距）：
   - 悬浮窗与字幕：`OverlayController` 重写对齐 Windows D2D 浮窗（贴边显示、主题色/尺寸/位置按设备自定义、主键发送/侧键取消双按钮提示），`SubtitleController` 字幕模式对齐 Windows 字幕窗。
@@ -121,21 +88,93 @@ macOS 端 OTA 与体验修复轮（Windows MSI 无功能变更；固件含连接
   - 小米遥控器补齐：标准 Battery Service（0x180F/0x2A19，ATVV 会话建立后独立发现 pass，初始读 + notify 订阅）合成 `battery_status` 上报协调器，托盘设备子菜单显示电量。
   - UI 本地化（`Localization.swift`，243 键中英双表逐条对齐 Windows `localization.cc`）：新增 `ui_language` 配置（`system`/`en`/`zh-Hans`，加载兼容 `zh_CN`/`zh-CN`/`zh`，system 按系统首选语言 zh 前缀判定），设置窗「界面语言」下拉，保存后托盘菜单与窗口文案重建；悬浮窗 `Listening...`/`Processing...` 等状态提示与 Windows 一致保持英文。
   - 配置基座：`AppConfig` 新增设备交互/编码器全局默认 + `[device.<id>.interaction]`/`[device.<id>.encoder]` 按设备覆盖（解析、填平、序列化「不等才落盘」语义对齐 Windows `app_config.cc`）、`ui_language`、`show_imu_debug` 等键；`config.example.toml`、`Doc/Ref/desktop-config.md`、`Doc/Ref/protocol.md`、双 README 同步修订平台口径。未覆盖项：体感鼠标、流式精修、热词挖掘/划词加词、微信输入法模式仍为 Windows 独有。
-
+- 新增小米蓝牙遥控器 2 Pro（ATVV）macOS 端移植（P5）：与 Windows 同链路的遥控器直连语音输入。
+- 新增网关模式 macOS 端适配代码（P2 代码交付，真机验收待做）：`gateway_key` 软件路由键解析与注入（按下沿触发，映射取活跃配对 RC 的 `[device.<id>.buttons]` 配置，禁用键吞掉、KeySpec 非法忽略）、`gateway_target_info` 主机名上报（连接就绪即发，UTF-8 ≤23 字节按字符边界截断）、`gateway_keymap_set` 路由表下发（连接与配置热更时幂等重发：key/disabled → software、native → passthrough，显式覆盖全部 13 协议键避免继承上一目标残留路由）。核心纯逻辑（`GatewaySupport` 路由推导/主机名规整、`StateEvent` 网关字段、payload 构造器）下沉 VoiceStickCore 并新增 29 项单测。设计见 `Doc/Plan/xiaomi-gateway-p2-macos.md`；系统配对 spike 与语音/按键真机验收待设备在手执行。
+- 修复 macOS 端构建自 2026-09-08 起损坏的问题：`bffa235` 把按键拦截重构的「使用方」提交到 main，「定义方」（约 15 个文件，含 Package.swift 的 VoiceStickCore/测试 target、Localization、各设置窗口控制器）只存在于未合并的 `feat/add-MiRemote` 分支。修复 = 合并该分支（merge-base 以来 main 侧 macos 仅 5 文件、双方共同修改仅 AppDelegate/Info.plist，AppDelegate 取 HEAD 其余取并集）+ 按既有测试断言重建全历史从未提交的类型（`RemoteButton`/`ButtonMapping`/`ButtonsSettings`、`ButtonMappingWindowController` 托盘对话框、`FrontmostAppProvider`、AppConfig `[device.<id>.buttons]` 读写族、A 级语音键双击按映射处置）。另适配新版 SwiftPM 显式模块构建：纯头文件的 CZlib target 补空翻译单元（修链接期 `CZlib.o cannot be found`）。验证 `swift build` + `swift run VoiceStickTests`（executable runner）438/438 → 467/467 全过。详见 `Doc/Plan/xiaomi-gateway-p2-macos.md` §8。
 - 修复：macOS 注入类动作（粘贴/回车/组合键）在无辅助功能权限时静默失败。`InputInjector` 新增 `AXIsProcessTrusted` 前置拦截（媒体键除外），未授权时悬浮窗节流提示 + 每次启动一次 NSAlert 引导弹窗（一键打开系统设置辅助功能面板），`Localization` 新增三键中英双表。根因：裸二进制注入寄生终端的 TCC 授权，独立 `.app` 以自身 bundle id（`app.voicestick.mac`）单独授权。
-
 - 修复：`scripts/build-macos.sh` ad-hoc 签名分支误带 `--options runtime`，hardened runtime 库校验拒载 Sparkle.framework（dyld `different Team IDs`）导致打包后启动即崩（「无法打开」弹窗）；ad-hoc 分支已去掉 runtime 选项。
 
-## v2.3.6
+## v2.4.6
 
-- 烧录进度解析兼容 esptool 5.x（Windows）：VoiceStickFlash 内嵌 esptool 5.2.0，管道非 TTY 时实际输出 `Writing at 0x00010000 [=====>                    ]  45.7% 1077248/2359296 bytes... ` 形式的进度行，`EsptoolProgressParser` 补充识别该格式（`(X %)` 形式继续兼容），新增对应单测；注释同步说明两种 esptool 版本的进度格式。
-- 便携版包含固件烧录工具（Windows）：`scripts/package-portable.ps1` 新增收集 `VoiceStickFlash.exe` 与 `FlashTool\` 自包含 esptool 运行时（优先复用 `build-msi-x64\flash_payload`，否则现场调用 `prepare_flash_payload.ps1` 生成；布局与 `LocatePythonExe()` 候选 1 一致），使便携版同样具备 COM 口固件烧录能力，与 MSI 布局一致。
+Windows + 固件轮（2026-09-28 发布）：
+
+- 新增（Windows）：升级安装时自动重置 StickS3 配对——安装新版后首次启动会解除设备在系统蓝牙里的旧配对记录并清理本地配对信息，直接进入配对引导，重新绑定更流畅；小米蓝牙遥控器的配对**不受影响**（其按键直通依赖系统配对，保持原样）。
+- 修复（Windows）：延续 2.4.5 的内置凭据修复——安装/升级自动写入完整测试配置（火山/腾讯/LLM 开箱即用），无需手动输入 API Key。
+- 固件无功能变更（版本号随发布对齐 2.4.6；包含 2.4.5/2.4.4/2.4.3 的全部固件特性）。
+
+## v2.4.5
+
+Windows + 固件轮（2026-09-27 发布）：
+
+- 修复（Windows）：安装包恢复**内置 API Key 的内部测试模式**——v2.4.4 安装包因构建缺配置，安装后配置被清空、要求手动输入 API Key；本版起安装/升级自动写入完整测试配置（火山/腾讯/LLM 开箱即用），被 v2.4.4 清掉配置的设备升级本版后自动恢复可用。
+- 改进（Windows）：构建流程默认嵌入内置凭据与测试配置，后续版本不再依赖手工步骤，杜绝同类问题复发。
+- 固件无功能变更（版本号随发布对齐 2.4.5；包含 2.4.4 的「USB 供电屏幕常亮」与 2.4.3 的「恒定网关模式」）。
+
+## v2.4.4
+
+固件 + Windows 轮（2026-09-27 发布）：
+
+- 新增（固件）：USB 供电（充电）时屏幕保持常亮——插电使用时设备不再自动变暗/熄屏，小米遥控器的语音与按键随时可用；拔掉 USB 线自动恢复电池省电策略（10 秒变暗 / 20 秒熄屏 / 5 分钟关机）。
+- 改进（固件）：插拔 USB 线即时切换省电策略；插线开机直接亮屏，不再出现「先变暗几十秒才恢复常亮」的窗口。
+- 包含 v2.4.3 固件特性（从更早版本直接升级的用户）：设备恒定工作在网关模式——小米遥控器连接状态（RC: OK）显示与侧键切换电脑不再丢失，升级后自动保持，无需手动重开。
+- 说明（Windows）：程序代码与 2.4.2 相同（v2.4.3 未发安装包），本版将程序版本号与固件对齐；已装用户通过应用内自动更新升级即可。
+
+## v2.4.3
+
+固件轮（2026-09-27 发布）：
+
+- 变更（固件）：设备恒定工作在网关模式——小米遥控器连接状态（RC: OK）显示与侧键切换电脑成为常驻能力，不再因「普通/网关」模式状态而丢失；升级后自动保持网关模式，无需手动重开。
+- 说明：此前「冷启动按住主键翻转模式」的隐藏开关已移除；网关模式向下兼容原有全部用法（桌面端直连语音输入、OTA、状态上报均不受影响）。
+- 本版未发布 Windows 安装包（程序无变更）；程序版本号在 v2.4.4 与固件对齐。
+
+## v2.4.2
+
+Windows 轮（2026-09-27 发布）：
+
+- 修复（Windows）：MSI 补齐 `sherpa-onnx-c-api.dll` / `onnxruntime.dll`——v2.4.0 起全新安装启动即报「找不到 DLL」的问题（升级本版后即恢复）。
+- 修复（Windows）：应用内「检查应用更新」自动更新链路（appcast 改挂 zh-CN 包，安装界面中文化）。
+- 变更（Windows）：测试配置内置——安装后自动写入 `%APPDATA%\VoiceStick\config.toml`（含火山/腾讯/LLM 测试凭据，开箱即用）；设置对话框隐藏「授权」区块（离线激活功能暂不启用，本地识别不受影响）。
+- 固件无功能变更（版本号随发布对齐 2.4.2）。
+
+## v2.4.1
+
+Windows + 固件轮（2026-09-26 发布，COS 国内源先行；GitHub Release 仅有 compare 链接，本段自 git 区间重构）：
+
+- 修复（Windows）：**BLE OTA 兼容 v2.3.8 旧固件**——32KB 进度回传间隔致新 app × 旧固件互等死锁（首窗放宽 + 超窗降速续发；app×固件流控参数自此定为跨版本契约红线）。
+- 发布基建：腾讯 COS 国内源直传移交签名机——CI 跨境上行 ~8KB/s + ~130s 断连、≥1MB 分块必死定案，桶切换 `voicestick-dl-1329978361`；本版为 COS 先行发布（GitHub Release 随后补齐）。
+- macOS 侧代码入库（分发自 v2.4.7 起，条目见 v2.4.7 段补录）：小米遥控器 2 Pro ATVV macOS 移植（P5）、网关 P2 适配、全面对齐 Windows 设计、构建修复与 AX 注入权限引导。
+- 已知缺陷（v2.4.2 修复）：MSI 缺 `sherpa-onnx` 两个 DLL，全新安装启动报「找不到 DLL」。
+
+## v2.4.0
+
+网关 Phase 2 + Windows 功能大轮（2026-09-24 发布；原「v2.3.8」未发布段并入本段——2.3.8 从未打 tag，其条目实随本版 MSI 分发）：
+
+- 新增小米蓝牙遥控器 2 Pro 作为第二种输入设备（Windows）：配对（双模扫描 VS-* + 小米白名单，WinRT 应用内配对优先、失败引导系统蓝牙设置，需 OS Bond）、语音键按住说话/双击注入 Enter、标准 Battery Service（0x180F/0x2A19）电量显示、与 StickS3 同时连接按台切换（主录音会话全局单例，交互即切换）、按设备输出覆盖复用 `[device.<id>.*]` 框架、「遥控器设置…」对话框（`gain_db`/`double_click_ms`，热更对已连接会话不生效，重连后生效）、语音键附带 F5 抑制（`xiaomi_suppress_f5`，WH_KEYBOARD_LL 低级键盘钩子，默认开，按有无已配对 RC 设备门控装载；三层判定：80ms 近窗 + 首次 keydown 关联等待至多 80ms 收口 HID/ATT 栈到达序竞态 + 序列闩锁联动吞掉自动重复与 keyup）。固件零改动：ATVV 协议接入全部在桌面端——`voicestick_core` 新增 `xiaomi_atvv_protocol`/`xiaomi_atvv_session`/`ima_adpcm_decoder`/`pcm_postprocessor`/`audio_opus_encoder` 五个纯逻辑模块（含 RC003 无 SYNC 硬重置、150ms 尾包宽限、300ms 重开拒绝、双击时序检测），归一化为标准 StateEvent/AudioFrame 复用现有协调器，下游 ASR/字幕/wechat 零改动；`ble_protocol` 新增 `DeviceClass` 设备类与 `RC-XXXX` 设备 ID（蓝牙地址低 16 位），`PairedDeviceEntry.hardware` 派生能力集驱动 `Send*` 跳过与托盘菜单显隐。真机订正：2 Pro 按下语音键直发 `0x04 <interaction> <codec> <sid>`（按下+开流一体帧，无 `0x08`、主机不写 `0x0C` ACK），松开发 `0x00`（可带尾字节），会话 FSM 支持 `0x08`（RC003，回 ACK）/`0x04`（2 Pro，直开）双入径；设计文档与 `Doc/Ref/protocol.md` 已按真机实测修正。设计见 `Doc/Plan/xiaomi-remote-2-pro-support.md`。macOS 端支持待后续版本。
+- 新增小米遥控器「增强按键识别」（Windows，返回/音量键）：RC003 的 back/volume_up/volume_down 走厂商页 0xFF00 HID 报告，被 Windows HidOverGatt 蓝牙栈在翻译层丢弃，系统输入链路全静默。本功能经「特权注入只读探针」在丢弃点之前截获报文：主程序按注册表定位 WUDFHost 宿主 PID → runas 启动注入器（四重校验：管理员身份/PID 匹配/进程名 wudfhost/DLL SHA-256 一致，DLL 部署至 `%PROGRAMDATA%` 并以 SID ACL 锁权限）→ 探针 DLL（Microsoft Detours hook `NtDeviceIoControlFile`，只读过滤 READ_CHARACTERISTIC IOCTL 成功返回的 9 字节输出）经命名管道回传原始报文 → 桌面端会话 diff 产按键沿。三键直触发（单击松手注入、长按 back 280/40ms 与音量 400/120ms 连发）；其余 10 键 tap 沿仅作 BREAK 兜底佐证（优先于物理键盘保守补偿）；系统可见固件（RC001 类）LL keydown 到达即取消直触发（含 150ms 乱序抑制窗）防双触发；断连/管道 EOF 活跃集合全释放。配置 `[device.<id>.xiaomi] hid_tap_enabled`（默认关，涉及 UAC 提权），「按键映射…」对话框开关即时生效 + 链路状态行（等待连接/等待授权/工作正常/连接异常）。GPL/Frida 双规避：仅参考 MiVibe-Remote 协议事实（IOCTL 号/报文格式/usage 表/注册表路径），实现全部自写；hook 引擎用 Detours v4.0.1（MIT）。设计、交付清单与真机冒烟验收清单见 `Doc/Plan/xiaomi-remote-usage-tap.md`（§7 冒烟未执行，发行前须完成）。
+- 新增离线授权激活（Windows，本地语音识别）：本地离线 ASR 启用「30 天试用 + 串码激活」。串码为自包含离线凭证（payload 15 字节：版本/绑定键哈希/到期日/流水号 + monocypher EdDSA 签名 64 字节，Crockford Base32 分组显示），客户端只内嵌公钥验签，支付/发卡是一次性在线交易，之后永久离线可用。绑定键 = 设备 ID（`RC-XXXX`/`VS-XXXX`）+ Windows MachineGuid，激活/验签均要求绑定设备在场（任一在场即放行，多设备友好）；已绑定他机/他设备的串码验签通过但绑定不匹配，落到试用/过期态。防时钟回拨：持久化 `last_seen_days`，回拨时按上次所见时间计 + 7 天宽限封顶。`config.toml` 新增 `[license]`（serial/trial_anchor_days/last_seen_days，字段说明见 `Doc/Ref/desktop-config.md`）。协调器新增 `SetLicenseGate` 闸口，试用/授权过期时本地引擎会话不启动并提示（云端 ASR 不受影响）；设置页新增「授权」分组（状态行 + 激活对话框，区分格式错/签名无效/绑定不匹配/已过期）。配套 `scripts/gen_serial.py`（零依赖纯 Python EdDSA-BLAKE2b 发卡器 + 测试向量，私钥不进仓库）。修复事故：协调器持有的 config 副本早于试用锚点写入，`SavePairedDeviceInfo` 全量落盘会把锚点抹掉——落盘前先 `ReloadLicenseFromDisk`（新增回归测试）。`license: status` 日志在启动与设备连接变化时记录状态。设计与实施见 `Doc/Plan/offline-license-activation.md`；发行前需用正式密钥对重生成 `license_public_key.h` 与测试向量。
+- 新增本地模型下载向导（Windows）：本地语音识别（SenseVoice int8 约 240MB）与本地文本精修（Qwen3-1.7B Q4_K_M 约 1.1GB）改为按需下载，安装包保持瘦体。设置页选中「本地语音识别」时出现「下载模型…」入口，向导支持必选识别 + 可选精修勾选、磁盘空间提示、聚合进度、取消（`.part` 保留断点续传）与错误汇总，完成后自动回填模型目录并刷新就绪状态；已在位（字节数相符）的文件自动跳过。下载核心 `model_manifest` 内置清单 + `model_downloader`（WinHTTP 流式、Range 断点续传、BCrypt SHA-256 校验、`.part` 原子改名、磁盘预检），分发源四重回退：腾讯 COS 正式域名直出 → COS myqcloud 直出 → ModelScope 免费分流 → GitHub Release（渠道约定见 `Doc/Ref/cos-distribution.md`），下载链路带 MDL 观测日志（换源/校验/跳过/汇总）。配套 `scripts/pack_local_models.py` 打包全量离线 zip（`voicestick-models-full-v1.zip`，源文件硬校验后 STORED 打包，含 NOTICE/MANIFEST，供内网分发）。真机验证：COS 实下 1.34GB 三文件 SHA-256 与清单一致。设计见 `Doc/Plan/local-model-distribution.md`。
+- 热词高频优先裁剪（Windows）：热词库超出单次会话直传预算（火山 80 tokens）时，按「频率 × 新近度 × 手动加权」评分优先保留（`hotword_selector`，与 `scripts/e2e_test/asr_bench/hotword_select.py` 同一评分模型），替代原按插入顺序贪心截断——新加的词排在列表尾部、旧逻辑最先被裁。使用统计（命中次数 + 最近使用时间，从最终文本大小写不敏感匹配，不记录文本）存 `%APPDATA%\VoiceStick\hotword_usage.json`；超预算时每次运行提示一次（浮窗/托盘，明细见日志）。精修/翻译 LLM prompt 的热词段改为评分 top-50（`kHotwordPromptMaxWords`），防大库稀释小模型注意力。新增 `TestHotwordSelector` 单测（镜像 hotword_select.py 自测断言）。
+- 新增热词识别自动化验收测试工具（`scripts/e2e_test/run_hotword_acceptance.py`）：按桌面端同款发送逻辑（腾讯=词表通道 / 火山=评分裁剪直传）回放真实 ASR，报告每个热词的命中率与识别原文，并诊断「不可入表词（含空格/'.'，只能靠 LLM 精修）」；音频可自动生成（edge-tts 造句）或经 `--manifest` 标注清单使用已有录音。
+- 新增小米遥控器 ATVV E2E 工具链（`scripts/e2e_test/`）：`atvv_capture.py`（bleak 真机 golden 采集，落盘 events.jsonl + 每会话 adpcm/sidecar/双 WAV 四件套，供 C++ golden 对拍）、`atvv_bench.py`（按 sidecar 复现解码 + 桌面端同参数后处理，裸 PCM 直送真实 ASR 离线评测，`--gain-db`/`--no-smooth` 调参闭环）、`atvv_probe.py`（会话建立/首帧延迟、STOP 尾包时延分布、长连接静置稳定性探针）。golden fixtures 回归接入单测（`TestImaAdpcmDecoderGoldenFixtures`）与集成测试（重放经 XiaomiAtvvSession → 真实火山 ASR）：`fixtures/xiaomi/demo_synthetic/` 入库作冒烟资产，真机采集目录 gitignore。用法见 `Doc/Ref/e2e-test-toolchain.md`。
+- 修复：补回 f75af4f5 漏提交的 `power_log_monitor.*`/`battery_monitor_dialog.*` 源文件（`desktop/windows/` 整体被 .gitignore 忽略，新增文件须 `git add -f`），此前全新克隆因 CMakeLists 引用缺失文件无法构建。
+- StickS3 网关模式（Release 要点）：小米遥控器语音键经 ATVV 语音输入端到端（ASR 全链路）；全部按键直通 + 按键自定义映射（网关模式对话框入口）；软件路由键长按连发（音量键同款节拍）+ 连发间隔可调滑块（30-300ms）。
+- 桌面端 MSI 内置全部 AI 凭据，安装即用。
+- （原 v2.3.8 段并入）合并 VoiceStick (gitee/main v2.3.3) 到 VoiceStickPlus (github/merge)：以 VoiceStickPlus 为主仓库保留全部已有功能，同时移植 VoiceStick 独有特性。
+- 新增开发者模式（Windows）：设置对话框新增「开发者模式」开关，启用后显示高级设置区域与系统分区。移植自 VoiceStick，替换原硬编码的 `kShowAdvancedSettings=false` / `kShowSystemSection=false` 为运行时可见性谓词，支持中英双语（`localization` 新增 `kSettingsDeveloperMode`）。
+- DeepSeek 模型禁用思维链（Windows）：`llm_chat_client` 大小写不敏感检测模型名含 "deepseek" 时自动注入 `thinking:{type:disabled}`，避免 DeepSeek-R1 等推理模型在语音交互场景中产生不必要的长思维链。与已有的 `llm_disable_thinking` 配置（Qwen 风格 `enable_thinking:false`）互补，两者可同时生效。新增 `TestDeepSeekThinkingDisabled` 单测（含大小写变体）。
+- 补全烧录工具源文件（Windows）：v2.3.7 的 `CMakeLists.txt` 引用了 `com_port_selector`、`esptool_flash_command`、`esptool_progress`、`voice_stick_flash_tool`、`flash_tool_dialog`、`flash_tool_main`、`encoder_settings_dialog` 等源文件，但因 `desktop/windows/` 在 `.gitignore` 中而从未提交。本次用 `git add -f` 补全全部源文件并修复编译错误（类名/成员名/接口对齐），`FlashProcessRunner` 实现使用 `CreateProcessW` + 匿名管道捕获 stdout/stderr。
+- 构建脚本增强：`build_win.bat` 扩展 VS 2022/18 预览版路径搜索（支持 D: 盘）；自动生成 C++/WinRT 投影头文件（SDK 自带的 `winrt/base.h` 缺失时用 `cppwinrt.exe` 从 Union Metadata 生成）；`scripts/build-msi-unsigned.bat` 前置 C++/WinRT 头文件路径。
 
 ## v2.3.7
 
 - 安装程序支持英文（Windows）：`desktop/windows/installer/` 新增 `en-US.wxl` 与 `license-en.rtf`（`zh-CN.wxl` 补 `FlashToolName`、`LicensePath`，license 拆分为 `license-zh-CN.rtf` / `license-en.rtf` 两版）；`VoiceStick.wxs` 的 license 与开始菜单「固件烧录工具」快捷方式名改为按 culture 本地化（`!(loc.LicensePath)` / `!(loc.FlashToolName)`）。WiX 4.0 一次构建只产一个 culture（多语言 MSI 支持尚未落地，`-culture` 为单值过滤），故 `build-msi.bat` / `build-msi-unsigned.bat` 改为循环产出 `VoiceStick_<版本>_zh-CN.msi`（语言码 2052）与 `VoiceStick_<版本>_en-US.msi`（语言码 1033）两个安装包，各自签名。`deploy-website.yml` 的 appcast 只收录 en-US 版（WinSparkle 0.9.2 不支持按语言选 enclosure，`sparkle:language` 未实现）；zh-CN 版仅供中文用户手动下载。已实测：两个 MSI 语言码、license、快捷方式名均按 culture 正确嵌入。
 - 新增 COM 口固件烧录工具 VoiceStickFlash（Windows）：独立 Win32 GUI 小工具，随 MSI 安装（`INSTALLFOLDER\VoiceStickFlash.exe` + `FlashTool\` 自包含 python-embed + esptool 运行时，免系统 Python），作为 BLE OTA 之外的用户级兜底链路（救砖 / 分区表变更 / bootloader 更新 / 恢复出厂）。支持三种模式：整包烧录（merged bin @ 0x0）、仅应用分区（@ 0x10000）、先完全擦除再整包；COM 口自动枚举 + 评分选中（ESP32-S3 原生 USB VID 303A 优先，规则与 `scripts/idf_cli.yaml` 一致）；子进程方式跑 `python -m esptool`（`--after no_reset`，烧完提示手动短按电源键重启），stdout 解析阶段/进度/错误；开始前检测 VoiceStickApp 运行并警告。入口：托盘菜单「固件烧录工具…」+ 固件更新对话框「高级… COM 口烧录」按钮。可测试逻辑下沉 `voicestick_core`（`com_port_selector` / `esptool_flash_command` / `esptool_progress` / `voice_stick_flash_tool`，4 组新单测）；`scripts/prepare_flash_payload.ps1` 幂等准备 payload（`VOICESTICK_PYTHON_EMBED_URL` 可覆盖下载源），`build-msi.bat` / `build-msi-unsigned.bat` 自动调用并打进 MSI。设计见 `Doc/Plan/windows-com-flash-tool.md`。
 - 修复编码器慢速旋转配置失效（Windows）：设备级编码器设置（`[device.<id>.encoder]` 的 `rotate_cw_key`/`rotate_ccw_key`）对慢速旋转无效，输出锁死全局默认 Up/Down，快速档正常。根因：`FlushEncoderRotatePending` 参数为 `const std::string&`，`EncoderRotateTick()` 传入的正是成员 `encoder_pending_device_id_` 本身，函数体 `clear()` 清空该成员使参数引用的对象变为空串，`EncoderSettingsForDevice("")` 查不到设备覆盖、回落全局默认（v2.3.0 引入 `encoder_pending_device_id_` 时遗留的引用别名问题）。修复：参数改按值传递消除引用别名；新增回归测试 `TestEncoderRotateCustomKeysPendingPathDeviceOverride`（设备覆盖 + pending → Tick 冲刷路径，此前测试全用全局默认键掩盖了回落路径）。
+
+## v2.3.6
+
+- 烧录进度解析兼容 esptool 5.x（Windows）：VoiceStickFlash 内嵌 esptool 5.2.0，管道非 TTY 时实际输出 `Writing at 0x00010000 [=====>                    ]  45.7% 1077248/2359296 bytes... ` 形式的进度行，`EsptoolProgressParser` 补充识别该格式（`(X %)` 形式继续兼容），新增对应单测；注释同步说明两种 esptool 版本的进度格式。
+- 便携版包含固件烧录工具（Windows）：`scripts/package-portable.ps1` 新增收集 `VoiceStickFlash.exe` 与 `FlashTool\` 自包含 esptool 运行时（优先复用 `build-msi-x64\flash_payload`，否则现场调用 `prepare_flash_payload.ps1` 生成；布局与 `LocatePythonExe()` 候选 1 一致），使便携版同样具备 COM 口固件烧录能力，与 MSI 布局一致。
 
 ## v2.3.5
 
