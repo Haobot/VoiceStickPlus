@@ -91,6 +91,12 @@ targeted 执行链是「AX 写选区（kAXSelectedTextRange）→ **立即**读�
 - 修复（`71ba9ca`）：听写 chokepoint（CompletePendingPaste）加 UIPI 前置检查——前台高完整性 → toast「目标窗口权限较高，请以管理员身份运行 VoiceStick」+ 放弃注入 + **不写编辑记录**（防假成功污染 targeted）。`result=ok` 类终验有读回的链路（targeted/undo）不受假成功污染，无需加检查。
 - 运行姿势：**以管理员身份运行 VoiceStick**（High ≥ High → UIPI 放行）。间歇性成功的假象（同日 11:52 result=ok vs 12:11 失败）疑与微信多进程/多窗口的会话状态有关，提权后不再依赖此运气。
 
+## 追加（2026-11-04 第五轮）：微信 caret 间歇失败——「无法校验光标」门槛放宽
+
+- 提权后用户复测：听写 ✓，targeted 仍被拒——toast「当前应用无法校验光标」。形态 = **微信输入框 GetSelection 间歇失败**（选区状态未初始化时读不到绝对光标 → caret_abs 哨兵）→ 被 field_scope 主路径的 caret_abs 前置门槛 reject（verifyUnavailable）。与 ZCode「恒死」不同，微信是间歇形态（11:52 成功过一轮 = 恰好选区已初始化）。
+- 修复：caret_abs 缺失不再拒绝——整框替换本就不依赖光标：① 主路径门槛去掉 caret 条件，recent 域**显式跳过**（锚定依赖光标，哨兵传入会误判「光标在末尾」意外命中）→ 直接整框域；② clarify 应答路径同族 caret 校验去掉（防文本篡改由匹配数比对判定）。光标恢复（Finalize）已有哨兵 fallback（恢复到字段末尾），无需改。
+- TDD：fake reader `caret_missing` 开关（caret_abs/tail 双哨兵）+ 用例先红后绿。CTest 2/2。
+
 ## 互链
 
 - 同功能准确率分层排查：`targeted-edit-accuracy-layered-triage-2026-10-28.md`
