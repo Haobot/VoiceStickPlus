@@ -69,6 +69,14 @@ targeted 执行链是「AX 写选区（kAXSelectedTextRange）→ **立即**读�
 - 微信（Weixin.exe 4.x）场景定性：**31 轮 DebugAudio 全量回放**（`scripts/e2e_test/replay_tencent_asr.py`，凭据从本机 config.toml 注入）证明微信场景 3 轮全是正文「我要去北京吃烤鸭。」（app 侧 paste_complete + record len=27=9 字剥尾标点吻合），**命令轮从未在微信发生**——用户主观「没有显示」到底是粘贴未上屏还是记忆混叠，修复后凭新日志复测定性（`result=ok`=闭环 / `readback mismatch` 耗尽=微信 UIA 选区写不可用需二期键盘兜底 / 正文 app 记录了但用户没见到=粘贴链路独立缺陷，头号嫌疑 150ms 剪贴板恢复竞态）。**没有识别文本前别给「微信不行」归因**——本次若按「微信也必败」提前改粘贴链路，就是朝错误方向动代码。
 - Windows 遗留：撤销链路（undo）已迁移到写读分离接口但保持单次读回（行为不变），Chromium 上 undo 读回为已知遗留，待测试基建后同步轮询。
 
+## 追加（2026-11-04 第二轮）：读回轮询不足以覆盖「选区写零落地」——键盘选区兜底（`9f59d56`）
+
+- 复测判据（Windows `950abd4` 后 ZCode）：`readback retry got_len=0` → 轮询 5 次全空串。**got_len=0 = GetSelection 恒折叠光标 = UIA `Select()` 返回 S_OK 但选区零落地**——不是异步慢（410ms 窗内恒空），轮询救不了。对照组 Notepad 完美（`got_len=3` 重试命中 `result=ok`）。
+- 生态佐证：Chromium 原生 UIA 自 Chrome 138 默认开启，ITextRangeProvider 有已知缺陷（issue 568011891），Electron 滞后。**「平台写调用返回成功」在 Chromium UIA 上甚至可能是纯 no-op——比「异步生效」更深的失效档位**。
+- 修复（`9f59d56`，本文预留的「AX 写彻底不可用目标的最后手段」落地）：UIA 读回耗尽 → 键盘选区兜底——`PlanKeyboardSelection`（grapheme 表精确边界匹配，落在簇中间一律拒绝；末尾锚 `Ctrl+End + Left×(G-ge) + Shift+Left×(ge-gs)` / 首锚 `Ctrl+Home + Right×gs + Shift+Right×(ge-gs)` 双方案按事件数取短；>2048 事件不可行）→ 后台线程逐键（12ms/键）→ 回 UI 线程读回轮询验证 → 命中才执行动作；验证不过 Ctrl+End 恢复 + fieldMismatch（零改动、记录保留——安全模型不变）。原生目标 UIA 路径优先命中，零回归。
+- **锚序列方向教训（测试对拍钉出来的）**：末尾锚不存在「先扩后缩」——锚在右端时 Shift+Right 移动的是左端（选区只会左移或消失）；正确序列是「无 Shift 方向键移到目标右端 ge，再 Shift+Left 选中 [gs,ge)」（锚固定在 ge，Shift 朝锚反方向移动）。首锚同理（Right 到 gs 再 Shift+Right）。fake 编辑器推演 + 断言失败暴露，纯靠公式推导时两处独立写反。
+- 验收待办：用户真机（ZCode）复测——日志判据 `voice targeted keyboard fallback start anchor=... → keyboard fallback selected target_len= → result=ok`；`keyboard fallback verify failed` = 键盘选区也失败（grapheme 漂移/IME 截获），二期再查。
+
 ## 互链
 
 - 同功能准确率分层排查：`targeted-edit-accuracy-layered-triage-2026-10-28.md`
