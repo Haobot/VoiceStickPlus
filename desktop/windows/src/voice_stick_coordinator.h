@@ -773,6 +773,9 @@ private:
         // is_batch=true 时走整框批量粘贴（单点 plan/选区无关）。
         bool is_batch = false;
         std::vector<VoiceTargetedOccurrence> batch;
+        // 允许结果为空串（结构化删除「删掉这句话」整段只有一句时 = 清空输入框）；
+        // 批量「全部删掉」保持 false → 删空拒绝（防高频词误伤）。
+        bool allow_empty_result = false;
         std::size_t original_caret_utf16 = 0;
         enum class RecordAction { kNone, kUpdate, kKeep, kInvalidate };
         RecordAction record_action = RecordAction::kNone;

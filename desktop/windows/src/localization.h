@@ -636,6 +636,8 @@ enum class StringId {
     kVoiceTargetedUndoOk,       // 已撤销修改
     kVoiceTargetedUndoChanged,  // 文本已变化，无法撤销
     kPasteElevated,             // 目标窗口权限较高，无法输入；请以管理员身份运行 VoiceStick
+    // 批量删除导致字段清空（非结构化删除）：拒绝并提示手动清空。
+    kVoiceEditDeleteAllNotSupported,
 };
 
 // 返回 UTF-8 本地化文本

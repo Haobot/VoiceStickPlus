@@ -2031,21 +2031,6 @@ void TestCaretDeleteSentence() {
     assert(harness.field().doc == L"第一句。第三句。");
 }
 
-// 删句导致字段清空：拒绝（沿用「不支持删除全部内容」决策），零写入。
-void TestCaretDeleteAllRejects() {
-    AppConfig config = AppConfig::Defaults();
-    config.refine_enabled = false;
-    config.auto_enter = false;
-    VoiceTargetedHarness harness(config);
-    assert(harness.PasteText("只有一句。", 373));
-    harness.field().sel_start = 1;
-    harness.field().sel_len = 0;
-    harness.ops().clear();
-    assert(harness.RunCommand("删掉这句话", 374, 6000));
-    assert(harness.ops().empty());
-    assert(harness.field().doc == L"只有一句。");
-}
-
 // 无光标（微信剪贴板通道）：明确拒绝，不降级为「删最后一句」。
 void TestCaretDeleteNoCaretRejects() {
     AppConfig config = AppConfig::Defaults();
@@ -2058,6 +2043,21 @@ void TestCaretDeleteNoCaretRejects() {
     assert(harness.RunCommand("删掉这句话", 376, 6000));
     assert(harness.ops().empty());
     assert(harness.field().doc == L"第一句。第二句。");
+}
+
+// 「删掉这句话」整段只有一句（无句末标点）→ 允许删空（清空输入框）。
+// 与批量「全部删掉」不同：光标位置明确，删空是用户意图。
+void TestCaretDeleteAllAllowed() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("版本3.14发布了，谢谢", 377));
+    harness.field().sel_start = 5;
+    harness.field().sel_len = 0;
+    harness.ops().clear();
+    assert(harness.RunCommand("删掉这句话", 378, 6000));
+    assert(harness.field().doc.empty());  // 允许删空
 }
 
 // 全兜底失败（全选粘贴未落地）：Ctrl+End 恢复 + fieldMismatch，
@@ -2910,8 +2910,8 @@ void RunVoiceEditTests() {
     TestTargetedBatchTooManyRejects();
     TestTargetedBatchDeleteAllRejects();
     TestCaretDeleteSentence();
-    TestCaretDeleteAllRejects();
     TestCaretDeleteNoCaretRejects();
+    TestCaretDeleteAllAllowed();
     TestTargetedCoordinatorFinalVerifyFailsInvalidates();
     TestTargetedCoordinatorOffModeUnreadableRejects();
     TestTargetedCoordinatorStaleGeneration();

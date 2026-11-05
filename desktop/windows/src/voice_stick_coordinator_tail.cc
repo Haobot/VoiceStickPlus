@@ -1173,6 +1173,8 @@ bool VoiceStickCoordinator::HandleCaretDeleteIfMatched(const std::string& text) 
     exec.pre_action_text = field_full;
     exec.domain = VoiceTargetedDomainKind::kWholeField;
     exec.record_action = TargetedExecutionContext::RecordAction::kInvalidate;
+    // 光标位置明确：整段只有一句时删空是用户意图（与批量「全部删掉」区分）。
+    exec.allow_empty_result = true;
     FinishRecognitionCycle();
     EnterReady("voice_caret_delete");
     TryWholeFieldPasteRewrite(command, VoiceTargetedPlan{}, exec, voice_edit_generation_);
@@ -1822,12 +1824,25 @@ void VoiceStickCoordinator::TryWholeFieldPasteRewrite(
         const auto rewritten =
             readable ? BuildWholeFieldBatchReplacement(field_full, exec.batch, replacement)
                      : std::optional<std::string>{};
-        if (!rewritten.has_value() || rewritten->empty() || input_injector_ == nullptr) {
+        if (!rewritten.has_value() || input_injector_ == nullptr ||
+            (rewritten->empty() && !exec.allow_empty_result)) {
+            const bool delete_all_blocked = rewritten.has_value() && rewritten->empty();
             LogCoordinatorLine(
                 "voice targeted batch paste unavailable readable=" +
                 std::string(readable ? "1" : "0") +
                 " built=" + (rewritten.has_value() ? "1" : "0") +
                 " empty=" + (rewritten.has_value() && rewritten->empty() ? "1" : "0"));
+            if (delete_all_blocked) {
+                // 批量删除导致字段清空：拒绝并明确提示（不是「内容已变化」）。
+                LogVoiceEditFailure("selected_text", "delete_all_not_supported");
+                FinishRecognitionCycle();
+                EnterReady("voice_delete_all_rejected");
+                ui_->ShowTimedMessage(
+                    Tr(StringId::kVoiceEditDeleteAllNotSupported,
+                       EffectiveUiLanguage(ConfigSnapshot()->ui_language)),
+                    kVoiceEditToastMs);
+                return;
+            }
             LogVoiceEditFailure("selected_text", "field_mismatch");
             RestoreCaretAndRejectFieldMismatch();
             return;

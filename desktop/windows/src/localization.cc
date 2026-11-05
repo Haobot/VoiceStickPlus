@@ -9,7 +9,8 @@ namespace voicestick {
 
 namespace {
 
-constexpr std::size_t kStringCount = static_cast<std::size_t>(StringId::kPasteElevated) + 1;
+constexpr std::size_t kStringCount =
+    static_cast<std::size_t>(StringId::kVoiceEditDeleteAllNotSupported) + 1;
 
 using StringTable = std::array<std::string_view, kStringCount>;
 
@@ -661,6 +662,8 @@ constexpr StringTable EnglishStrings() {
         "The dictated text changed; nothing modified";
     table[Index(StringId::kVoiceTargetedUnconfirmed)] =
         "The edit could not be confirmed; please check the text field";
+    table[Index(StringId::kVoiceEditDeleteAllNotSupported)] =
+        "Deleting all content is not supported; please clear it manually";
     table[Index(StringId::kVoiceEditAnchorAmbiguous)] =
         "That dictation appears multiple times; move the cursor next to it and try again";
     table[Index(StringId::kVoiceEditCaretMoveFailed)] =
@@ -1279,6 +1282,8 @@ constexpr StringTable ChineseStrings() {
     table[Index(StringId::kVoiceTargetedInvalid)] = "指令不完整，未修改";
     table[Index(StringId::kVoiceTargetedTextChanged)] = "语音输入内容已变化，未修改";
     table[Index(StringId::kVoiceTargetedUnconfirmed)] = "修改结果未能确认，请检查输入框";
+    table[Index(StringId::kVoiceEditDeleteAllNotSupported)] =
+        "不支持删除全部内容，请手动清空";
     table[Index(StringId::kVoiceEditAnchorAmbiguous)] =
         "刚才的输入在文本里出现多次，请把光标移到它旁边再试";
     table[Index(StringId::kVoiceEditCaretMoveFailed)] =
