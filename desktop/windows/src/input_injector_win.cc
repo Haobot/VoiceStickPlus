@@ -49,7 +49,16 @@ void InputInjectorWin::Paste(const std::string& text, bool press_enter) {
 }
 
 void InputInjectorWin::ReplaceAllWithPaste(const std::string& text) {
-    if (text.empty()) return;
+    if (text.empty()) {
+        // 删空（结构化删除整段 / 批量清空）：Ctrl+A 全选 + Backspace。
+        // 不用 Ctrl+V 粘贴空串：ZCode/记事本上空剪贴板粘贴无动作（字段不变），
+        // 终验必然 result_unconfirmed（2026-11-05 真机实锤）。
+        SendCtrlA();
+        Sleep(40);
+        SendKey(VK_BACK, true);
+        SendKey(VK_BACK, false);
+        return;
+    }
     const std::wstring wide = Utf16FromUtf8(text);
     if (wide.empty()) return;
 

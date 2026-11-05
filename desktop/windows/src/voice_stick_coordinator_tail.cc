@@ -1151,7 +1151,8 @@ bool VoiceStickCoordinator::HandleCaretDeleteIfMatched(const std::string& text) 
         LogVoiceEditFailure("focused_element", "target_not_found");
         FinishRecognitionCycle();
         EnterReady("voice_caret_delete_not_found");
-        ui_->ShowTimedMessage(Tr(StringId::kVoiceEditUnreadable, language),
+        // 定位失败 ≠ 光标不可读：用「没找到」文案（不再误报「无法校验光标」）。
+        ui_->ShowTimedMessage(Tr(StringId::kVoiceTargetedNotFound, language),
                               kVoiceEditToastMs);
         return true;
     }

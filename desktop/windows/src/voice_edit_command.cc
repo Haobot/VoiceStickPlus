@@ -936,6 +936,29 @@ VoiceEditTextRange FindSentenceAtCaret(std::string_view text, std::size_t caret_
             break;
         }
     }
+    // 光标停在句末标点之后（start == end，下一句为空）→ 回退删上一句：
+    // 以当前 start 为「上一句结尾」，再向前找上一个边界作为句首。
+    if (start_utf16 >= end_utf16 && start_utf16 > 0) {
+        std::size_t prev_start = 0;
+        for (std::size_t i = 0; i < index.size(); ++i) {
+            const std::size_t boundary_end =
+                index[i].utf16_offset + index[i].utf16_length;
+            if (boundary_end != start_utf16) continue;
+            for (std::size_t j = i; j > 0; --j) {
+                if (IsSentenceBoundary(index, j - 1)) {
+                    prev_start = index[j - 1].utf16_offset + index[j - 1].utf16_length;
+                    break;
+                }
+            }
+            break;
+        }
+        if (prev_start < start_utf16) {
+            range.start_utf16 = prev_start;
+            range.end_utf16 = start_utf16;
+            range.valid = true;
+        }
+        return range;
+    }
     if (start_utf16 >= end_utf16) return range;
     range.start_utf16 = start_utf16;
     range.end_utf16 = end_utf16;

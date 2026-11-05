@@ -576,6 +576,10 @@ void TestCaretDeleteLocators() {
     const std::string ellipsis = "等等……然后呢。";
     r = FindSentenceAtCaret(ellipsis, 1);
     assert(r.valid && r.start_utf16 == 0 && r.end_utf16 == 4);
+
+    // 光标停在末尾句号之后（下一句为空）→ 回退删上一句。
+    r = FindSentenceAtCaret("第一句。", 4);
+    assert(r.valid && r.start_utf16 == 0 && r.end_utf16 == 4);
 }
 
 // 光标结构化删除解析：整句精确白名单；普通说话不吞。
