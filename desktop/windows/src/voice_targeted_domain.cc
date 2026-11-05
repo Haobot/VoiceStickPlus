@@ -314,6 +314,19 @@ std::string MapWholeFieldEditToRemaining(std::string_view remaining_text,
     return out;
 }
 
+bool VoiceTargetedWholeFieldMatches(std::string_view actual,
+                                    std::string_view expected) {
+    if (actual == expected) return true;
+    // Chromium 系 contenteditable 的空文档 GetText 返回占位段落换行（ZCode
+    // 真机实测 "\n"），删除目标全文为空时它不代表有内容；仅在这种情况下
+    // 容忍纯换行差异。非空期望严格比较——真实差异必须报 result_unconfirmed。
+    if (!expected.empty()) return false;
+    for (char c : actual) {
+        if (c != '\n' && c != '\r') return false;
+    }
+    return true;
+}
+
 // ============================ 序数应答解析 ============================
 
 namespace {

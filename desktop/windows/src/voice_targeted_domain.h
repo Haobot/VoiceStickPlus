@@ -105,6 +105,14 @@ std::string MapWholeFieldEditToRemaining(std::string_view remaining_text,
                                          std::size_t length_utf16,
                                          std::string_view replacement_utf8);
 
+// 整框域终验文本比较：逐字节相等，或「期望为空且实际仅由换行符组成」——后者是
+// Chromium 系 contenteditable 空文档的 GetText 表示（空输入框返回 "\n" 占位
+// 段落，2026-11-05 ZCode 真机实测：删空后 actual="\n" 与期望 "" 永不相等，
+// 轮询 5 次后误报「修改结果未能确认」）。非空期望严格比较，避免把真实差异
+// 当成功。
+bool VoiceTargetedWholeFieldMatches(std::string_view actual,
+                                    std::string_view expected);
+
 // ============================ 序数应答解析（交付 B） ============================
 
 struct VoiceEditOrdinalReply {

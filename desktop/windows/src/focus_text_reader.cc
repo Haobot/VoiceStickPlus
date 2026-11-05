@@ -219,36 +219,20 @@ public:
                                              TextPatternRangeEndpoint_End, &at_end);
             if (FAILED(hr)) return false;
             out->caret_at_end = at_end == 0;
-            // 批次 1（字段内定位）：光标的绝对偏移 = doc_len - (光标→文档末尾字符数)；
-            // 再换算到尾部窗口内相对偏移（窗口外 = kCaretOutsideTail 哨兵）。
-            // TODO(win): 待 Windows 机编译+CTest 验证（UIA 偏移换算路径）。
+            // 批次 1（字段内定位）：尾窗内相对偏移 = 尾窗长度 - 光标到文档末尾
+            // 的字符数（无需文档总长度）。nCount 用「尾窗长度 + 1」而不是
+            // INT_MAX：RichEditD2DPT 对 INT_MAX 会内部溢出返回负数（2026-11-05
+            // 真机实锤 -9）；+1 足以区分「恰在尾窗起点（偏移 0）」与窗外。
             ComPtr<IUIAutomationTextRange> caret_measure;
             hr = selection->Clone(caret_measure.Put());
             if (SUCCEEDED(hr) && caret_measure) {
                 int to_end = 0;
                 hr = caret_measure->MoveEndpointByUnit(
-                    TextPatternRangeEndpoint_Start, TextUnit_Character, INT_MAX,
-                    &to_end);
-                if (SUCCEEDED(hr) && to_end >= 0) {
-                    int doc_len = 0;
-                    ComPtr<IUIAutomationTextRange> doc_measure;
-                    hr = document->Clone(doc_measure.Put());
-                    if (SUCCEEDED(hr) && doc_measure) {
-                        hr = doc_measure->MoveEndpointByUnit(
-                            TextPatternRangeEndpoint_Start, TextUnit_Character,
-                            INT_MAX, &doc_len);
-                        if (SUCCEEDED(hr)) {
-                            const std::size_t caret_abs =
-                                static_cast<std::size_t>(doc_len) - static_cast<std::size_t>(to_end);
-                            const std::size_t window_start =
-                                static_cast<std::size_t>(doc_len) >= out->tail_utf16_length
-                                    ? static_cast<std::size_t>(doc_len) - out->tail_utf16_length
-                                    : 0;
-                            out->caret_tail_utf16 = caret_abs >= window_start
-                                                        ? caret_abs - window_start
-                                                        : kCaretOutsideTail;
-                        }
-                    }
+                    TextPatternRangeEndpoint_Start, TextUnit_Character,
+                    static_cast<int>(out->tail_utf16_length) + 1, &to_end);
+                if (SUCCEEDED(hr)) {
+                    out->caret_tail_utf16 =
+                        VoiceEditCaretInTail(out->tail_utf16_length, to_end);
                 }
             }
         }
@@ -301,7 +285,10 @@ public:
                    std::to_string(static_cast<long long>(hr)));
             return false;
         }
-        // 全文长度（文档 range Start 前进 INT_MAX 的实际移动数）。
+        // 全文长度（文档 range Start 前进的实际移动数）。nCount 用「整框上限 +
+        // 1」而不是 INT_MAX：RichEditD2DPT（新版记事本）对 INT_MAX 会内部溢出
+        // 返回负数（2026-11-05 真机实锤 -9），有界 count 才拿得到真实值。超上限
+        // 时移动数被钳制到上限 + 1，仍足以判 full_truncated。
         ComPtr<IUIAutomationTextRange> measure;
         hr = document->Clone(measure.Put());
         if (FAILED(hr) || !measure) {
@@ -310,11 +297,13 @@ public:
             return false;
         }
         int doc_length = 0;
-        hr = measure->MoveEndpointByUnit(TextPatternRangeEndpoint_Start,
-                                         TextUnit_Character, INT_MAX, &doc_length);
-        if (FAILED(hr)) {
+        hr = measure->MoveEndpointByUnit(
+            TextPatternRangeEndpoint_Start, TextUnit_Character,
+            static_cast<int>(kFieldScopeFullTextMaxUtf16) + 1, &doc_length);
+        if (FAILED(hr) || doc_length < 0) {
             LogApp("voice edit: fulltext measure move failed hr=" +
-                   std::to_string(static_cast<long long>(hr)));
+                   std::to_string(static_cast<long long>(hr)) +
+                   " moved=" + std::to_string(doc_length));
             return false;
         }
         // 超上限：不读全文（避免大文档 GetText 阻塞 UI 线程），置 truncated。
@@ -418,21 +407,19 @@ public:
             hr = selection->Clone(caret_measure.Put());
             if (SUCCEEDED(hr) && caret_measure) {
                 int to_end = 0;
+                // nCount 用已测得的文档长度（≤整框上限）而不是 INT_MAX：
+                // RichEditD2DPT 对 INT_MAX 返回负数（2026-11-05 真机实锤）。
                 hr = caret_measure->MoveEndpointByUnit(
-                    TextPatternRangeEndpoint_Start, TextUnit_Character, INT_MAX,
+                    TextPatternRangeEndpoint_Start, TextUnit_Character, doc_length,
                     &to_end);
-                if (SUCCEEDED(hr) && to_end >= 0) {
-                    const std::size_t caret_abs =
-                        static_cast<std::size_t>(doc_length) -
-                        static_cast<std::size_t>(to_end);
-                    out->caret_abs_utf16 = caret_abs;
-                    const std::size_t window_start =
-                        static_cast<std::size_t>(doc_length) >= out->tail_utf16_length
-                            ? static_cast<std::size_t>(doc_length) - out->tail_utf16_length
-                            : 0;
-                    out->caret_tail_utf16 = caret_abs >= window_start
-                                                ? caret_abs - window_start
-                                                : kCaretOutsideTail;
+                if (SUCCEEDED(hr)) {
+                    const auto caret_abs = VoiceEditCaretAbsolute(
+                        static_cast<std::size_t>(doc_length), to_end);
+                    if (caret_abs.has_value()) {
+                        out->caret_abs_utf16 = *caret_abs;
+                        out->caret_tail_utf16 =
+                            VoiceEditCaretInTail(out->tail_utf16_length, to_end);
+                    }
                 }
             }
         }

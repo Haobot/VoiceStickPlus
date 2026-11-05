@@ -221,4 +221,20 @@ VoiceEditTextRange FindParagraphAtCaret(std::string_view field_full_utf8,
 VoiceEditTextRange FindLineAtCaret(std::string_view field_full_utf8,
                                    std::size_t caret_abs_utf16);
 
+// ======================== UIA 光标测量换算（focus_text_reader 用） ========================
+// UIA 只有「移动端点到文档末尾得到的实际移动数」这一个可得量，绝对/尾窗偏移
+// 必须由它换算。RichEditD2DPT（新版记事本）对 MoveEndpointByUnit 传 INT_MAX
+// 会返回负数（内部溢出，2026-11-05 真机实锤：光标距末尾 9 字符时返回 -9），
+// 调用方须改用有界 count；本层再统一防御负值/越界。
+
+// 由「文档 UTF-16 长度」与「光标到文档末尾的实际移动数」求光标绝对偏移。
+// 负数（实现溢出/失败）或移动数超过文档长度 → nullopt（不得下溢成巨大偏移）。
+std::optional<std::size_t> VoiceEditCaretAbsolute(std::size_t doc_length_utf16,
+                                                  int caret_to_end_utf16);
+
+// 由「尾窗 UTF-16 长度」与「光标到文档末尾的实际移动数」求光标在尾窗内的
+// 相对偏移；光标在尾窗之外（移动数 > 尾窗长度）或负值 → kCaretOutsideTail。
+std::size_t VoiceEditCaretInTail(std::size_t tail_length_utf16,
+                                 int caret_to_end_utf16);
+
 } // namespace voicestick

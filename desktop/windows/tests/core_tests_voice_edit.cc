@@ -582,6 +582,24 @@ void TestCaretDeleteLocators() {
     assert(r.valid && r.start_utf16 == 0 && r.end_utf16 == 4);
 }
 
+// UIA 光标测量换算（focus_text_reader 用）：绝对值由「文档长度 - 光标到末尾
+// 移动数」求出；RichEditD2DPT 对 INT_MAX 返回负数（真机实锤 -9）必须判不可得，
+// 不得下溢成巨大偏移。
+void TestCaretMeasurementVectors() {
+    assert(VoiceEditCaretAbsolute(24, 9) == std::size_t{15});
+    assert(VoiceEditCaretAbsolute(24, 24) == std::size_t{0});
+    assert(VoiceEditCaretAbsolute(0, 0) == std::size_t{0});
+    assert(!VoiceEditCaretAbsolute(24, -9).has_value());  // RichEdit 溢出返回值
+    assert(!VoiceEditCaretAbsolute(10, 11).has_value());  // 越界不得下溢
+
+    // 尾窗：光标距末尾 2、尾窗 5 → 窗内偏移 3；恰在窗起点 → 0；窗外 → 哨兵。
+    assert(VoiceEditCaretInTail(5, 2) == std::size_t{3});
+    assert(VoiceEditCaretInTail(5, 5) == std::size_t{0});
+    assert(VoiceEditCaretInTail(5, 6) == kCaretOutsideTail);
+    assert(VoiceEditCaretInTail(0, 0) == std::size_t{0});
+    assert(VoiceEditCaretInTail(5, -1) == kCaretOutsideTail);
+}
+
 // 光标结构化删除解析：整句精确白名单；普通说话不吞。
 void TestCaretDeleteParser() {
     assert(ParseCaretDeleteCommand("删掉这句话") == VoiceEditCaretDeleteKind::kSentence);
@@ -1303,6 +1321,20 @@ public:
         }
         if (!readable || field == nullptr) return false;
         out->readable = true;
+        if (empty_field_newline && field->doc.empty()) {
+            // Chromium 空 contenteditable：GetText 返回占位段落 "\n"（ZCode 真机
+            // 实测；删空后终验 expected="" 与实际 "\n" 永不相等 → 误报未确认）。
+            out->full_text = "\n";
+            out->full_utf16_length = 1;
+            out->full_truncated = false;
+            out->selection_collapsed = true;
+            out->caret_at_end = true;
+            out->caret_abs_utf16 = 0;
+            out->tail_text = "\n";
+            out->tail_utf16_length = 1;
+            out->caret_tail_utf16 = 0;
+            return true;
+        }
         out->full_text = Utf8FromUtf16ForTest(std::wstring_view(field->doc));
         out->full_utf16_length = field->doc.size();
         out->full_truncated = false;
@@ -1337,6 +1369,9 @@ public:
     int fulltext_fail_streak = 0;
     int fulltext_reads = 0;
     bool fulltext_truncated = false;
+    // empty_field_newline：模拟 Chromium 空 contenteditable 的 GetText——字段删空
+    // 后读回 "\n"（占位段落）而不是空串。
+    bool empty_field_newline = false;
 };
 
 class VoiceTargetedFakeEditor : public ITargetedFieldEditor {
@@ -1384,6 +1419,7 @@ public:
 
     bool MoveCaretTo(std::size_t tail_relative_utf16) override {
         if (field == nullptr) return false;
+        ++tail_moves;
         constexpr std::size_t kTail = 512;
         const std::size_t tail_len = std::min(kTail, field->doc.size());
         const std::size_t tail_start = field->doc.size() - tail_len;
@@ -1403,6 +1439,7 @@ public:
     }
     bool MoveCaretToAbsolute(std::size_t abs_utf16) override {
         if (field == nullptr) return false;
+        ++abs_moves;
         ops->push_back(abs_utf16 >= field->doc.size() ? "end" : "abs");
         if (move_fails) return false;
         field->sel_start = abs_utf16;
@@ -1412,6 +1449,10 @@ public:
     VoiceTargetedFakeField* field = nullptr;
     std::vector<std::string>* ops = nullptr;
     bool move_fails = false;  // 批次 1：模拟 UIA 移动失败（caret_move_failed 路径）
+    // 整框域跳过 UIA 光标恢复的断言计数（2026-11-05：Chromium 上 Select() 会让
+    // 后续字符输入失效）；批次 1 尾窗路径仍用 MoveCaretTo。
+    int tail_moves = 0;
+    int abs_moves = 0;
     // 读回轮询脚本（对齐 macOS Chromium 异步生效语义）：stale_reads = 尚未落地的
     // 读回次数（每次读回返回旧值并递减）；select_fails = 模拟 UIA 写选区失败。
     int stale_reads = 0;
@@ -1632,7 +1673,7 @@ void TestTargetedCoordinatorDelete() {
     // 粘贴后 fake 字段与记录一致（reader 从字段读，tail=全文）。
     harness.ops().clear();
     assert(harness.RunCommand("删除刚才的北京", 122));
-    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "end"}));
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace"}));
     assert(harness.input().sent_key_combos.size() == 1);
     assert(harness.input().pasted_text == "我去北京上班");  // 命令轮不粘贴
     assert(harness.field().doc == L"我去上班");
@@ -1644,7 +1685,7 @@ void TestTargetedCoordinatorDelete() {
     // 记录已更新（remaining="我去上班"）：第二次删「上班」→ 字段「我去」。
     harness.ops().clear();
     assert(harness.RunCommand("删除刚才的上班", 123));
-    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "end"}));
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace"}));
     assert(harness.field().doc == L"我去");
 }
 
@@ -1692,9 +1733,10 @@ void TestTargetedCoordinatorReadbackPollConverges() {
     harness.editor().stale_reads = 2;
     harness.ops().clear();
     assert(harness.RunCommand("删除刚才的北京", 222));
-    // 1 次写选区 + 3 次读回（前 2 次旧值）→ 命中 → 一次 Backspace → 终验恢复。
+    // 1 次写选区 + 3 次读回（前 2 次旧值）→ 命中 → 一次 Backspace → 终验。
+    // 整框域不做 UIA 光标恢复（Chromium Select() 会让后续输入失效），故无 "end"。
     assert((harness.ops() == std::vector<std::string>{"select", "read", "read", "read",
-                                                      "backspace", "end"}));
+                                                      "backspace"}));
     assert(harness.input().sent_key_combos.size() == 1);
     assert(harness.field().doc == L"我去上班");
     std::string expected = Tr(StringId::kVoiceTargetedDeleted, harness.language());
@@ -1716,10 +1758,10 @@ void TestTargetedCoordinatorReadbackPollExhausts() {
     harness.ops().clear();
     assert(harness.RunCommand("删除刚才的北京", 232));
     // UIA 写路径耗尽（5 次读回全旧值）→ 整框重写兜底（ValuePattern.SetValue）
-    // 成功 → 终验通过（Finalize 光标恢复落字段末尾 → fake 记 "end"）。
+    // 成功 → 终验通过（整框域不做 UIA 光标恢复 → 无 "end"）。
     assert((harness.ops() ==
             std::vector<std::string>{"select", "read", "read", "read", "read", "read",
-                                     "paste_all", "end"}));
+                                     "paste_all"}));
     assert(harness.field().doc == L"我去上班");
     std::string expected_deleted = Tr(StringId::kVoiceTargetedDeleted, harness.language());
     {
@@ -1731,7 +1773,7 @@ void TestTargetedCoordinatorReadbackPollExhausts() {
     harness.editor().stale_reads = 0;
     harness.ops().clear();
     assert(harness.RunCommand("删除刚才的上班", 233));
-    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "end"}));
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace"}));
     assert(harness.field().doc == L"我去");
 }
 
@@ -1763,7 +1805,7 @@ void TestTargetedCoordinatorWholeFieldRewriteSucceeds() {
     harness.editor().swallow_select = false;
     harness.ops().clear();
     assert(harness.RunCommand("删除刚才的上班", 283));
-    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "end"}));
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace"}));
     assert(harness.field().doc == L"我去");
 }
 
@@ -1778,7 +1820,7 @@ void TestTargetedCoordinatorCaretMissingWholeFieldRewrite() {
     harness.reader().caret_missing = true;
     harness.ops().clear();
     assert(harness.RunCommand("删除刚才的北京", 312));
-    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "end"}));
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace"}));
     assert(harness.field().doc == L"我去上班");
     std::string expected = Tr(StringId::kVoiceTargetedDeleted, harness.language());
     const auto marker = expected.find("%d");
@@ -1800,7 +1842,7 @@ void TestTargetedCoordinatorFieldRereadRecovers() {
     assert(harness.RunCommand("删除刚才的北京", 332));
     // 读取计数 = 接管链 4 次（首读 + 3 次重试，第 4 次收敛）+ 终验读回 1 次。
     assert(harness.reader().fulltext_reads == 5);
-    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "end"}));
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace"}));
     assert(harness.field().doc == L"我去上班");
     std::string expected = Tr(StringId::kVoiceTargetedDeleted, harness.language());
     const auto marker = expected.find("%d");
@@ -2064,6 +2106,47 @@ void TestCaretDeleteAllAllowed() {
     assert(harness.field().doc.empty());  // 允许删空
 }
 
+// 整框域（批量/结构化删除/替换）不做 UIA 光标恢复：ReplaceAllWithPaste 已把
+// 光标放在自然位置；UIA TextRange.Select() 在 Chromium contenteditable 上会让
+// 后续字符输入失效（2026-11-05 真机复刻：ZCode 删空后无法继续输入，UIA 焦点
+// 仍报在 Edit，但 SendInput 字符被吞；对照组不做 MoveCaret 时输入正常）。
+void TestWholeFieldSkipsUiaCaretRestore() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("版本3.14发布了，谢谢", 381));
+    harness.field().sel_start = 5;
+    harness.field().sel_len = 0;
+    harness.ops().clear();
+    harness.editor().abs_moves = 0;
+    assert(harness.RunCommand("删掉这句话", 382, 6000));
+    assert(harness.field().doc.empty());       // 删空仍生效
+    assert(harness.editor().abs_moves == 0);   // 未调用 MoveCaretToAbsolute
+}
+
+// 删空终验：Chromium 空 contenteditable 的 GetText 返回占位换行 "\n"（ZCode
+// 真机实测），期望空串必须判一致——否则轮询 5 次后误报「修改结果未能确认」
+//（2026-11-05 用户实报：删空成功、光标正常，但浮窗显示未能确认）。
+void TestCaretDeleteAllPlaceholderNewlineVerifies() {
+    AppConfig config = AppConfig::Defaults();
+    config.refine_enabled = false;
+    config.auto_enter = false;
+    VoiceTargetedHarness harness(config);
+    assert(harness.PasteText("版本3.14发布了，谢谢", 383));
+    harness.field().sel_start = 5;
+    harness.field().sel_len = 0;
+    harness.reader().empty_field_newline = true;
+    harness.ops().clear();
+    assert(harness.RunCommand("删掉这句话", 384, 6000));
+    assert(harness.field().doc.empty());  // 删空仍生效
+    const std::string unconfirmed =
+        TargetedToast(Tr(StringId::kVoiceTargetedUnconfirmed, harness.language()).c_str());
+    for (const auto& toast : harness.ui().timed_messages) {
+        assert(toast != unconfirmed);
+    }
+}
+
 // 全兜底失败（全选粘贴未落地）：Ctrl+End 恢复 + fieldMismatch，
 // 零改动、记录保留（安全模型：验证不过绝不盲改）。
 void TestTargetedCoordinatorAllFallbacksFailRejects() {
@@ -2105,12 +2188,11 @@ void TestTargetedCoordinatorFinalVerifyFailsInvalidates() {
     assert(harness.ui().timed_messages.back() ==
            TargetedToast(Tr(StringId::kVoiceTargetedUnconfirmed, harness.language()).c_str()));
     // 记录保留（动作未落地）：swallow 关闭后同命令重试直接生效（批次 2 整框域
-    // 绝对坐标路径：绝对选区 → 退格 → 光标平移回编辑点，对应 Mac「未落地重试
-    // select(2,0)」同款语义）。
+    // 绝对坐标路径：绝对选区 → 退格；整框域不做 UIA 光标恢复 → 无 "abs"）。
     harness.input().swallow_backspace = false;
     harness.ops().clear();
     assert(harness.RunCommand("删除刚才的北京", 163));
-    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace", "abs"}));
+    assert((harness.ops() == std::vector<std::string>{"select", "read", "backspace"}));
     assert(harness.field().doc == L"我去上班");
 }
 
@@ -2209,7 +2291,10 @@ void TestTargetedCoordinatorUnscopedReplace() {
     // “广州”不存在时必须作为普通正文，不得吞掉或误改。
     assert(harness.PasteText("把广州改成杭州", 208));
     assert(harness.input().pasted_text == "把广州改成杭州");
-    assert(harness.field().doc == L"我今天去上海上班。把广州改成杭州");
+    // 整框域不再做 UIA 光标恢复（Chromium TextRange.Select 会让后续字符输入
+    // 失效，2026-11-05 真机复刻）：第一次替换走 UIA 选区路径后光标留在编辑点
+    //（「上海」之后），后续普通正文粘贴落在这里——不再跳到全文末尾。
+    assert(harness.field().doc == L"我今天去上海把广州改成杭州上班。");
 }
 
 // 长文档终验：tail 恰为 512 窗口、替换变长使 expected_tail=514（>512）时，公共后缀
@@ -2726,6 +2811,22 @@ void TestTargetedCursorRestore() {
     assert(MapWholeFieldEditToRemaining("我去北京上班", 2, 2, "上海") == "我去上海上班");
 }
 
+// 整框域终验文本比较：空期望容忍编辑器占位换行（Chromium 空 contenteditable
+// 的 GetText 返回 "\n"），非空期望严格逐字节比较。
+void TestTargetedWholeFieldMatches() {
+    assert(VoiceTargetedWholeFieldMatches("", ""));
+    assert(VoiceTargetedWholeFieldMatches("\n", ""));      // 空 contenteditable 占位
+    assert(VoiceTargetedWholeFieldMatches("\r\n", ""));
+    assert(VoiceTargetedWholeFieldMatches("\n\n", ""));
+    assert(!VoiceTargetedWholeFieldMatches(" ", ""));       // 空格是真实内容
+    assert(!VoiceTargetedWholeFieldMatches("第一句。", ""));
+    assert(!VoiceTargetedWholeFieldMatches("", "第一句。"));
+    assert(VoiceTargetedWholeFieldMatches("第一句。", "第一句。"));
+    // 非空期望不做尾部换行宽容（真实差异必须报未确认）。
+    assert(!VoiceTargetedWholeFieldMatches("第一句。\n", "第一句。"));
+    assert(!VoiceTargetedWholeFieldMatches("第一句。", "第一句。\n"));
+}
+
 // 整框重写替换构造（全文定位 + 簇边界精确切片；ValuePattern.SetValue 兜底用）。
 void TestWholeFieldReplacement() {
     // 中文替换：「我去北京上班」[2,4)→「上海」=「我去上海上班」。
@@ -2862,6 +2963,7 @@ void TestVoiceEditUndoPhraseAndFallback() {
 void RunVoiceEditTests() {
     TestVoiceEditParserPositive();
     TestCaretDeleteLocators();
+    TestCaretMeasurementVectors();
     TestCaretDeleteParser();
     TestTargetedBatchParser();
     TestVoiceEditParserDeleteAllForms();
@@ -2880,6 +2982,7 @@ void RunVoiceEditTests() {
     TestTargetedPositionParse();
     TestTargetedDomainResolve();
     TestTargetedCursorRestore();
+    TestTargetedWholeFieldMatches();
     TestWholeFieldReplacement();
     TestVoiceEditOrdinalReply();
     TestVoiceEditUndoPhraseAndFallback();
@@ -2916,6 +3019,8 @@ void RunVoiceEditTests() {
     TestCaretDeleteSentence();
     TestCaretDeleteNoCaretRejects();
     TestCaretDeleteAllAllowed();
+    TestWholeFieldSkipsUiaCaretRestore();
+    TestCaretDeleteAllPlaceholderNewlineVerifies();
     TestTargetedCoordinatorFinalVerifyFailsInvalidates();
     TestTargetedCoordinatorOffModeUnreadableRejects();
     TestTargetedCoordinatorStaleGeneration();

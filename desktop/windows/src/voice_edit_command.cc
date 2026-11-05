@@ -1007,4 +1007,24 @@ VoiceEditTextRange FindLineAtCaret(std::string_view text, std::size_t caret_utf1
     return range;
 }
 
+// ======================== UIA 光标测量换算 ========================
+// 只做算术：负数（RichEditD2DPT 对 INT_MAX 的内部溢出返回值）与越界一律判
+// 不可得，避免无符号下溢成巨大偏移后误定位。
+
+std::optional<std::size_t> VoiceEditCaretAbsolute(std::size_t doc_length_utf16,
+                                                  int caret_to_end_utf16) {
+    if (caret_to_end_utf16 < 0) return std::nullopt;
+    const std::size_t to_end = static_cast<std::size_t>(caret_to_end_utf16);
+    if (to_end > doc_length_utf16) return std::nullopt;
+    return doc_length_utf16 - to_end;
+}
+
+std::size_t VoiceEditCaretInTail(std::size_t tail_length_utf16,
+                                 int caret_to_end_utf16) {
+    if (caret_to_end_utf16 < 0) return kCaretOutsideTail;
+    const std::size_t to_end = static_cast<std::size_t>(caret_to_end_utf16);
+    if (to_end > tail_length_utf16) return kCaretOutsideTail;
+    return tail_length_utf16 - to_end;
+}
+
 }  // namespace voicestick

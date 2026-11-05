@@ -1176,9 +1176,13 @@ bool VoiceStickCoordinator::HandleCaretDeleteIfMatched(const std::string& text) 
     exec.record_action = TargetedExecutionContext::RecordAction::kInvalidate;
     // 光标位置明确：整段只有一句时删空是用户意图（与批量「全部删掉」区分）。
     exec.allow_empty_result = true;
+    // 成功提示按 plan.target_graphemes 显示「已删除 N 个字」：结构化删除传
+    // 目标区间长度（UTF-16 码元；中文/英文每字 1 码元，emoji 2 码元近似）。
+    VoiceTargetedPlan plan;
+    plan.target_graphemes = range.end_utf16 - range.start_utf16;
     FinishRecognitionCycle();
     EnterReady("voice_caret_delete");
-    TryWholeFieldPasteRewrite(command, VoiceTargetedPlan{}, exec, voice_edit_generation_);
+    TryWholeFieldPasteRewrite(command, plan, exec, voice_edit_generation_);
     return true;
 }
 
@@ -1971,13 +1975,15 @@ void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(
                                          plan.occurrence.utf16_length, inserted_length)
             : VoiceTargetedUtf16Length(expected_tail) -
                   VoiceTargetedUtf16Length(plan.anchor_after_text);
-    if (targeted_field_editor_ != nullptr) {
-        // TODO(win): 待 Windows 机编译+CTest 验证（MoveCaretTo/Absolute 的 UIA 路径）。
-        if (exec.absolute_coords) {
-            targeted_field_editor_->MoveCaretToAbsolute(restore_caret);
-        } else {
-            targeted_field_editor_->MoveCaretTo(restore_caret);
-        }
+    // 整框域不做 UIA 光标恢复：ReplaceAllWithPaste（Ctrl+A 全选 → 粘贴/退格）
+    // 已把光标放在自然位置（粘贴后末尾、删空后开头），而 UIA TextRange.Select()
+    // 在 Chromium 系 contenteditable 上会让后续字符输入失效（2026-11-05 真机
+    // 复刻：ZCode 删空后无法继续输入，UIA 焦点仍报在 Edit，但 SendInput 字符
+    // 被吞；对照组不做 MoveCaret 时输入正常）。批次 1（尾窗 UIA 选区路径）仍
+    // 用 MoveCaretTo 恢复段内位置。
+    if (targeted_field_editor_ != nullptr && !exec.absolute_coords) {
+        // TODO(win): 待 Windows 机编译+CTest 验证（MoveCaretTo 的 UIA 路径）。
+        targeted_field_editor_->MoveCaretTo(restore_caret);
     }
     // 终验：批次 2 绝对坐标（整框域）→ 全文读回**精确相等**（全文 ≤200k，无窗口
     // 截断问题）；批次 1 尾窗 → 可重叠公共后缀比较（原 tail 是 512 窗口时，变长
@@ -1993,7 +1999,8 @@ void VoiceStickCoordinator::FinalizeVoiceTargetedEdit(
             !field.full_truncated) {
             actual = NormalizeVoiceEditLineBreaks(field.full_text);
             read_ok = true;
-            verified = actual == expected_tail;
+            // 空字段容忍编辑器占位换行（Chromium contenteditable GetText="\n"）。
+            verified = VoiceTargetedWholeFieldMatches(actual, expected_tail);
         }
     } else if (focus_text_reader_ &&
                focus_text_reader_->ReadFocusedField(&field) && field.readable) {
